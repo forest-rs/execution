@@ -46,7 +46,7 @@ use crate::host::sig_hash_slices;
 use crate::instr_operands;
 use crate::opcode::CodeBytes;
 use crate::program::{
-    CallSigId, ConstEntry, ElemTypeId, Function, Program, RegisterTypes, SpanEntry, SpanId,
+    CallSigId, ConstEntry, ElemTypeId, Function, Program, Reg, RegisterTypes, SpanEntry, SpanId,
     SymbolId, TagId, TypeId, ValueType,
 };
 use crate::typed::{
@@ -99,7 +99,7 @@ pub enum VerifyLint {
         /// Byte offset of the instruction.
         pc: u32,
         /// Written register.
-        reg: u32,
+        reg: Reg,
     },
     /// A `mov` is redundant (e.g. `mov rX, rX`).
     RedundantMove {
@@ -108,9 +108,9 @@ pub enum VerifyLint {
         /// Byte offset of the instruction.
         pc: u32,
         /// Destination register.
-        dst: u32,
+        dst: Reg,
         /// Source register.
-        src: u32,
+        src: Reg,
     },
     /// A `call`/`host_call` return register is never read.
     UnusedCallReturn {
@@ -119,7 +119,7 @@ pub enum VerifyLint {
         /// Byte offset of the instruction.
         pc: u32,
         /// Return register.
-        reg: u32,
+        reg: Reg,
     },
 }
 
@@ -392,7 +392,7 @@ pub enum VerifyError {
         /// Byte offset of the instruction.
         pc: u32,
         /// The offending register.
-        reg: u32,
+        reg: Reg,
     },
     /// An effect-token output register was not `r0`.
     EffectOutNotR0 {
@@ -401,7 +401,7 @@ pub enum VerifyError {
         /// Byte offset of the instruction.
         pc: u32,
         /// The offending register.
-        reg: u32,
+        reg: Reg,
     },
     /// A register index is out of bounds for the function's `reg_count`.
     RegOutOfBounds {
@@ -410,7 +410,7 @@ pub enum VerifyError {
         /// Byte offset of the instruction.
         pc: u32,
         /// Register index.
-        reg: u32,
+        reg: Reg,
     },
     /// A register was read before being initialized along some reachable path.
     UninitializedRead {
@@ -419,7 +419,7 @@ pub enum VerifyError {
         /// Byte offset of the instruction.
         pc: u32,
         /// Register index.
-        reg: u32,
+        reg: Reg,
     },
     /// A `call` instruction does not match the callee function's signature counts.
     CallArityMismatch {
@@ -681,7 +681,7 @@ pub enum VerifyError {
         /// Zero-based payload position.
         index: u32,
         /// Source register.
-        reg: u32,
+        reg: Reg,
         /// Kind declared by the tag.
         expected: ValueType,
         /// Kind declared for the register.
@@ -699,7 +699,7 @@ pub enum VerifyError {
         /// Instruction PC; `None` for the effect/argument prefix contract.
         pc: Option<u32>,
         /// Virtual register.
-        reg: u32,
+        reg: Reg,
         /// Declared kind.
         declared: ValueType,
         /// Required kind.
@@ -712,7 +712,7 @@ pub enum VerifyError {
         /// Projection PC.
         pc: u32,
         /// Aggregate source register.
-        reg: u32,
+        reg: Reg,
     },
     /// A `call` referenced a callee arg type slice that was out of bounds.
     CallCalleeArgTypesOutOfBounds {
@@ -875,13 +875,13 @@ impl VerifyError {
                 write!(f, "invalid jump target pc {target} ({reason})")
             }
             Self::EffectInNotR0 { reg, .. } => {
-                write!(f, "effect input must be r0 (got r{reg})")
+                write!(f, "effect input must be r0 (got {reg})")
             }
             Self::EffectOutNotR0 { reg, .. } => {
-                write!(f, "effect output must be r0 (got r{reg})")
+                write!(f, "effect output must be r0 (got {reg})")
             }
-            Self::RegOutOfBounds { reg, .. } => write!(f, "register out of bounds: r{reg}"),
-            Self::UninitializedRead { reg, .. } => write!(f, "uninitialized read: r{reg}"),
+            Self::RegOutOfBounds { reg, .. } => write!(f, "register out of bounds: {reg}"),
+            Self::UninitializedRead { reg, .. } => write!(f, "uninitialized read: {reg}"),
             Self::CallArityMismatch { .. } => f.write_str("call arity mismatch"),
             Self::ReturnArityMismatch { .. } => f.write_str("return arity mismatch"),
             Self::HostCallArityMismatch { .. } => f.write_str("host_call arity mismatch"),
@@ -941,7 +941,7 @@ impl VerifyError {
                 ExceptionPlace::Aggregate { reg, .. } => {
                     write!(
                         f,
-                        "exception references cannot be stored in a tuple (r{reg})"
+                        "exception references cannot be stored in a tuple ({reg})"
                     )
                 }
                 place => write!(f, "exception references cannot appear in {place}"),
@@ -949,7 +949,7 @@ impl VerifyError {
             Self::ContinuationReference { place } => match place {
                 ExceptionPlace::Aggregate { reg, .. } => write!(
                     f,
-                    "continuation references cannot be stored in a tuple (r{reg})"
+                    "continuation references cannot be stored in a tuple ({reg})"
                 ),
                 place => write!(f, "continuation references cannot appear in {place}"),
             },
@@ -983,7 +983,7 @@ impl VerifyError {
                 ..
             } => write!(
                 f,
-                "throw tag#{tag} (\"{name}\") payload[{index}] requires {expected:?}, r{reg} \
+                "throw tag#{tag} (\"{name}\") payload[{index}] requires {expected:?}, {reg} \
                  declares {actual:?}"
             ),
             Self::MissingRegisterTypes { .. } => {
@@ -994,9 +994,9 @@ impl VerifyError {
                 declared,
                 required,
                 ..
-            } => write!(f, "r{reg} declared {declared:?}, required {required:?}"),
+            } => write!(f, "{reg} declared {declared:?}, required {required:?}"),
             Self::UnknownAggregateShape { reg, .. } => {
-                write!(f, "r{reg} has no proven projection kind")
+                write!(f, "{reg} has no proven projection kind")
             }
             Self::CallCalleeArgTypesOutOfBounds { callee, .. } => {
                 write!(f, "callee function #{callee} arg types out of bounds")
@@ -1089,7 +1089,7 @@ pub enum ExceptionPlace {
         /// Instruction offset.
         pc: u32,
         /// Stored register.
-        reg: u32,
+        reg: Reg,
     },
 }
 
@@ -1105,7 +1105,7 @@ impl fmt::Display for ExceptionPlace {
                 write!(f, "array element type {elem_type_id}")
             }
             Self::Aggregate { func, pc, reg } => {
-                write!(f, "a tuple built in function #{func} at pc {pc} (r{reg})")
+                write!(f, "a tuple built in function #{func} at pc {pc} ({reg})")
             }
         }
     }
@@ -1531,13 +1531,13 @@ fn verify_function_container(
     {
         let reg = u32::try_from(reg).expect("register count bounded by u32");
         let declared = register_types
-            .get(reg)
+            .get(Reg(reg))
             .expect("checked argument prefix bounds");
         if declared != required {
             return Err(VerifyError::RegisterTypeMismatch {
                 func: func_id,
                 pc: None,
-                reg,
+                reg: Reg(reg),
                 declared,
                 required,
             });
@@ -2036,15 +2036,15 @@ fn verify_function_bytecode(
                 .ok_or(VerifyError::RegOutOfBounds {
                     func: func_id,
                     pc,
-                    reg,
+                    reg: Reg(reg),
                 })
         };
         let mismatch = |reg: u32, required: ValueType| VerifyError::RegisterTypeMismatch {
             func: func_id,
             pc: Some(pc),
-            reg,
+            reg: Reg(reg),
             declared: register_types
-                .get(reg)
+                .get(Reg(reg))
                 .expect("mapped register has a declared kind"),
             required,
         };
@@ -2280,7 +2280,7 @@ fn verify_function_bytecode(
                 _ => {
                     return Err(mismatch(
                         *dst,
-                        register_types.get(*src).expect("mapped source"),
+                        register_types.get(Reg(*src)).expect("mapped source"),
                     ));
                 }
             },
@@ -3428,7 +3428,7 @@ fn verify_function_bytecode(
                 _ => {
                     return Err(mismatch(
                         *dst,
-                        register_types.get(*a).expect("mapped select source"),
+                        register_types.get(Reg(*a)).expect("mapped select source"),
                     ));
                 }
             },
@@ -3926,8 +3926,8 @@ fn lint_function_bytecode(
                 lints.push(VerifyLint::RedundantMove {
                     func: func_id,
                     pc: di.offset,
-                    dst,
-                    src,
+                    dst: Reg(dst),
+                    src: Reg(src),
                 });
             }
 
@@ -3952,13 +3952,13 @@ fn lint_function_bytecode(
                         lints.push(VerifyLint::UnusedCallReturn {
                             func: func_id,
                             pc: di.offset,
-                            reg: w,
+                            reg: Reg(w),
                         });
                     } else {
                         lints.push(VerifyLint::DeadStore {
                             func: func_id,
                             pc: di.offset,
-                            reg: w,
+                            reg: Reg(w),
                         });
                     }
                 }
@@ -3992,7 +3992,7 @@ fn validate_instr_reads_writes(
             Err(VerifyError::RegOutOfBounds {
                 func: func_id,
                 pc,
-                reg,
+                reg: Reg(reg),
             })
         } else {
             Ok(())
@@ -4004,7 +4004,7 @@ fn validate_instr_reads_writes(
             Err(VerifyError::UninitializedRead {
                 func: func_id,
                 pc,
-                reg,
+                reg: Reg(reg),
             })
         } else {
             Ok(())
@@ -4020,7 +4020,7 @@ fn validate_instr_reads_writes(
             return Err(VerifyError::EffectInNotR0 {
                 func: func_id,
                 pc,
-                reg,
+                reg: Reg(reg),
             });
         }
         Ok(())
@@ -4030,7 +4030,7 @@ fn validate_instr_reads_writes(
             return Err(VerifyError::EffectOutNotR0 {
                 func: func_id,
                 pc,
-                reg,
+                reg: Reg(reg),
             });
         }
         Ok(())
@@ -4200,12 +4200,16 @@ fn check_expected(
     actual: Option<ValueType>,
     required: ValueType,
 ) -> Result<(), VerifyError> {
-    let declared = actual.ok_or(VerifyError::RegOutOfBounds { func, pc, reg })?;
+    let declared = actual.ok_or(VerifyError::RegOutOfBounds {
+        func,
+        pc,
+        reg: Reg(reg),
+    })?;
     if declared != required {
         return Err(VerifyError::RegisterTypeMismatch {
             func,
             pc: Some(pc),
-            reg,
+            reg: Reg(reg),
             declared,
             required,
         });
@@ -4221,7 +4225,7 @@ fn validate_instr_types(
     types: RegisterTypes<'_>,
     func_ret_types: ContractKinds<'_>,
 ) -> Result<(), VerifyError> {
-    let t = |reg: u32| types.get(reg);
+    let t = |reg: u32| types.get(Reg(reg));
 
     match instr {
         Instr::Throw { tag, args, .. } => {
@@ -4247,7 +4251,7 @@ fn validate_instr_types(
             let required = t(*src).ok_or(VerifyError::RegOutOfBounds {
                 func: func_id,
                 pc,
-                reg: *src,
+                reg: Reg(*src),
             })?;
             check_expected(func_id, pc, *dst, t(*dst), required)?;
         }
@@ -4818,7 +4822,7 @@ fn validate_instr_types(
             let required = t(*a).ok_or(VerifyError::RegOutOfBounds {
                 func: func_id,
                 pc,
-                reg: *a,
+                reg: Reg(*a),
             })?;
             check_expected(func_id, pc, *b, t(*b), required)?;
             check_expected(func_id, pc, *dst, t(*dst), required)?;
@@ -4953,7 +4957,7 @@ fn validate_instr_types(
                 let place = ExceptionPlace::Aggregate {
                     func: func_id,
                     pc,
-                    reg,
+                    reg: Reg(reg),
                 };
                 match t(reg) {
                     Some(ValueType::Exn) => return Err(VerifyError::ExceptionReference { place }),
@@ -5127,7 +5131,7 @@ fn compute_block_writes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::Asm;
+    use crate::asm::{Asm, Reg};
     use crate::asm::{BuildError, FunctionSig, ProgramBuilder};
     use crate::opcode::Opcode;
     use crate::program::{
@@ -5152,7 +5156,7 @@ mod tests {
         let finish = pb.argument(entry, 0).unwrap();
         let mut a = pb.function_asm(entry).unwrap();
         let sum = a.alloc_register(ValueType::F32);
-        a.f32_add(sum, finish, finish).ret(0, &[]);
+        a.f32_add(sum, finish, finish).ret(Reg(0), &[]);
         pb.define_function(entry, a).unwrap();
         pb
     }
@@ -5166,7 +5170,7 @@ mod tests {
         assert_eq!(rejected.program, program);
         assert!(matches!(
             rejected.error,
-            VerifyError::RegisterTypeMismatch { reg: 1, .. }
+            VerifyError::RegisterTypeMismatch { reg: Reg(1), .. }
         ));
         assert_eq!(rejected.to_string(), rendered);
         assert_eq!(
@@ -5273,13 +5277,13 @@ mod tests {
                 ValueType::Agg,
                 ValueType::Bool,
             ]);
-            asm.const_bool(1, true);
-            asm.const_i64(2, 7);
-            asm.tuple_new(3, &[2]);
-            asm.tuple_new(4, &[1]);
-            asm.select(3, 1, 4, 4);
-            asm.tuple_get(5, 3, 0);
-            asm.ret(0, &[5]);
+            asm.const_bool(Reg(1), true);
+            asm.const_i64(Reg(2), 7);
+            asm.tuple_new(Reg(3), &[Reg(2)]);
+            asm.tuple_new(Reg(4), &[Reg(1)]);
+            asm.select(Reg(3), Reg(1), Reg(4), Reg(4));
+            asm.tuple_get(Reg(5), Reg(3), 0);
+            asm.ret(Reg(0), &[Reg(5)]);
             let mut builder = ProgramBuilder::new();
             builder
                 .push_function_checked(
@@ -5320,24 +5324,24 @@ mod tests {
             let left = asm.label();
             let right = asm.label();
             let join = asm.label();
-            asm.br(1, left, right);
+            asm.br(Reg(1), left, right);
             asm.place(left).unwrap();
-            asm.const_i64(2, 1);
+            asm.const_i64(Reg(2), 1);
             asm.jmp(join);
             asm.place(right).unwrap();
             match right_type {
                 Some(ValueType::I64) => {
-                    asm.const_i64(2, 2);
+                    asm.const_i64(Reg(2), 2);
                 }
                 Some(ValueType::Bool) => {
-                    asm.const_bool(2, true);
+                    asm.const_bool(Reg(2), true);
                 }
                 _ => {}
             }
             asm.jmp(join);
             asm.place(join).unwrap();
-            asm.i64_add(3, 2, 2);
-            asm.ret(0, &[3]);
+            asm.i64_add(Reg(3), Reg(2), Reg(2));
+            asm.ret(Reg(0), &[Reg(3)]);
 
             let mut builder = ProgramBuilder::new();
             builder
@@ -5358,7 +5362,7 @@ mod tests {
                 Some(ValueType::Bool) => assert!(matches!(
                     result,
                     Err(VerifyError::RegisterTypeMismatch {
-                        reg: 2,
+                        reg: Reg(2),
                         required: ValueType::Bool,
                         declared: ValueType::I64,
                         ..
@@ -5366,7 +5370,7 @@ mod tests {
                 )),
                 _ => assert!(matches!(
                     result,
-                    Err(VerifyError::UninitializedRead { reg: 2, .. })
+                    Err(VerifyError::UninitializedRead { reg: Reg(2), .. })
                 )),
             }
         }
@@ -5566,7 +5570,7 @@ mod tests {
             VerifyError::RegisterTypeMismatch {
                 func: 0,
                 pc: Some(0),
-                reg: 3,
+                reg: Reg(3),
                 declared: ValueType::I64,
                 required: ValueType::Closure,
             }
@@ -5822,9 +5826,9 @@ mod tests {
 
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        a.const_i64(1, 1);
-        a.const_i64(2, 2);
-        a.ret(0, &[1, 2]);
+        a.const_i64(Reg(1), 1);
+        a.const_i64(Reg(2), 2);
+        a.ret(Reg(0), &[Reg(1), Reg(2)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -5852,7 +5856,7 @@ mod tests {
 
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        a.ret(0, &[1]);
+        a.ret(Reg(0), &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -5904,16 +5908,16 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l1 = a.label();
         let l2 = a.label();
-        a.const_bool(1, true);
-        a.br(1, l1, l2);
+        a.const_bool(Reg(1), true);
+        a.br(Reg(1), l1, l2);
 
         a.place(l1).unwrap();
         let pc_l1_last = a.pc();
-        a.const_i64(2, 1);
+        a.const_i64(Reg(2), 1);
         // No terminator here; block falls through to l2.
 
         a.place(l2).unwrap();
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -5951,23 +5955,23 @@ mod tests {
 
         // Ensure regs used in unreachable blocks still have stable concrete types for the whole
         // function (the verifier still typechecks and lowers unreachable bytecode).
-        a.const_bool(1, true);
-        a.const_i64(2, 0);
+        a.const_bool(Reg(1), true);
+        a.const_i64(Reg(2), 0);
         a.jmp(l_ret);
 
         a.place(l_unreach_entry).unwrap();
-        a.br(1, l_bad, l_next);
+        a.br(Reg(1), l_bad, l_next);
 
         a.place(l_bad).unwrap();
         let pc_bad_last = a.pc();
-        a.const_i64(2, 1);
+        a.const_i64(Reg(2), 1);
         // Missing terminator: falls through to l_next.
 
         a.place(l_next).unwrap();
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
 
         a.place(l_ret).unwrap();
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6056,7 +6060,7 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::Unit]);
         let l0 = a.label();
         a.place(l0).unwrap();
-        a.br(1, l0, l0);
+        a.br(Reg(1), l0, l0);
         let bytecode = a.finish().unwrap();
         let p = Program::new(
             vec![],
@@ -6076,7 +6080,7 @@ mod tests {
             Err(VerifyError::UninitializedRead {
                 func: 0,
                 pc: 0,
-                reg: 1
+                reg: Reg(1)
             })
         );
     }
@@ -6087,7 +6091,7 @@ mod tests {
         let mut a = Asm::new();
         let l_good = a.label();
         a.place(l_good).unwrap();
-        a.const_unit(1);
+        a.const_unit(Reg(1));
         // Insert an intentionally invalid jump target: byte offset 1 is not an instruction boundary.
         // We build the bytes manually here to keep the test focused on boundary rejection.
         let mut bytecode = a.finish().unwrap();
@@ -6120,7 +6124,7 @@ mod tests {
     fn verifier_rejects_out_of_range_jump_target() {
         // const_unit r1; jmp 255 (target is out of range)
         let mut a = Asm::new();
-        a.const_unit(1);
+        a.const_unit(Reg(1));
 
         let mut bytecode = a.finish().unwrap();
         bytecode.extend_from_slice(&[0x41, 0xFF, 0x01]); // jmp 255 (uleb128)
@@ -6158,7 +6162,7 @@ mod tests {
             {
                 let mut callee = Asm::new();
                 callee.set_register_types(vec![ValueType::Unit]);
-                callee.ret(0, &[]);
+                callee.ret(Reg(0), &[]);
                 callee
             },
             FunctionSig {
@@ -6173,8 +6177,8 @@ mod tests {
                 let mut caller = Asm::new();
                 caller.set_register_types(vec![ValueType::Unit, ValueType::Unit]);
                 // eff_in = r1 (invalid), eff_out = r0
-                caller.call(0, FuncId(0), 1, &[], &[]);
-                caller.ret(0, &[]);
+                caller.call(Reg(0), FuncId(0), Reg(1), &[], &[]);
+                caller.ret(Reg(0), &[]);
                 caller
             },
             FunctionSig {
@@ -6190,7 +6194,7 @@ mod tests {
             Err(VerifyError::EffectInNotR0 {
                 func: 1,
                 pc: 0,
-                reg: 1
+                reg: Reg(1)
             })
         );
     }
@@ -6205,8 +6209,8 @@ mod tests {
             // call r0, func=1, r0, argc=0, retc=0; ret r0
             bytecode: {
                 let mut a = Asm::new();
-                a.call(0, FuncId(1), 0, &[], &[]);
-                a.ret(0, &[]);
+                a.call(Reg(0), FuncId(1), Reg(0), &[], &[]);
+                a.ret(Reg(0), &[]);
                 a.finish().unwrap()
             },
             spans: vec![],
@@ -6240,8 +6244,8 @@ mod tests {
             bytecode: {
                 let mut a = Asm::new();
                 a.set_register_types(vec![ValueType::Unit, ValueType::Unit]);
-                a.call(0, FuncId(99), 0, &[], &[]);
-                a.ret(0, &[]);
+                a.call(Reg(0), FuncId(99), Reg(0), &[], &[]);
+                a.ret(Reg(0), &[]);
                 a.finish().unwrap()
             },
             spans: vec![],
@@ -6279,10 +6283,10 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        a.const_bool(1, true);
-        a.const_i64(2, 1);
-        a.i64_add(3, 1, 2);
-        a.ret(0, &[3]);
+        a.const_bool(Reg(1), true);
+        a.const_i64(Reg(2), 1);
+        a.i64_add(Reg(3), Reg(1), Reg(2));
+        a.ret(Reg(0), &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6316,9 +6320,9 @@ mod tests {
 
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
-        a.const_i64(1, 7);
-        a.array_new(2, elem, &[1]);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(1), 7);
+        a.array_new(Reg(2), elem, &[Reg(1)]);
+        a.ret(Reg(0), &[Reg(2)]);
 
         pb.push_function_checked(
             a,
@@ -6354,9 +6358,9 @@ mod tests {
 
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
-        a.const_i64(1, 1);
-        a.struct_new(2, st, &[1]);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(1), 1);
+        a.struct_new(Reg(2), st, &[Reg(1)]);
+        a.ret(Reg(0), &[Reg(2)]);
 
         pb.push_function_checked(
             a,
@@ -6384,12 +6388,12 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        a.const_i64(1, 3);
-        a.const_i64(2, 4);
-        a.tuple_new(3, &[1, 2]);
-        a.tuple_get(4, 3, 0);
-        a.i64_add(5, 4, 2);
-        a.ret(0, &[5]);
+        a.const_i64(Reg(1), 3);
+        a.const_i64(Reg(2), 4);
+        a.tuple_new(Reg(3), &[Reg(1), Reg(2)]);
+        a.tuple_get(Reg(4), Reg(3), 0);
+        a.i64_add(Reg(5), Reg(4), Reg(2));
+        a.ret(Reg(0), &[Reg(5)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6414,7 +6418,9 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        a.tuple_get(2, 1, 0).i64_add(3, 2, 2).ret(0, &[3]);
+        a.tuple_get(Reg(2), Reg(1), 0)
+            .i64_add(Reg(3), Reg(2), Reg(2))
+            .ret(Reg(0), &[Reg(3)]);
         pb.push_function_checked(
             a,
             crate::asm::FunctionAbi {
@@ -6448,7 +6454,7 @@ mod tests {
             let required = tuple_contract(&mut pb, &expected);
             let mut callee = Asm::new();
             callee.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-            callee.ret(0, &[]);
+            callee.ret(Reg(0), &[]);
             let target = pb
                 .push_function_checked(
                     callee,
@@ -6461,7 +6467,9 @@ mod tests {
             let actual = actual.as_ref().map(|kinds| tuple_contract(&mut pb, kinds));
             let mut caller = Asm::new();
             caller.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-            caller.call(0, target, 0, &[1], &[]).ret(0, &[]);
+            caller
+                .call(Reg(0), target, Reg(0), &[Reg(1)], &[])
+                .ret(Reg(0), &[]);
             let arg = actual.map_or(
                 crate::asm::ContractRef::Kind(ValueType::Agg),
                 crate::asm::ContractRef::Id,
@@ -6500,7 +6508,7 @@ mod tests {
         let tuple = tuple_contract(&mut pb, &[]);
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
         pb.push_function_checked(
             a,
             crate::asm::FunctionAbi {
@@ -6532,10 +6540,10 @@ mod tests {
             ValueType::Agg,
             ValueType::I64,
         ]);
-        a.const_i64(1, 3);
-        a.tuple_new(2, &[1]);
-        a.tuple_get(3, 2, 9);
-        a.ret(0, &[3]);
+        a.const_i64(Reg(1), 3);
+        a.tuple_new(Reg(2), &[Reg(1)]);
+        a.tuple_get(Reg(3), Reg(2), 9);
+        a.ret(Reg(0), &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6571,16 +6579,16 @@ mod tests {
         ]);
         let l_then = a.label();
         let l_else = a.label();
-        a.const_bool(1, true);
-        a.const_i64(2, 1);
-        a.struct_new(3, st, &[1, 2]);
-        a.struct_get(4, 3, 0);
-        a.br(4, l_then, l_else);
+        a.const_bool(Reg(1), true);
+        a.const_i64(Reg(2), 1);
+        a.struct_new(Reg(3), st, &[Reg(1), Reg(2)]);
+        a.struct_get(Reg(4), Reg(3), 0);
+        a.br(Reg(4), l_then, l_else);
         a.place(l_then).unwrap();
-        a.ret(0, &[2]);
+        a.ret(Reg(0), &[Reg(2)]);
         a.place(l_else).unwrap();
-        a.const_i64(5, 2);
-        a.ret(0, &[5]);
+        a.const_i64(Reg(5), 2);
+        a.ret(Reg(0), &[Reg(5)]);
 
         pb.push_function_checked(
             a,
@@ -6608,10 +6616,10 @@ mod tests {
             ValueType::Agg,
             ValueType::I64,
         ]);
-        a.const_i64(1, 0);
-        a.struct_new(2, st, &[1]);
-        a.struct_get(3, 2, 7);
-        a.ret(0, &[3]);
+        a.const_i64(Reg(1), 0);
+        a.struct_new(Reg(2), st, &[Reg(1)]);
+        a.struct_get(Reg(3), Reg(2), 7);
+        a.ret(Reg(0), &[Reg(3)]);
 
         pb.push_function_checked(
             a,
@@ -6639,10 +6647,10 @@ mod tests {
             ValueType::Agg,
             ValueType::I64,
         ]);
-        a.const_i64(1, 3);
-        a.tuple_new(2, &[1]);
-        a.struct_get(3, 2, 0);
-        a.ret(0, &[3]);
+        a.const_i64(Reg(1), 3);
+        a.tuple_new(Reg(2), &[Reg(1)]);
+        a.struct_get(Reg(3), Reg(2), 0);
+        a.ret(Reg(0), &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6674,11 +6682,11 @@ mod tests {
                 ValueType::I64,
             ]);
             if initialized {
-                asm.const_bool(1, true);
+                asm.const_bool(Reg(1), true);
             }
-            asm.const_i64(2, 7);
-            asm.i64_add(3, 1, 2);
-            asm.ret(0, &[3]);
+            asm.const_i64(Reg(2), 7);
+            asm.i64_add(Reg(3), Reg(1), Reg(2));
+            asm.ret(Reg(0), &[Reg(3)]);
             let mut builder = ProgramBuilder::new();
             builder
                 .push_function_checked(
@@ -6725,8 +6733,8 @@ mod tests {
             {
                 let mut a = Asm::new();
                 a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-                a.const_i64(1, 5);
-                a.ret(0, &[1]);
+                a.const_i64(Reg(1), 5);
+                a.ret(Reg(0), &[Reg(1)]);
                 a
             },
             FunctionSig {
@@ -6750,19 +6758,19 @@ mod tests {
                 let l_ret = a.label();
                 let l_unreach = a.label();
 
-                a.const_i64(1, 1); // dead store
-                a.const_i64(2, 0);
-                a.const_i64(4, 0);
-                a.mov(2, 2); // redundant
-                a.call(0, FuncId(0), 0, &[], &[3]); // unused call ret r3
+                a.const_i64(Reg(1), 1); // dead store
+                a.const_i64(Reg(2), 0);
+                a.const_i64(Reg(4), 0);
+                a.mov(Reg(2), Reg(2)); // redundant
+                a.call(Reg(0), FuncId(0), Reg(0), &[], &[Reg(3)]); // unused call ret r3
                 a.jmp(l_ret);
 
                 a.place(l_unreach).unwrap();
-                a.const_i64(4, 99);
-                a.ret(0, &[]);
+                a.const_i64(Reg(4), 99);
+                a.ret(Reg(0), &[]);
 
                 a.place(l_ret).unwrap();
-                a.ret(0, &[]);
+                a.ret(Reg(0), &[]);
                 a
             },
             FunctionSig {
@@ -6790,7 +6798,7 @@ mod tests {
             l,
             VerifyLint::DeadStore {
                 func: 1,
-                reg: 1,
+                reg: Reg(1),
                 ..
             }
         )));
@@ -6798,8 +6806,8 @@ mod tests {
             l,
             VerifyLint::RedundantMove {
                 func: 1,
-                dst: 2,
-                src: 2,
+                dst: Reg(2),
+                src: Reg(2),
                 ..
             }
         )));
@@ -6807,7 +6815,7 @@ mod tests {
             l,
             VerifyLint::UnusedCallReturn {
                 func: 1,
-                reg: 3,
+                reg: Reg(3),
                 ..
             }
         )));

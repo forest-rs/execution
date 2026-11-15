@@ -4,7 +4,7 @@
 //! Source attribution is explicit, validated and isolated to its program instance.
 
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     program::{ConstEntry, ValueType},
     source::{
         SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping,
@@ -34,7 +34,7 @@ fn source_binding_is_exact_and_queryable_without_a_tracy_client() {
         func: function,
         pc: body.pc(),
     };
-    body.ret(0, &[value]);
+    body.ret(Reg(0), &[value]);
     builder.define_function(function, body).unwrap();
     let program = builder.build_verified().unwrap();
     let map = SourceMap::new(

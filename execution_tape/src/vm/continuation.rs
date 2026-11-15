@@ -144,7 +144,7 @@ impl Continuation<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::{FunctionSig, ProgramBuilder};
+    use crate::asm::{FunctionSig, ProgramBuilder, Reg};
     use crate::host::SigHash;
 
     struct NoHost;
@@ -177,7 +177,7 @@ mod tests {
         // One unreachable allocation makes premature compaction observable.
         body.tuple_new(tuple, &[]);
         body.tuple_new(tuple, &[text_reg]);
-        body.ret(0, &[tuple]);
+        body.ret(Reg(0), &[tuple]);
         builder.define_function(function, body).unwrap();
         Arc::new(builder.build_verified().unwrap())
     }
@@ -305,7 +305,7 @@ mod tests {
             .unwrap();
         let mut body = builder.function_asm(entry).unwrap();
         let [answer] = builder.emit_call(&mut body, pause, &[]).unwrap();
-        body.ret(0, &[answer]);
+        body.ret(Reg(0), &[answer]);
         builder.define_function(entry, body).unwrap();
 
         let mut vm = Vm::new(NoHost, Limits::default());
@@ -441,7 +441,7 @@ mod tests {
     }
 
     fn checked_identity(kind: ValueType) -> Arc<VerifiedProgram> {
-        use crate::asm::FunctionAbi;
+        use crate::asm::{FunctionAbi, Reg};
         let mut builder = ProgramBuilder::new();
         let member = builder.contract(Contract::Kind(kind)).unwrap();
         let tuple = builder.contract(Contract::Tuple(&[Some(member)])).unwrap();
@@ -452,7 +452,7 @@ mod tests {
             })
             .unwrap();
         let mut body = builder.function_asm(function).unwrap();
-        body.ret(0, &[1]);
+        body.ret(Reg(0), &[Reg(1)]);
         builder.define_function(function, body).unwrap();
         Arc::new(builder.build_verified().unwrap())
     }
@@ -525,7 +525,7 @@ mod tests {
             .unwrap();
         let mut body = builder.function_asm(entry).unwrap();
         let [] = builder.emit_call(&mut body, pause, &[]).unwrap();
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         builder.define_function(entry, body).unwrap();
         let program = Arc::new(builder.build_verified().unwrap());
         let mut vm = Vm::new(

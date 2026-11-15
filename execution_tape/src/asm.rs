@@ -10,7 +10,8 @@
 //! `docs/v1_spec.md`.
 
 mod calls;
-pub use calls::{CallArg, CallArgs, CallBuildError, CallTarget, Reg};
+pub use crate::program::Reg;
+pub use calls::{CallArg, CallArgs, CallBuildError, CallTarget};
 mod closures;
 pub use closures::{ClosureBuildError, ClosureLayout};
 mod regions;
@@ -52,7 +53,7 @@ pub struct Label(u32);
 impl Label {
     /// Supplies arguments for a typed block target. Values are transferred simultaneously.
     #[must_use]
-    pub fn with_args(self, args: &[u32]) -> BlockTarget<'_> {
+    pub fn with_args(self, args: &[Reg]) -> BlockTarget<'_> {
         BlockTarget { label: self, args }
     }
 }
@@ -63,7 +64,7 @@ impl Label {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BlockTarget<'a> {
     label: Label,
-    args: &'a [u32],
+    args: &'a [Reg],
 }
 
 impl From<Label> for BlockTarget<'_> {
@@ -348,7 +349,7 @@ impl FunctionSig {
     /// list unchanged.
     ///
     /// ```
-    /// # use execution_tape::asm::{FunctionSig, ProgramBuilder};
+    /// # use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
     /// # use execution_tape::program::ValueType;
     /// let call_args = [ValueType::I64];
     /// let call_rets = [ValueType::Bool];
@@ -446,7 +447,7 @@ impl From<&Self> for FunctionAbi {
 ///
 /// use alloc::vec;
 ///
-/// use execution_tape::asm::{FunctionSig, ProgramBuilder};
+/// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
 /// use execution_tape::program::ValueType;
 ///
 /// let mut program = ProgramBuilder::new();
@@ -458,7 +459,7 @@ impl From<&Self> for FunctionAbi {
 /// let argument = program.argument(add_one, 0)?;
 /// let one = body.alloc_register(ValueType::I64);
 /// let answer = body.alloc_register(ValueType::I64);
-/// body.const_i64(one, 1).i64_add(answer, argument, one).ret(0, &[answer]);
+/// body.const_i64(one, 1).i64_add(answer, argument, one).ret(Reg(0), &[answer]);
 /// program.define_function(add_one, body)?;
 /// let _program = program.build_verified()?;
 /// # Ok::<(), execution_tape::asm::BuildError>(())
@@ -1092,7 +1093,7 @@ pub struct Asm {
     next_label: u32,
     labels: Vec<Option<u32>>,
     label_names: Vec<Option<String>>,
-    block_params: Vec<Option<Vec<u32>>>,
+    block_params: Vec<Option<Vec<Reg>>>,
     fixups: Vec<Fixup>,
     span_marks: Vec<(u32, SpanId)>,
     sources: sources::Sources,
@@ -1150,14 +1151,14 @@ impl Asm {
     ///
     /// Panics if the next register ID cannot be represented by `u32`.
     #[inline]
-    pub fn alloc_register(&mut self, kind: ValueType) -> u32 {
+    pub fn alloc_register(&mut self, kind: ValueType) -> Reg {
         if self.register_types.is_empty() {
             self.register_types.push(ValueType::Unit);
         }
         let register = u32::try_from(self.register_types.len())
             .expect("register count exceeds the u32 address space");
         self.register_types.push(kind);
-        register
+        Reg(register)
     }
 
     /// Allocates a new label.
@@ -1177,7 +1178,7 @@ impl Asm {
     /// aggregate shape facts are preserved only when all incoming values agree. Parameters may
     /// not include the effect token `r0`. The entry block uses the function signature instead.
     #[must_use]
-    pub fn block(&mut self, params: &[u32]) -> Label {
+    pub fn block(&mut self, params: &[Reg]) -> Label {
         let label = self.label();
         self.block_params[label.0 as usize] = Some(params.into());
         label
@@ -1385,7 +1386,7 @@ impl Asm {
     }
 
     /// Encodes `mov dst, src`.
-    pub fn mov(&mut self, dst: u32, src: u32) -> &mut Self {
+    pub fn mov(&mut self, dst: Reg, src: Reg) -> &mut Self {
         self.opcode(Opcode::Mov);
         self.reg(dst);
         self.reg(src);
@@ -1403,7 +1404,7 @@ impl Asm {
     ///
     /// Prefer [`ProgramBuilder::emit_throw`], which checks the payload against the tag's
     /// declaration before emitting.
-    pub fn throw(&mut self, eff_in: u32, tag: TagId, payload: &[u32]) -> &mut Self {
+    pub fn throw(&mut self, eff_in: Reg, tag: TagId, payload: &[Reg]) -> &mut Self {
         self.opcode(Opcode::Throw);
         self.reg(eff_in);
         self.uleb(tag.0);
@@ -1418,7 +1419,7 @@ impl Asm {
     ///
     /// The exception keeps its original tag, payload and throw site. `exn` must be an initialized
     /// `Exn` register, as bound by a [`Catch::TagRef`] or [`Catch::AllRef`] handler.
-    pub fn throw_ref(&mut self, eff_in: u32, exn: u32) -> &mut Self {
+    pub fn throw_ref(&mut self, eff_in: Reg, exn: Reg) -> &mut Self {
         self.opcode(Opcode::ThrowRef);
         self.reg(eff_in);
         self.reg(exn);
@@ -1431,7 +1432,7 @@ impl Asm {
     /// checks its callee; a closure's environment is bound as its first argument. The
     /// continuation's type is `call_sig`: [`Self::resume`] supplies its arguments and receives
     /// its results.
-    pub fn cont_new(&mut self, dst: u32, call_sig: CallSigId, func: u32) -> &mut Self {
+    pub fn cont_new(&mut self, dst: Reg, call_sig: CallSigId, func: Reg) -> &mut Self {
         self.opcode(Opcode::ContNew);
         self.reg(dst);
         self.uleb(call_sig.0);
@@ -1446,11 +1447,11 @@ impl Asm {
     /// the same results.
     pub fn cont_bind(
         &mut self,
-        dst: u32,
+        dst: Reg,
         from_sig: CallSigId,
         to_sig: CallSigId,
-        cont: u32,
-        args: &[u32],
+        cont: Reg,
+        args: &[Reg],
     ) -> &mut Self {
         self.opcode(Opcode::ContBind);
         self.reg(dst);
@@ -1467,7 +1468,7 @@ impl Asm {
     /// Its activations never run again, so their protected regions do not either; raise into
     /// it with [`Self::resume_throw`] instead to unwind through them. Continuations its
     /// registers refer to are not released with it: drop each abandoned one.
-    pub fn cont_drop(&mut self, cont: u32) -> &mut Self {
+    pub fn cont_drop(&mut self, cont: Reg) -> &mut Self {
         self.opcode(Opcode::ContDrop);
         self.reg(cont);
         self
@@ -1481,12 +1482,12 @@ impl Asm {
     /// it ([`Catch::On`]); exceptions escaping it reach their catch clauses.
     pub fn resume(
         &mut self,
-        eff_out: u32,
+        eff_out: Reg,
         call_sig: CallSigId,
-        cont: u32,
-        eff_in: u32,
-        args: &[u32],
-        rets: &[u32],
+        cont: Reg,
+        eff_in: Reg,
+        args: &[Reg],
+        rets: &[Reg],
     ) -> &mut Self {
         self.opcode(Opcode::Resume);
         self.reg(eff_out);
@@ -1510,13 +1511,13 @@ impl Asm {
     )]
     pub fn resume_throw(
         &mut self,
-        eff_out: u32,
+        eff_out: Reg,
         call_sig: CallSigId,
-        cont: u32,
-        eff_in: u32,
+        cont: Reg,
+        eff_in: Reg,
         tag: TagId,
-        payload: &[u32],
-        rets: &[u32],
+        payload: &[Reg],
+        rets: &[Reg],
     ) -> &mut Self {
         self.opcode(Opcode::ResumeThrow);
         self.reg(eff_out);
@@ -1536,11 +1537,11 @@ impl Asm {
     /// continuation continues here, with `rets` receiving the tag's results.
     pub fn suspend(
         &mut self,
-        eff_out: u32,
+        eff_out: Reg,
         tag: TagId,
-        eff_in: u32,
-        payload: &[u32],
-        rets: &[u32],
+        eff_in: Reg,
+        payload: &[Reg],
+        rets: &[Reg],
     ) -> &mut Self {
         self.opcode(Opcode::Suspend);
         self.reg(eff_out);
@@ -1551,7 +1552,7 @@ impl Asm {
         self
     }
 
-    fn reg_list(&mut self, regs: &[u32]) {
+    fn reg_list(&mut self, regs: &[Reg]) {
         self.uleb(u32::try_from(regs.len()).unwrap_or(u32::MAX));
         for &reg in regs {
             self.reg(reg);
@@ -1559,14 +1560,14 @@ impl Asm {
     }
 
     /// Encodes `const_unit dst`.
-    pub fn const_unit(&mut self, dst: u32) -> &mut Self {
+    pub fn const_unit(&mut self, dst: Reg) -> &mut Self {
         self.opcode(Opcode::ConstUnit);
         self.reg(dst);
         self
     }
 
     /// Encodes `const_bool dst, imm_u8`.
-    pub fn const_bool(&mut self, dst: u32, imm: bool) -> &mut Self {
+    pub fn const_bool(&mut self, dst: Reg, imm: bool) -> &mut Self {
         self.opcode(Opcode::ConstBool);
         self.reg(dst);
         self.bytes.push(u8::from(imm));
@@ -1574,7 +1575,7 @@ impl Asm {
     }
 
     /// Encodes `const_i64 dst, imm_sleb`.
-    pub fn const_i64(&mut self, dst: u32, imm: i64) -> &mut Self {
+    pub fn const_i64(&mut self, dst: Reg, imm: i64) -> &mut Self {
         self.opcode(Opcode::ConstI64);
         self.reg(dst);
         write_sleb128_i64(&mut self.bytes, imm);
@@ -1582,7 +1583,7 @@ impl Asm {
     }
 
     /// Encodes `const_u64 dst, imm_uleb`.
-    pub fn const_u64(&mut self, dst: u32, imm: u64) -> &mut Self {
+    pub fn const_u64(&mut self, dst: Reg, imm: u64) -> &mut Self {
         self.opcode(Opcode::ConstU64);
         self.reg(dst);
         write_uleb128_u64(&mut self.bytes, imm);
@@ -1590,7 +1591,7 @@ impl Asm {
     }
 
     /// Encodes `const_f64 dst, bits_u64le`.
-    pub fn const_f64_bits(&mut self, dst: u32, bits: u64) -> &mut Self {
+    pub fn const_f64_bits(&mut self, dst: Reg, bits: u64) -> &mut Self {
         self.opcode(Opcode::ConstF64);
         self.reg(dst);
         self.bytes.extend_from_slice(&bits.to_le_bytes());
@@ -1598,12 +1599,12 @@ impl Asm {
     }
 
     /// Encodes `const_f64 dst, bits_u64le` from an `f64` value.
-    pub fn const_f64(&mut self, dst: u32, v: f64) -> &mut Self {
+    pub fn const_f64(&mut self, dst: Reg, v: f64) -> &mut Self {
         self.const_f64_bits(dst, v.to_bits())
     }
 
     /// Encodes `const_decimal dst, mantissa_sleb, scale_u8`.
-    pub fn const_decimal(&mut self, dst: u32, mantissa: i128, scale: u8) -> &mut Self {
+    pub fn const_decimal(&mut self, dst: Reg, mantissa: i128, scale: u8) -> &mut Self {
         self.opcode(Opcode::ConstDecimal);
         self.reg(dst);
         write_sleb128_i128(&mut self.bytes, mantissa);
@@ -1612,12 +1613,12 @@ impl Asm {
     }
 
     /// Encodes `const_decimal ...` from a [`Decimal`].
-    pub fn const_decimal_value(&mut self, dst: u32, v: Decimal) -> &mut Self {
+    pub fn const_decimal_value(&mut self, dst: Reg, v: Decimal) -> &mut Self {
         self.const_decimal(dst, v.mantissa(), v.scale())
     }
 
     /// Encodes `const_pool dst, idx`.
-    pub fn const_pool(&mut self, dst: u32, idx: ConstId) -> &mut Self {
+    pub fn const_pool(&mut self, dst: Reg, idx: ConstId) -> &mut Self {
         self.opcode(Opcode::ConstPool);
         self.reg(dst);
         self.uleb(idx.0);
@@ -1625,7 +1626,7 @@ impl Asm {
     }
 
     /// Encodes `const.func dst, func_id`.
-    pub fn const_func(&mut self, dst: u32, func_id: FuncId) -> &mut Self {
+    pub fn const_func(&mut self, dst: Reg, func_id: FuncId) -> &mut Self {
         self.opcode(Opcode::ConstFunc);
         self.reg(dst);
         self.uleb(func_id.0);
@@ -1633,7 +1634,7 @@ impl Asm {
     }
 
     /// Encodes `dec_add dst, a, b` (exact, at the larger of the operand scales).
-    pub fn dec_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn dec_add(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::DecAdd);
         self.reg(dst);
         self.reg(a);
@@ -1642,7 +1643,7 @@ impl Asm {
     }
 
     /// Encodes `dec_sub dst, a, b` (exact, at the larger of the operand scales).
-    pub fn dec_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn dec_sub(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::DecSub);
         self.reg(dst);
         self.reg(a);
@@ -1651,7 +1652,7 @@ impl Asm {
     }
 
     /// Encodes `dec_mul dst, a, b`.
-    pub fn dec_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn dec_mul(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::DecMul);
         self.reg(dst);
         self.reg(a);
@@ -1665,10 +1666,10 @@ impl Asm {
     /// bit step, up to 256.
     pub fn dec_div(
         &mut self,
-        dst: u32,
-        a: u32,
-        b: u32,
-        scale: u32,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        scale: Reg,
         rounding: DecimalRounding,
     ) -> &mut Self {
         self.opcode(Opcode::DecDiv);
@@ -1685,9 +1686,9 @@ impl Asm {
     /// or overflow).
     pub fn dec_rescale(
         &mut self,
-        dst: u32,
-        a: u32,
-        scale: u32,
+        dst: Reg,
+        a: Reg,
+        scale: Reg,
         rounding: DecimalRounding,
     ) -> &mut Self {
         self.opcode(Opcode::DecRescale);
@@ -1699,7 +1700,7 @@ impl Asm {
     }
 
     /// Encodes `dec_scale dst, a` (the scale of `a` as a `u64`).
-    pub fn dec_scale(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn dec_scale(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::DecScale);
         self.reg(dst);
         self.reg(a);
@@ -1708,7 +1709,7 @@ impl Asm {
 
     /// Encodes `dec_cmp dst, a, b` (`-1`, `0` or `1` as an `i64`, comparing numeric values
     /// regardless of scale).
-    pub fn dec_cmp(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn dec_cmp(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::DecCmp);
         self.reg(dst);
         self.reg(a);
@@ -1717,7 +1718,7 @@ impl Asm {
     }
 
     /// Encodes `f64_add dst, a, b`.
-    pub fn f64_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_add(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Add);
         self.reg(dst);
         self.reg(a);
@@ -1726,7 +1727,7 @@ impl Asm {
     }
 
     /// Encodes `f64_sub dst, a, b`.
-    pub fn f64_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_sub(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Sub);
         self.reg(dst);
         self.reg(a);
@@ -1735,7 +1736,7 @@ impl Asm {
     }
 
     /// Encodes `f64_mul dst, a, b`.
-    pub fn f64_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_mul(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Mul);
         self.reg(dst);
         self.reg(a);
@@ -1744,7 +1745,7 @@ impl Asm {
     }
 
     /// Encodes `f64_div dst, a, b`.
-    pub fn f64_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_div(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Div);
         self.reg(dst);
         self.reg(a);
@@ -1753,7 +1754,7 @@ impl Asm {
     }
 
     /// Encodes `f64_neg dst, a`.
-    pub fn f64_neg(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_neg(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Neg);
         self.reg(dst);
         self.reg(a);
@@ -1761,7 +1762,7 @@ impl Asm {
     }
 
     /// Encodes `f64_abs dst, a`.
-    pub fn f64_abs(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_abs(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Abs);
         self.reg(dst);
         self.reg(a);
@@ -1769,7 +1770,7 @@ impl Asm {
     }
 
     /// Encodes `f64_min dst, a, b` (NaN-propagating).
-    pub fn f64_min(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_min(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Min);
         self.reg(dst);
         self.reg(a);
@@ -1778,7 +1779,7 @@ impl Asm {
     }
 
     /// Encodes `f64_max dst, a, b` (NaN-propagating).
-    pub fn f64_max(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_max(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Max);
         self.reg(dst);
         self.reg(a);
@@ -1787,7 +1788,7 @@ impl Asm {
     }
 
     /// Encodes `f64_min_num dst, a, b` (number-favoring).
-    pub fn f64_min_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_min_num(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64MinNum);
         self.reg(dst);
         self.reg(a);
@@ -1796,7 +1797,7 @@ impl Asm {
     }
 
     /// Encodes `f64_max_num dst, a, b` (number-favoring).
-    pub fn f64_max_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_max_num(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64MaxNum);
         self.reg(dst);
         self.reg(a);
@@ -1805,7 +1806,7 @@ impl Asm {
     }
 
     /// Encodes `f64_rem dst, a, b`.
-    pub fn f64_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_rem(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Rem);
         self.reg(dst);
         self.reg(a);
@@ -1814,7 +1815,7 @@ impl Asm {
     }
 
     /// Encodes `f64_to_bits dst, a`.
-    pub fn f64_to_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_bits(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToBits);
         self.reg(dst);
         self.reg(a);
@@ -1822,7 +1823,7 @@ impl Asm {
     }
 
     /// Encodes `f64_from_bits dst, a`.
-    pub fn f64_from_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_from_bits(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64FromBits);
         self.reg(dst);
         self.reg(a);
@@ -1830,7 +1831,7 @@ impl Asm {
     }
 
     /// Encodes `f64_floor dst, a` (round toward negative infinity).
-    pub fn f64_floor(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_floor(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Floor);
         self.reg(dst);
         self.reg(a);
@@ -1838,7 +1839,7 @@ impl Asm {
     }
 
     /// Encodes `f64_ceil dst, a` (round toward positive infinity).
-    pub fn f64_ceil(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_ceil(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Ceil);
         self.reg(dst);
         self.reg(a);
@@ -1846,7 +1847,7 @@ impl Asm {
     }
 
     /// Encodes `f64_trunc dst, a` (round toward zero).
-    pub fn f64_trunc(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_trunc(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Trunc);
         self.reg(dst);
         self.reg(a);
@@ -1854,7 +1855,7 @@ impl Asm {
     }
 
     /// Encodes `f64_nearest dst, a` (round to nearest integer, ties to even).
-    pub fn f64_nearest(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_nearest(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Nearest);
         self.reg(dst);
         self.reg(a);
@@ -1862,7 +1863,7 @@ impl Asm {
     }
 
     /// Encodes `f64_sqrt dst, a` (correctly rounded).
-    pub fn f64_sqrt(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_sqrt(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Sqrt);
         self.reg(dst);
         self.reg(a);
@@ -1871,7 +1872,7 @@ impl Asm {
 
     /// Encodes `f64.round_half_away dst, a` (round to nearest integer, ties away from zero; see
     /// [`math::round_half_away_f64`](crate::math::round_half_away_f64)).
-    pub fn f64_round_half_away(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_round_half_away(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64RoundHalfAway);
         self.reg(dst);
         self.reg(a);
@@ -1880,7 +1881,7 @@ impl Asm {
 
     /// Encodes `f64.clamp dst, a, lo, hi`: `dst = a` limited to `lo..=hi`; traps with
     /// `ClampBoundsInvalid` unless `lo <= hi` (see [`math::clamp_f64`](crate::math::clamp_f64)).
-    pub fn f64_clamp(&mut self, dst: u32, a: u32, lo: u32, hi: u32) -> &mut Self {
+    pub fn f64_clamp(&mut self, dst: Reg, a: Reg, lo: Reg, hi: Reg) -> &mut Self {
         self.opcode(Opcode::F64Clamp);
         self.reg(dst);
         self.reg(a);
@@ -1891,7 +1892,7 @@ impl Asm {
 
     /// Encodes `f64.pow dst, a, b`: `dst = a` raised to `b` (see
     /// [`math::pow_f64`](crate::math::pow_f64)).
-    pub fn f64_pow(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_pow(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Pow);
         self.reg(dst);
         self.reg(a);
@@ -1900,7 +1901,7 @@ impl Asm {
     }
 
     /// Encodes `f64.exp dst, a`: `dst = e^a` (see [`math::exp_f64`](crate::math::exp_f64)).
-    pub fn f64_exp(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_exp(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Exp);
         self.reg(dst);
         self.reg(a);
@@ -1909,7 +1910,7 @@ impl Asm {
 
     /// Encodes `f64.ln dst, a`: `dst` = the natural logarithm of `a` (see
     /// [`math::ln_f64`](crate::math::ln_f64)).
-    pub fn f64_ln(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_ln(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Ln);
         self.reg(dst);
         self.reg(a);
@@ -1918,7 +1919,7 @@ impl Asm {
 
     /// Encodes `f64.sin dst, a`: `dst = sin(a)`, `a` in radians (see
     /// [`math::sin_f64`](crate::math::sin_f64)).
-    pub fn f64_sin(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_sin(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Sin);
         self.reg(dst);
         self.reg(a);
@@ -1927,7 +1928,7 @@ impl Asm {
 
     /// Encodes `f64.cos dst, a`: `dst = cos(a)`, `a` in radians (see
     /// [`math::cos_f64`](crate::math::cos_f64)).
-    pub fn f64_cos(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_cos(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64Cos);
         self.reg(dst);
         self.reg(a);
@@ -1936,7 +1937,7 @@ impl Asm {
 
     /// Encodes `f64.atan2 dst, y, x`: `dst` = the angle of the point `(x, y)` in radians (see
     /// [`math::atan2_f64`](crate::math::atan2_f64)). Note the operand order: `y` first.
-    pub fn f64_atan2(&mut self, dst: u32, y: u32, x: u32) -> &mut Self {
+    pub fn f64_atan2(&mut self, dst: Reg, y: Reg, x: Reg) -> &mut Self {
         self.opcode(Opcode::F64Atan2);
         self.reg(dst);
         self.reg(y);
@@ -1945,7 +1946,7 @@ impl Asm {
     }
 
     /// Encodes `f64_copysign dst, a, b` (magnitude of `a`, sign bit of `b`).
-    pub fn f64_copysign(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_copysign(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64CopySign);
         self.reg(dst);
         self.reg(a);
@@ -1954,7 +1955,7 @@ impl Asm {
     }
 
     /// Encodes `i64_add dst, a, b`.
-    pub fn i64_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_add(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Add);
         self.reg(dst);
         self.reg(a);
@@ -1963,7 +1964,7 @@ impl Asm {
     }
 
     /// Encodes `i64_sub dst, a, b`.
-    pub fn i64_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_sub(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Sub);
         self.reg(dst);
         self.reg(a);
@@ -1972,7 +1973,7 @@ impl Asm {
     }
 
     /// Encodes `i64_mul dst, a, b`.
-    pub fn i64_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_mul(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Mul);
         self.reg(dst);
         self.reg(a);
@@ -1982,7 +1983,7 @@ impl Asm {
 
     /// Encodes `i64_add_ovf dst, overflow, a, b`: the wrapped sum in `dst` (`i64`) and whether
     /// the signed result overflowed in `overflow` (`bool`).
-    pub fn i64_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_add_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64AddOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -1993,7 +1994,7 @@ impl Asm {
 
     /// Encodes `i64_sub_ovf dst, overflow, a, b`: the wrapped difference in `dst` (`i64`) and whether
     /// the signed result overflowed in `overflow` (`bool`).
-    pub fn i64_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_sub_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64SubOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2004,7 +2005,7 @@ impl Asm {
 
     /// Encodes `i64_mul_ovf dst, overflow, a, b`: the wrapped product in `dst` (`i64`) and whether
     /// the signed result overflowed in `overflow` (`bool`).
-    pub fn i64_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_mul_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64MulOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2014,7 +2015,7 @@ impl Asm {
     }
 
     /// Encodes `u64_add dst, a, b`.
-    pub fn u64_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_add(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Add);
         self.reg(dst);
         self.reg(a);
@@ -2023,7 +2024,7 @@ impl Asm {
     }
 
     /// Encodes `u64_sub dst, a, b`.
-    pub fn u64_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_sub(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Sub);
         self.reg(dst);
         self.reg(a);
@@ -2032,7 +2033,7 @@ impl Asm {
     }
 
     /// Encodes `u64_mul dst, a, b`.
-    pub fn u64_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_mul(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Mul);
         self.reg(dst);
         self.reg(a);
@@ -2042,7 +2043,7 @@ impl Asm {
 
     /// Encodes `u64_add_ovf dst, overflow, a, b`: the wrapped sum in `dst` (`u64`) and whether
     /// the sum carried out in `overflow` (`bool`).
-    pub fn u64_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_add_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64AddOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2053,7 +2054,7 @@ impl Asm {
 
     /// Encodes `u64_sub_ovf dst, overflow, a, b`: the wrapped difference in `dst` (`u64`) and whether
     /// the difference borrowed in `overflow` (`bool`).
-    pub fn u64_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_sub_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64SubOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2064,7 +2065,7 @@ impl Asm {
 
     /// Encodes `u64_mul_ovf dst, overflow, a, b`: the wrapped product in `dst` (`u64`) and whether
     /// the product overflowed in `overflow` (`bool`).
-    pub fn u64_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_mul_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64MulOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2074,7 +2075,7 @@ impl Asm {
     }
 
     /// Encodes `u64_and dst, a, b`.
-    pub fn u64_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_and(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64And);
         self.reg(dst);
         self.reg(a);
@@ -2083,7 +2084,7 @@ impl Asm {
     }
 
     /// Encodes `u64_or dst, a, b`.
-    pub fn u64_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_or(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Or);
         self.reg(dst);
         self.reg(a);
@@ -2092,7 +2093,7 @@ impl Asm {
     }
 
     /// Encodes `i64_eq dst, a, b`.
-    pub fn i64_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Eq);
         self.reg(dst);
         self.reg(a);
@@ -2101,7 +2102,7 @@ impl Asm {
     }
 
     /// Encodes `i64_lt dst, a, b`.
-    pub fn i64_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_lt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Lt);
         self.reg(dst);
         self.reg(a);
@@ -2110,7 +2111,7 @@ impl Asm {
     }
 
     /// Encodes `u64_eq dst, a, b`.
-    pub fn u64_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Eq);
         self.reg(dst);
         self.reg(a);
@@ -2119,7 +2120,7 @@ impl Asm {
     }
 
     /// Encodes `u64_lt dst, a, b`.
-    pub fn u64_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_lt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Lt);
         self.reg(dst);
         self.reg(a);
@@ -2128,7 +2129,7 @@ impl Asm {
     }
 
     /// Encodes `u64_gt dst, a, b`.
-    pub fn u64_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_gt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Gt);
         self.reg(dst);
         self.reg(a);
@@ -2137,7 +2138,7 @@ impl Asm {
     }
 
     /// Encodes `u64_xor dst, a, b`.
-    pub fn u64_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_xor(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Xor);
         self.reg(dst);
         self.reg(a);
@@ -2146,7 +2147,7 @@ impl Asm {
     }
 
     /// Encodes `u64_shl dst, a, b` (shift amount masked with `& 63`).
-    pub fn u64_shl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_shl(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Shl);
         self.reg(dst);
         self.reg(a);
@@ -2155,7 +2156,7 @@ impl Asm {
     }
 
     /// Encodes `u64_clz dst, a` (64 when `a == 0`).
-    pub fn u64_clz(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_clz(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64Clz);
         self.reg(dst);
         self.reg(a);
@@ -2163,7 +2164,7 @@ impl Asm {
     }
 
     /// Encodes `u64_ctz dst, a` (64 when `a == 0`).
-    pub fn u64_ctz(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_ctz(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64Ctz);
         self.reg(dst);
         self.reg(a);
@@ -2171,7 +2172,7 @@ impl Asm {
     }
 
     /// Encodes `u64_popcnt dst, a`.
-    pub fn u64_popcnt(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_popcnt(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64Popcnt);
         self.reg(dst);
         self.reg(a);
@@ -2179,7 +2180,7 @@ impl Asm {
     }
 
     /// Encodes `u64_rotl dst, a, b` (rotation amount masked with `& 63`).
-    pub fn u64_rotl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_rotl(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Rotl);
         self.reg(dst);
         self.reg(a);
@@ -2188,7 +2189,7 @@ impl Asm {
     }
 
     /// Encodes `u64_rotr dst, a, b` (rotation amount masked with `& 63`).
-    pub fn u64_rotr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_rotr(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Rotr);
         self.reg(dst);
         self.reg(a);
@@ -2197,7 +2198,7 @@ impl Asm {
     }
 
     /// Encodes `const.i32 dst, imm_sleb`.
-    pub fn const_i32(&mut self, dst: u32, imm: i32) -> &mut Self {
+    pub fn const_i32(&mut self, dst: Reg, imm: i32) -> &mut Self {
         self.opcode(Opcode::ConstI32);
         self.reg(dst);
         write_sleb128_i64(&mut self.bytes, i64::from(imm));
@@ -2205,7 +2206,7 @@ impl Asm {
     }
 
     /// Encodes `const.u32 dst, imm_uleb`.
-    pub fn const_u32(&mut self, dst: u32, imm: u32) -> &mut Self {
+    pub fn const_u32(&mut self, dst: Reg, imm: u32) -> &mut Self {
         self.opcode(Opcode::ConstU32);
         self.reg(dst);
         write_uleb128_u64(&mut self.bytes, u64::from(imm));
@@ -2213,7 +2214,7 @@ impl Asm {
     }
 
     /// Encodes `const.f32 dst, bits_u32le` from raw IEEE bits.
-    pub fn const_f32_bits(&mut self, dst: u32, bits: u32) -> &mut Self {
+    pub fn const_f32_bits(&mut self, dst: Reg, bits: u32) -> &mut Self {
         self.opcode(Opcode::ConstF32);
         self.reg(dst);
         self.bytes.extend_from_slice(&bits.to_le_bytes());
@@ -2221,12 +2222,12 @@ impl Asm {
     }
 
     /// Encodes `const.f32 dst, bits_u32le` from an `f32` value.
-    pub fn const_f32(&mut self, dst: u32, v: f32) -> &mut Self {
+    pub fn const_f32(&mut self, dst: Reg, v: f32) -> &mut Self {
         self.const_f32_bits(dst, v.to_bits())
     }
 
     /// Encodes `i32.add dst, a, b`: `dst = a + b` (`i32`, wrapping).
-    pub fn i32_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_add(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Add);
         self.reg(dst);
         self.reg(a);
@@ -2235,7 +2236,7 @@ impl Asm {
     }
 
     /// Encodes `i32.sub dst, a, b`: `dst = a - b` (`i32`, wrapping).
-    pub fn i32_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_sub(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Sub);
         self.reg(dst);
         self.reg(a);
@@ -2244,7 +2245,7 @@ impl Asm {
     }
 
     /// Encodes `i32.mul dst, a, b`: `dst = a * b` (`i32`, wrapping).
-    pub fn i32_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_mul(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Mul);
         self.reg(dst);
         self.reg(a);
@@ -2253,7 +2254,7 @@ impl Asm {
     }
 
     /// Encodes `i32.div dst, a, b`: `dst = a / b` (`i32`, truncating; traps on zero divisor or `MIN / -1`).
-    pub fn i32_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_div(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Div);
         self.reg(dst);
         self.reg(a);
@@ -2262,7 +2263,7 @@ impl Asm {
     }
 
     /// Encodes `i32.rem dst, a, b`: `dst = a % b` (`i32`, sign of `a`; traps on zero divisor or `MIN % -1`).
-    pub fn i32_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_rem(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Rem);
         self.reg(dst);
         self.reg(a);
@@ -2271,7 +2272,7 @@ impl Asm {
     }
 
     /// Encodes `i32.add_ovf dst, overflow, a, b`: `(dst, overflow) = a + b` (`i32` wrapped sum; `bool` true if the signed sum overflowed).
-    pub fn i32_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_add_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32AddOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2281,7 +2282,7 @@ impl Asm {
     }
 
     /// Encodes `i32.sub_ovf dst, overflow, a, b`: `(dst, overflow) = a - b` (`i32` wrapped difference; `bool` true on signed overflow).
-    pub fn i32_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_sub_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32SubOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2291,7 +2292,7 @@ impl Asm {
     }
 
     /// Encodes `i32.mul_ovf dst, overflow, a, b`: `(dst, overflow) = a * b` (`i32` wrapped product; `bool` true on signed overflow).
-    pub fn i32_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_mul_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32MulOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2301,7 +2302,7 @@ impl Asm {
     }
 
     /// Encodes `i32.and dst, a, b`: `dst = a & b` (`i32`).
-    pub fn i32_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_and(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32And);
         self.reg(dst);
         self.reg(a);
@@ -2310,7 +2311,7 @@ impl Asm {
     }
 
     /// Encodes `i32.or dst, a, b`: `dst = a | b` (`i32`).
-    pub fn i32_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_or(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Or);
         self.reg(dst);
         self.reg(a);
@@ -2319,7 +2320,7 @@ impl Asm {
     }
 
     /// Encodes `i32.xor dst, a, b`: `dst = a ^ b` (`i32`).
-    pub fn i32_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_xor(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Xor);
         self.reg(dst);
         self.reg(a);
@@ -2328,7 +2329,7 @@ impl Asm {
     }
 
     /// Encodes `i32.shl dst, a, b`: `dst = a << (b & 31)` (`i32`).
-    pub fn i32_shl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_shl(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Shl);
         self.reg(dst);
         self.reg(a);
@@ -2337,7 +2338,7 @@ impl Asm {
     }
 
     /// Encodes `i32.shr dst, a, b`: `dst = a >> (b & 31)` (`i32`, arithmetic).
-    pub fn i32_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_shr(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Shr);
         self.reg(dst);
         self.reg(a);
@@ -2346,7 +2347,7 @@ impl Asm {
     }
 
     /// Encodes `i32.eq dst, a, b`: `dst = (a == b)` (`i32` -> `bool`).
-    pub fn i32_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Eq);
         self.reg(dst);
         self.reg(a);
@@ -2355,7 +2356,7 @@ impl Asm {
     }
 
     /// Encodes `i32.lt dst, a, b`: `dst = (a < b)` (`i32` -> `bool`).
-    pub fn i32_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_lt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Lt);
         self.reg(dst);
         self.reg(a);
@@ -2364,7 +2365,7 @@ impl Asm {
     }
 
     /// Encodes `i32.gt dst, a, b`: `dst = (a > b)` (`i32` -> `bool`).
-    pub fn i32_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_gt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Gt);
         self.reg(dst);
         self.reg(a);
@@ -2373,7 +2374,7 @@ impl Asm {
     }
 
     /// Encodes `i32.le dst, a, b`: `dst = (a <= b)` (`i32` -> `bool`).
-    pub fn i32_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_le(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Le);
         self.reg(dst);
         self.reg(a);
@@ -2382,7 +2383,7 @@ impl Asm {
     }
 
     /// Encodes `i32.ge dst, a, b`: `dst = (a >= b)` (`i32` -> `bool`).
-    pub fn i32_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i32_ge(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I32Ge);
         self.reg(dst);
         self.reg(a);
@@ -2391,7 +2392,7 @@ impl Asm {
     }
 
     /// Encodes `u32.add dst, a, b`: `dst = a + b` (`u32`, wrapping).
-    pub fn u32_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_add(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Add);
         self.reg(dst);
         self.reg(a);
@@ -2400,7 +2401,7 @@ impl Asm {
     }
 
     /// Encodes `u32.sub dst, a, b`: `dst = a - b` (`u32`, wrapping).
-    pub fn u32_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_sub(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Sub);
         self.reg(dst);
         self.reg(a);
@@ -2409,7 +2410,7 @@ impl Asm {
     }
 
     /// Encodes `u32.mul dst, a, b`: `dst = a * b` (`u32`, wrapping).
-    pub fn u32_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_mul(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Mul);
         self.reg(dst);
         self.reg(a);
@@ -2418,7 +2419,7 @@ impl Asm {
     }
 
     /// Encodes `u32.div dst, a, b`: `dst = a / b` (`u32`; traps on zero divisor).
-    pub fn u32_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_div(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Div);
         self.reg(dst);
         self.reg(a);
@@ -2427,7 +2428,7 @@ impl Asm {
     }
 
     /// Encodes `u32.rem dst, a, b`: `dst = a % b` (`u32`; traps on zero divisor).
-    pub fn u32_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_rem(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Rem);
         self.reg(dst);
         self.reg(a);
@@ -2436,7 +2437,7 @@ impl Asm {
     }
 
     /// Encodes `u32.add_ovf dst, overflow, a, b`: `(dst, overflow) = a + b` (`u32` wrapped sum; `bool` carry).
-    pub fn u32_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_add_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32AddOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2446,7 +2447,7 @@ impl Asm {
     }
 
     /// Encodes `u32.sub_ovf dst, overflow, a, b`: `(dst, overflow) = a - b` (`u32` wrapped difference; `bool` borrow).
-    pub fn u32_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_sub_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32SubOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2456,7 +2457,7 @@ impl Asm {
     }
 
     /// Encodes `u32.mul_ovf dst, overflow, a, b`: `(dst, overflow) = a * b` (`u32` wrapped product; `bool` true on overflow).
-    pub fn u32_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_mul_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32MulOvf);
         self.reg(dst);
         self.reg(overflow);
@@ -2466,7 +2467,7 @@ impl Asm {
     }
 
     /// Encodes `u32.and dst, a, b`: `dst = a & b` (`u32`).
-    pub fn u32_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_and(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32And);
         self.reg(dst);
         self.reg(a);
@@ -2475,7 +2476,7 @@ impl Asm {
     }
 
     /// Encodes `u32.or dst, a, b`: `dst = a | b` (`u32`).
-    pub fn u32_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_or(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Or);
         self.reg(dst);
         self.reg(a);
@@ -2484,7 +2485,7 @@ impl Asm {
     }
 
     /// Encodes `u32.xor dst, a, b`: `dst = a ^ b` (`u32`).
-    pub fn u32_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_xor(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Xor);
         self.reg(dst);
         self.reg(a);
@@ -2493,7 +2494,7 @@ impl Asm {
     }
 
     /// Encodes `u32.shl dst, a, b`: `dst = a << (b & 31)` (`u32`).
-    pub fn u32_shl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_shl(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Shl);
         self.reg(dst);
         self.reg(a);
@@ -2502,7 +2503,7 @@ impl Asm {
     }
 
     /// Encodes `u32.shr dst, a, b`: `dst = a >> (b & 31)` (`u32`, logical).
-    pub fn u32_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_shr(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Shr);
         self.reg(dst);
         self.reg(a);
@@ -2511,7 +2512,7 @@ impl Asm {
     }
 
     /// Encodes `u32.clz dst, a`: `dst = a.leading_zeros()` (`u32`; 32 when `a == 0`).
-    pub fn u32_clz(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_clz(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32Clz);
         self.reg(dst);
         self.reg(a);
@@ -2519,7 +2520,7 @@ impl Asm {
     }
 
     /// Encodes `u32.ctz dst, a`: `dst = a.trailing_zeros()` (`u32`; 32 when `a == 0`).
-    pub fn u32_ctz(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_ctz(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32Ctz);
         self.reg(dst);
         self.reg(a);
@@ -2527,7 +2528,7 @@ impl Asm {
     }
 
     /// Encodes `u32.popcnt dst, a`: `dst = a.count_ones()` (`u32`).
-    pub fn u32_popcnt(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_popcnt(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32Popcnt);
         self.reg(dst);
         self.reg(a);
@@ -2535,7 +2536,7 @@ impl Asm {
     }
 
     /// Encodes `u32.rotl dst, a, b`: `dst = a.rotate_left(b & 31)` (`u32`).
-    pub fn u32_rotl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_rotl(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Rotl);
         self.reg(dst);
         self.reg(a);
@@ -2544,7 +2545,7 @@ impl Asm {
     }
 
     /// Encodes `u32.rotr dst, a, b`: `dst = a.rotate_right(b & 31)` (`u32`).
-    pub fn u32_rotr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_rotr(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Rotr);
         self.reg(dst);
         self.reg(a);
@@ -2553,7 +2554,7 @@ impl Asm {
     }
 
     /// Encodes `u32.eq dst, a, b`: `dst = (a == b)` (`u32` -> `bool`).
-    pub fn u32_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Eq);
         self.reg(dst);
         self.reg(a);
@@ -2562,7 +2563,7 @@ impl Asm {
     }
 
     /// Encodes `u32.lt dst, a, b`: `dst = (a < b)` (`u32` -> `bool`).
-    pub fn u32_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_lt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Lt);
         self.reg(dst);
         self.reg(a);
@@ -2571,7 +2572,7 @@ impl Asm {
     }
 
     /// Encodes `u32.gt dst, a, b`: `dst = (a > b)` (`u32` -> `bool`).
-    pub fn u32_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_gt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Gt);
         self.reg(dst);
         self.reg(a);
@@ -2580,7 +2581,7 @@ impl Asm {
     }
 
     /// Encodes `u32.le dst, a, b`: `dst = (a <= b)` (`u32` -> `bool`).
-    pub fn u32_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_le(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Le);
         self.reg(dst);
         self.reg(a);
@@ -2589,7 +2590,7 @@ impl Asm {
     }
 
     /// Encodes `u32.ge dst, a, b`: `dst = (a >= b)` (`u32` -> `bool`).
-    pub fn u32_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u32_ge(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U32Ge);
         self.reg(dst);
         self.reg(a);
@@ -2598,7 +2599,7 @@ impl Asm {
     }
 
     /// Encodes `f32.add dst, a, b`: `dst = a + b` (`f32`).
-    pub fn f32_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_add(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Add);
         self.reg(dst);
         self.reg(a);
@@ -2607,7 +2608,7 @@ impl Asm {
     }
 
     /// Encodes `f32.sub dst, a, b`: `dst = a - b` (`f32`).
-    pub fn f32_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_sub(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Sub);
         self.reg(dst);
         self.reg(a);
@@ -2616,7 +2617,7 @@ impl Asm {
     }
 
     /// Encodes `f32.mul dst, a, b`: `dst = a * b` (`f32`).
-    pub fn f32_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_mul(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Mul);
         self.reg(dst);
         self.reg(a);
@@ -2625,7 +2626,7 @@ impl Asm {
     }
 
     /// Encodes `f32.div dst, a, b`: `dst = a / b` (`f32`).
-    pub fn f32_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_div(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Div);
         self.reg(dst);
         self.reg(a);
@@ -2634,7 +2635,7 @@ impl Asm {
     }
 
     /// Encodes `f32.rem dst, a, b`: `dst = a % b` (`f32`, sign of `a`).
-    pub fn f32_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_rem(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Rem);
         self.reg(dst);
         self.reg(a);
@@ -2643,7 +2644,7 @@ impl Asm {
     }
 
     /// Encodes `f32.neg dst, a`: `dst = -a` (`f32`, flips the sign bit).
-    pub fn f32_neg(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_neg(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Neg);
         self.reg(dst);
         self.reg(a);
@@ -2651,7 +2652,7 @@ impl Asm {
     }
 
     /// Encodes `f32.abs dst, a`: `dst = abs(a)` (`f32`, clears the sign bit).
-    pub fn f32_abs(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_abs(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Abs);
         self.reg(dst);
         self.reg(a);
@@ -2659,7 +2660,7 @@ impl Asm {
     }
 
     /// Encodes `f32.min dst, a, b`: `dst = min(a, b)` (`f32`, NaN-propagating).
-    pub fn f32_min(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_min(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Min);
         self.reg(dst);
         self.reg(a);
@@ -2668,7 +2669,7 @@ impl Asm {
     }
 
     /// Encodes `f32.max dst, a, b`: `dst = max(a, b)` (`f32`, NaN-propagating).
-    pub fn f32_max(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_max(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Max);
         self.reg(dst);
         self.reg(a);
@@ -2677,7 +2678,7 @@ impl Asm {
     }
 
     /// Encodes `f32.min_num dst, a, b`: `dst = min_num(a, b)` (`f32`, number-favoring).
-    pub fn f32_min_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_min_num(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32MinNum);
         self.reg(dst);
         self.reg(a);
@@ -2686,7 +2687,7 @@ impl Asm {
     }
 
     /// Encodes `f32.max_num dst, a, b`: `dst = max_num(a, b)` (`f32`, number-favoring).
-    pub fn f32_max_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_max_num(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32MaxNum);
         self.reg(dst);
         self.reg(a);
@@ -2695,7 +2696,7 @@ impl Asm {
     }
 
     /// Encodes `f32.copysign dst, a, b`: `dst = copysign(a, b)` (`f32`: magnitude of `a`, sign of `b`).
-    pub fn f32_copysign(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_copysign(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32CopySign);
         self.reg(dst);
         self.reg(a);
@@ -2704,7 +2705,7 @@ impl Asm {
     }
 
     /// Encodes `f32.floor dst, a`: `dst = floor(a)` (`f32`, rounds toward negative infinity).
-    pub fn f32_floor(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_floor(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Floor);
         self.reg(dst);
         self.reg(a);
@@ -2712,7 +2713,7 @@ impl Asm {
     }
 
     /// Encodes `f32.ceil dst, a`: `dst = ceil(a)` (`f32`, rounds toward positive infinity).
-    pub fn f32_ceil(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_ceil(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Ceil);
         self.reg(dst);
         self.reg(a);
@@ -2720,7 +2721,7 @@ impl Asm {
     }
 
     /// Encodes `f32.trunc dst, a`: `dst = trunc(a)` (`f32`, rounds toward zero).
-    pub fn f32_trunc(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_trunc(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Trunc);
         self.reg(dst);
         self.reg(a);
@@ -2728,7 +2729,7 @@ impl Asm {
     }
 
     /// Encodes `f32.nearest dst, a`: `dst = nearest(a)` (`f32`, rounds to nearest integer, ties to even).
-    pub fn f32_nearest(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_nearest(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Nearest);
         self.reg(dst);
         self.reg(a);
@@ -2736,7 +2737,7 @@ impl Asm {
     }
 
     /// Encodes `f32.sqrt dst, a`: `dst = sqrt(a)` (`f32`, correctly rounded).
-    pub fn f32_sqrt(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_sqrt(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Sqrt);
         self.reg(dst);
         self.reg(a);
@@ -2744,7 +2745,7 @@ impl Asm {
     }
 
     /// Encodes `f32.eq dst, a, b`: `dst = (a == b)` (`f32` -> `bool`; false if NaN).
-    pub fn f32_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Eq);
         self.reg(dst);
         self.reg(a);
@@ -2753,7 +2754,7 @@ impl Asm {
     }
 
     /// Encodes `f32.ne dst, a, b`: `dst = (a != b)` (`f32` -> `bool`; true if NaN).
-    pub fn f32_ne(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_ne(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Ne);
         self.reg(dst);
         self.reg(a);
@@ -2762,7 +2763,7 @@ impl Asm {
     }
 
     /// Encodes `f32.lt dst, a, b`: `dst = (a < b)` (`f32` -> `bool`; false if NaN).
-    pub fn f32_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_lt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Lt);
         self.reg(dst);
         self.reg(a);
@@ -2771,7 +2772,7 @@ impl Asm {
     }
 
     /// Encodes `f32.gt dst, a, b`: `dst = (a > b)` (`f32` -> `bool`; false if NaN).
-    pub fn f32_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_gt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Gt);
         self.reg(dst);
         self.reg(a);
@@ -2780,7 +2781,7 @@ impl Asm {
     }
 
     /// Encodes `f32.le dst, a, b`: `dst = (a <= b)` (`f32` -> `bool`; false if NaN).
-    pub fn f32_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_le(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Le);
         self.reg(dst);
         self.reg(a);
@@ -2789,7 +2790,7 @@ impl Asm {
     }
 
     /// Encodes `f32.ge dst, a, b`: `dst = (a >= b)` (`f32` -> `bool`; false if NaN).
-    pub fn f32_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_ge(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Ge);
         self.reg(dst);
         self.reg(a);
@@ -2798,7 +2799,7 @@ impl Asm {
     }
 
     /// Encodes `f32.round_half_away dst, a`: `dst = a` rounded to the nearest integer, ties away from zero (see [`math::round_half_away_f32`](crate::math::round_half_away_f32)).
-    pub fn f32_round_half_away(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_round_half_away(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32RoundHalfAway);
         self.reg(dst);
         self.reg(a);
@@ -2807,7 +2808,7 @@ impl Asm {
 
     /// Encodes `f32.clamp dst, a, lo, hi`: `dst = a` limited to `lo..=hi`; traps with
     /// `ClampBoundsInvalid` unless `lo <= hi` (see [`math::clamp_f32`](crate::math::clamp_f32)).
-    pub fn f32_clamp(&mut self, dst: u32, a: u32, lo: u32, hi: u32) -> &mut Self {
+    pub fn f32_clamp(&mut self, dst: Reg, a: Reg, lo: Reg, hi: Reg) -> &mut Self {
         self.opcode(Opcode::F32Clamp);
         self.reg(dst);
         self.reg(a);
@@ -2818,7 +2819,7 @@ impl Asm {
 
     /// Encodes `f32.pow dst, a, b`: `dst = a` raised to `b` (see
     /// [`math::pow_f32`](crate::math::pow_f32)).
-    pub fn f32_pow(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f32_pow(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F32Pow);
         self.reg(dst);
         self.reg(a);
@@ -2827,7 +2828,7 @@ impl Asm {
     }
 
     /// Encodes `f32.exp dst, a`: `dst = e^a` (see [`math::exp_f32`](crate::math::exp_f32)).
-    pub fn f32_exp(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_exp(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Exp);
         self.reg(dst);
         self.reg(a);
@@ -2835,7 +2836,7 @@ impl Asm {
     }
 
     /// Encodes `f32.ln dst, a`: `dst` = the natural logarithm of `a` (see [`math::ln_f32`](crate::math::ln_f32)).
-    pub fn f32_ln(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_ln(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Ln);
         self.reg(dst);
         self.reg(a);
@@ -2843,7 +2844,7 @@ impl Asm {
     }
 
     /// Encodes `f32.sin dst, a`: `dst = sin(a)`, `a` in radians (see [`math::sin_f32`](crate::math::sin_f32)).
-    pub fn f32_sin(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_sin(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Sin);
         self.reg(dst);
         self.reg(a);
@@ -2851,7 +2852,7 @@ impl Asm {
     }
 
     /// Encodes `f32.cos dst, a`: `dst = cos(a)`, `a` in radians (see [`math::cos_f32`](crate::math::cos_f32)).
-    pub fn f32_cos(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_cos(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32Cos);
         self.reg(dst);
         self.reg(a);
@@ -2860,7 +2861,7 @@ impl Asm {
 
     /// Encodes `f32.atan2 dst, y, x`: `dst` = the angle of the point `(x, y)` in radians (see
     /// [`math::atan2_f32`](crate::math::atan2_f32)). Note the operand order: `y` first.
-    pub fn f32_atan2(&mut self, dst: u32, y: u32, x: u32) -> &mut Self {
+    pub fn f32_atan2(&mut self, dst: Reg, y: Reg, x: Reg) -> &mut Self {
         self.opcode(Opcode::F32Atan2);
         self.reg(dst);
         self.reg(y);
@@ -2869,7 +2870,7 @@ impl Asm {
     }
 
     /// Encodes `i32.to_i64 dst, a`: `dst = i32_to_i64(a)` (`i32` -> `i64`; sign-extends).
-    pub fn i32_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i32_to_i64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I32ToI64);
         self.reg(dst);
         self.reg(a);
@@ -2877,7 +2878,7 @@ impl Asm {
     }
 
     /// Encodes `i64.to_i32 dst, a`: `dst = i64_to_i32(a)` (`i64` -> `i32`; traps when out of range).
-    pub fn i64_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i64_to_i32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I64ToI32);
         self.reg(dst);
         self.reg(a);
@@ -2885,7 +2886,7 @@ impl Asm {
     }
 
     /// Encodes `i64.to_i32_wrap dst, a`: `dst = i64_to_i32_wrap(a)` (`i64` -> `i32`; keeps the low 32 bits).
-    pub fn i64_to_i32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i64_to_i32_wrap(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I64ToI32Wrap);
         self.reg(dst);
         self.reg(a);
@@ -2893,7 +2894,7 @@ impl Asm {
     }
 
     /// Encodes `u32.to_u64 dst, a`: `dst = u32_to_u64(a)` (`u32` -> `u64`; zero-extends).
-    pub fn u32_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_to_u64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32ToU64);
         self.reg(dst);
         self.reg(a);
@@ -2901,7 +2902,7 @@ impl Asm {
     }
 
     /// Encodes `u64.to_u32 dst, a`: `dst = u64_to_u32(a)` (`u64` -> `u32`; traps when out of range).
-    pub fn u64_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_to_u32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64ToU32);
         self.reg(dst);
         self.reg(a);
@@ -2909,7 +2910,7 @@ impl Asm {
     }
 
     /// Encodes `u64.to_u32_wrap dst, a`: `dst = u64_to_u32_wrap(a)` (`u64` -> `u32`; keeps the low 32 bits).
-    pub fn u64_to_u32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_to_u32_wrap(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64ToU32Wrap);
         self.reg(dst);
         self.reg(a);
@@ -2917,7 +2918,7 @@ impl Asm {
     }
 
     /// Encodes `u32.to_i64 dst, a`: `dst = u32_to_i64(a)` (`u32` -> `i64`; zero-extends).
-    pub fn u32_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_to_i64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32ToI64);
         self.reg(dst);
         self.reg(a);
@@ -2925,7 +2926,7 @@ impl Asm {
     }
 
     /// Encodes `i32.to_u32 dst, a`: `dst = i32_to_u32(a)` (`i32` -> `u32`; traps on negative).
-    pub fn i32_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i32_to_u32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I32ToU32);
         self.reg(dst);
         self.reg(a);
@@ -2933,7 +2934,7 @@ impl Asm {
     }
 
     /// Encodes `u32.to_i32 dst, a`: `dst = u32_to_i32(a)` (`u32` -> `i32`; traps above `i32::MAX`).
-    pub fn u32_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_to_i32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32ToI32);
         self.reg(dst);
         self.reg(a);
@@ -2941,7 +2942,7 @@ impl Asm {
     }
 
     /// Encodes `i32.to_u32_wrap dst, a`: `dst = i32_to_u32_wrap(a)` (`i32` -> `u32`; reinterprets the bits).
-    pub fn i32_to_u32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i32_to_u32_wrap(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I32ToU32Wrap);
         self.reg(dst);
         self.reg(a);
@@ -2949,7 +2950,7 @@ impl Asm {
     }
 
     /// Encodes `u32.to_i32_wrap dst, a`: `dst = u32_to_i32_wrap(a)` (`u32` -> `i32`; reinterprets the bits).
-    pub fn u32_to_i32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_to_i32_wrap(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32ToI32Wrap);
         self.reg(dst);
         self.reg(a);
@@ -2957,7 +2958,7 @@ impl Asm {
     }
 
     /// Encodes `i64.to_u64_wrap dst, a`: `dst = i64_to_u64_wrap(a)` (`i64` -> `u64`; reinterprets the bits).
-    pub fn i64_to_u64_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i64_to_u64_wrap(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I64ToU64Wrap);
         self.reg(dst);
         self.reg(a);
@@ -2965,7 +2966,7 @@ impl Asm {
     }
 
     /// Encodes `u64.to_i64_wrap dst, a`: `dst = u64_to_i64_wrap(a)` (`u64` -> `i64`; reinterprets the bits).
-    pub fn u64_to_i64_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_to_i64_wrap(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64ToI64Wrap);
         self.reg(dst);
         self.reg(a);
@@ -2973,7 +2974,7 @@ impl Asm {
     }
 
     /// Encodes `f32.to_f64 dst, a`: `dst = f32_to_f64(a)` (`f32` -> `f64`; exact).
-    pub fn f32_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_to_f64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32ToF64);
         self.reg(dst);
         self.reg(a);
@@ -2981,7 +2982,7 @@ impl Asm {
     }
 
     /// Encodes `f64.to_f32 dst, a`: `dst = f64_to_f32(a)` (`f64` -> `f32`; rounds to nearest, ties to even; overflows to infinity).
-    pub fn f64_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_f32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToF32);
         self.reg(dst);
         self.reg(a);
@@ -2989,7 +2990,7 @@ impl Asm {
     }
 
     /// Encodes `f32.to_bits dst, a`: `dst = f32_to_bits(a)` (`f32` -> `u32`; raw IEEE bits).
-    pub fn f32_to_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_to_bits(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32ToBits);
         self.reg(dst);
         self.reg(a);
@@ -2997,7 +2998,7 @@ impl Asm {
     }
 
     /// Encodes `f32.from_bits dst, a`: `dst = f32_from_bits(a)` (`u32` -> `f32`; raw IEEE bits).
-    pub fn f32_from_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_from_bits(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32FromBits);
         self.reg(dst);
         self.reg(a);
@@ -3005,7 +3006,7 @@ impl Asm {
     }
 
     /// Encodes `f32.to_i32 dst, a`: `dst = f32_to_i32(a)` (`f32` -> `i32`; truncates; traps on NaN, infinities and out of range).
-    pub fn f32_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_to_i32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32ToI32);
         self.reg(dst);
         self.reg(a);
@@ -3013,7 +3014,7 @@ impl Asm {
     }
 
     /// Encodes `f32.to_u32 dst, a`: `dst = f32_to_u32(a)` (`f32` -> `u32`; truncates; traps on NaN, infinities and out of range).
-    pub fn f32_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_to_u32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32ToU32);
         self.reg(dst);
         self.reg(a);
@@ -3021,7 +3022,7 @@ impl Asm {
     }
 
     /// Encodes `f32.to_i32_sat dst, a`: `dst = f32_to_i32_sat(a)` (`f32` -> `i32`; truncates and saturates; NaN -> 0).
-    pub fn f32_to_i32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_to_i32_sat(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32ToI32Sat);
         self.reg(dst);
         self.reg(a);
@@ -3029,7 +3030,7 @@ impl Asm {
     }
 
     /// Encodes `f32.to_u32_sat dst, a`: `dst = f32_to_u32_sat(a)` (`f32` -> `u32`; truncates and saturates; NaN -> 0).
-    pub fn f32_to_u32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f32_to_u32_sat(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F32ToU32Sat);
         self.reg(dst);
         self.reg(a);
@@ -3037,7 +3038,7 @@ impl Asm {
     }
 
     /// Encodes `f64.to_i32 dst, a`: `dst = f64_to_i32(a)` (`f64` -> `i32`; truncates; traps on NaN, infinities and out of range).
-    pub fn f64_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_i32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToI32);
         self.reg(dst);
         self.reg(a);
@@ -3045,7 +3046,7 @@ impl Asm {
     }
 
     /// Encodes `f64.to_u32 dst, a`: `dst = f64_to_u32(a)` (`f64` -> `u32`; truncates; traps on NaN, infinities and out of range).
-    pub fn f64_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_u32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToU32);
         self.reg(dst);
         self.reg(a);
@@ -3053,7 +3054,7 @@ impl Asm {
     }
 
     /// Encodes `f64.to_i32_sat dst, a`: `dst = f64_to_i32_sat(a)` (`f64` -> `i32`; truncates and saturates; NaN -> 0).
-    pub fn f64_to_i32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_i32_sat(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToI32Sat);
         self.reg(dst);
         self.reg(a);
@@ -3061,7 +3062,7 @@ impl Asm {
     }
 
     /// Encodes `f64.to_u32_sat dst, a`: `dst = f64_to_u32_sat(a)` (`f64` -> `u32`; truncates and saturates; NaN -> 0).
-    pub fn f64_to_u32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_u32_sat(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToU32Sat);
         self.reg(dst);
         self.reg(a);
@@ -3069,7 +3070,7 @@ impl Asm {
     }
 
     /// Encodes `i32.to_f32 dst, a`: `dst = i32_to_f32(a)` (`i32` -> `f32`; rounds to nearest, ties to even).
-    pub fn i32_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i32_to_f32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I32ToF32);
         self.reg(dst);
         self.reg(a);
@@ -3077,7 +3078,7 @@ impl Asm {
     }
 
     /// Encodes `u32.to_f32 dst, a`: `dst = u32_to_f32(a)` (`u32` -> `f32`; rounds to nearest, ties to even).
-    pub fn u32_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_to_f32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32ToF32);
         self.reg(dst);
         self.reg(a);
@@ -3085,7 +3086,7 @@ impl Asm {
     }
 
     /// Encodes `i64.to_f32 dst, a`: `dst = i64_to_f32(a)` (`i64` -> `f32`; rounds once to nearest, ties to even).
-    pub fn i64_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i64_to_f32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I64ToF32);
         self.reg(dst);
         self.reg(a);
@@ -3093,7 +3094,7 @@ impl Asm {
     }
 
     /// Encodes `u64.to_f32 dst, a`: `dst = u64_to_f32(a)` (`u64` -> `f32`; rounds once to nearest, ties to even).
-    pub fn u64_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_to_f32(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64ToF32);
         self.reg(dst);
         self.reg(a);
@@ -3101,7 +3102,7 @@ impl Asm {
     }
 
     /// Encodes `i32.to_f64 dst, a`: `dst = i32_to_f64(a)` (`i32` -> `f64`; exact).
-    pub fn i32_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i32_to_f64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I32ToF64);
         self.reg(dst);
         self.reg(a);
@@ -3109,7 +3110,7 @@ impl Asm {
     }
 
     /// Encodes `u32.to_f64 dst, a`: `dst = u32_to_f64(a)` (`u32` -> `f64`; exact).
-    pub fn u32_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u32_to_f64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U32ToF64);
         self.reg(dst);
         self.reg(a);
@@ -3117,7 +3118,7 @@ impl Asm {
     }
 
     /// Encodes `u64_shr dst, a, b` (shift amount masked with `& 63`).
-    pub fn u64_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_shr(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Shr);
         self.reg(dst);
         self.reg(a);
@@ -3126,7 +3127,7 @@ impl Asm {
     }
 
     /// Encodes `bool_not dst, a`.
-    pub fn bool_not(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn bool_not(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::BoolNot);
         self.reg(dst);
         self.reg(a);
@@ -3134,7 +3135,7 @@ impl Asm {
     }
 
     /// Encodes `bool_and dst, a, b`.
-    pub fn bool_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn bool_and(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::BoolAnd);
         self.reg(dst);
         self.reg(a);
@@ -3143,7 +3144,7 @@ impl Asm {
     }
 
     /// Encodes `bool_or dst, a, b`.
-    pub fn bool_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn bool_or(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::BoolOr);
         self.reg(dst);
         self.reg(a);
@@ -3152,7 +3153,7 @@ impl Asm {
     }
 
     /// Encodes `bool_xor dst, a, b`.
-    pub fn bool_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn bool_xor(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::BoolXor);
         self.reg(dst);
         self.reg(a);
@@ -3161,7 +3162,7 @@ impl Asm {
     }
 
     /// Encodes `f64_eq dst, a, b`.
-    pub fn f64_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Eq);
         self.reg(dst);
         self.reg(a);
@@ -3170,7 +3171,7 @@ impl Asm {
     }
 
     /// Encodes `f64_lt dst, a, b`.
-    pub fn f64_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_lt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Lt);
         self.reg(dst);
         self.reg(a);
@@ -3179,7 +3180,7 @@ impl Asm {
     }
 
     /// Encodes `f64_gt dst, a, b`.
-    pub fn f64_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_gt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Gt);
         self.reg(dst);
         self.reg(a);
@@ -3188,7 +3189,7 @@ impl Asm {
     }
 
     /// Encodes `f64_le dst, a, b`.
-    pub fn f64_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_le(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Le);
         self.reg(dst);
         self.reg(a);
@@ -3197,7 +3198,7 @@ impl Asm {
     }
 
     /// Encodes `f64_ge dst, a, b`.
-    pub fn f64_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_ge(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Ge);
         self.reg(dst);
         self.reg(a);
@@ -3206,7 +3207,7 @@ impl Asm {
     }
 
     /// Encodes `f64_ne dst, a, b` (true if either input is NaN).
-    pub fn f64_ne(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn f64_ne(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::F64Ne);
         self.reg(dst);
         self.reg(a);
@@ -3215,7 +3216,7 @@ impl Asm {
     }
 
     /// Encodes `i64_and dst, a, b`.
-    pub fn i64_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_and(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64And);
         self.reg(dst);
         self.reg(a);
@@ -3224,7 +3225,7 @@ impl Asm {
     }
 
     /// Encodes `u64_le dst, a, b`.
-    pub fn u64_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_le(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Le);
         self.reg(dst);
         self.reg(a);
@@ -3233,7 +3234,7 @@ impl Asm {
     }
 
     /// Encodes `u64_ge dst, a, b`.
-    pub fn u64_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_ge(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Ge);
         self.reg(dst);
         self.reg(a);
@@ -3242,7 +3243,7 @@ impl Asm {
     }
 
     /// Encodes `i64_or dst, a, b`.
-    pub fn i64_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_or(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Or);
         self.reg(dst);
         self.reg(a);
@@ -3251,7 +3252,7 @@ impl Asm {
     }
 
     /// Encodes `i64_xor dst, a, b`.
-    pub fn i64_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_xor(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Xor);
         self.reg(dst);
         self.reg(a);
@@ -3260,7 +3261,7 @@ impl Asm {
     }
 
     /// Encodes `u64_to_i64 dst, a` (traps on overflow).
-    pub fn u64_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_to_i64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64ToI64);
         self.reg(dst);
         self.reg(a);
@@ -3268,7 +3269,7 @@ impl Asm {
     }
 
     /// Encodes `i64_to_u64 dst, a` (traps on negative).
-    pub fn i64_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i64_to_u64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I64ToU64);
         self.reg(dst);
         self.reg(a);
@@ -3276,7 +3277,7 @@ impl Asm {
     }
 
     /// Encodes `select dst, cond, a, b`.
-    pub fn select(&mut self, dst: u32, cond: u32, a: u32, b: u32) -> &mut Self {
+    pub fn select(&mut self, dst: Reg, cond: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::Select);
         self.reg(dst);
         self.reg(cond);
@@ -3286,7 +3287,7 @@ impl Asm {
     }
 
     /// Encodes `i64_gt dst, a, b`.
-    pub fn i64_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_gt(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Gt);
         self.reg(dst);
         self.reg(a);
@@ -3295,7 +3296,7 @@ impl Asm {
     }
 
     /// Encodes `i64_le dst, a, b`.
-    pub fn i64_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_le(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Le);
         self.reg(dst);
         self.reg(a);
@@ -3304,7 +3305,7 @@ impl Asm {
     }
 
     /// Encodes `i64_ge dst, a, b`.
-    pub fn i64_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_ge(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Ge);
         self.reg(dst);
         self.reg(a);
@@ -3313,7 +3314,7 @@ impl Asm {
     }
 
     /// Encodes `i64_shl dst, a, b` (shift amount masked with `& 63`).
-    pub fn i64_shl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_shl(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Shl);
         self.reg(dst);
         self.reg(a);
@@ -3322,7 +3323,7 @@ impl Asm {
     }
 
     /// Encodes `i64_shr dst, a, b` (shift amount masked with `& 63`).
-    pub fn i64_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_shr(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Shr);
         self.reg(dst);
         self.reg(a);
@@ -3336,7 +3337,7 @@ impl Asm {
     /// including cycles and fan-out. Both edges are checked during verification.
     pub fn br<'a>(
         &mut self,
-        cond: u32,
+        cond: Reg,
         pc_true: impl Into<BlockTarget<'a>>,
         pc_false: impl Into<BlockTarget<'a>>,
     ) -> &mut Self {
@@ -3378,11 +3379,11 @@ impl Asm {
     /// Encodes `call eff_out, func_id, eff_in, argc, args..., retc, rets...`.
     pub fn call(
         &mut self,
-        eff_out: u32,
+        eff_out: Reg,
         func_id: FuncId,
-        eff_in: u32,
-        args: &[u32],
-        rets: &[u32],
+        eff_in: Reg,
+        args: &[Reg],
+        rets: &[Reg],
     ) -> &mut Self {
         self.opcode(Opcode::Call);
         self.reg(eff_out);
@@ -3408,12 +3409,12 @@ impl Asm {
     /// [`FunctionSig::closure_body`] to build the declared signature for a closure body.
     pub fn call_indirect(
         &mut self,
-        eff_out: u32,
+        eff_out: Reg,
         call_sig: CallSigId,
-        callee: u32,
-        eff_in: u32,
-        args: &[u32],
-        rets: &[u32],
+        callee: Reg,
+        eff_in: Reg,
+        args: &[Reg],
+        rets: &[Reg],
     ) -> &mut Self {
         self.opcode(Opcode::CallIndirect);
         self.reg(eff_out);
@@ -3432,7 +3433,7 @@ impl Asm {
     }
 
     /// Encodes `ret eff_in, retc, rets...`.
-    pub fn ret(&mut self, eff_in: u32, rets: &[u32]) -> &mut Self {
+    pub fn ret(&mut self, eff_in: Reg, rets: &[Reg]) -> &mut Self {
         self.opcode(Opcode::Ret);
         self.reg(eff_in);
         self.uleb(u32::try_from(rets.len()).unwrap_or(u32::MAX));
@@ -3445,11 +3446,11 @@ impl Asm {
     /// Encodes `host_call eff_out, symbol_id, sig_hash_u64le, eff_in, argc, args..., retc, rets...`.
     pub fn host_call(
         &mut self,
-        eff_out: u32,
+        eff_out: Reg,
         host_sig: HostSigId,
-        eff_in: u32,
-        args: &[u32],
-        rets: &[u32],
+        eff_in: Reg,
+        args: &[Reg],
+        rets: &[Reg],
     ) -> &mut Self {
         self.opcode(Opcode::HostCall);
         self.reg(eff_out);
@@ -3467,7 +3468,7 @@ impl Asm {
     }
 
     /// Encodes `tuple_new dst, arity, values...`.
-    pub fn tuple_new(&mut self, dst: u32, values: &[u32]) -> &mut Self {
+    pub fn tuple_new(&mut self, dst: Reg, values: &[Reg]) -> &mut Self {
         self.opcode(Opcode::TupleNew);
         self.reg(dst);
         self.uleb(u32::try_from(values.len()).unwrap_or(u32::MAX));
@@ -3478,7 +3479,7 @@ impl Asm {
     }
 
     /// Encodes `tuple_get dst, tuple, index`.
-    pub fn tuple_get(&mut self, dst: u32, tuple: u32, index: u32) -> &mut Self {
+    pub fn tuple_get(&mut self, dst: Reg, tuple: Reg, index: u32) -> &mut Self {
         self.opcode(Opcode::TupleGet);
         self.reg(dst);
         self.reg(tuple);
@@ -3487,7 +3488,7 @@ impl Asm {
     }
 
     /// Encodes `struct_new dst, type_id, field_count, values...`.
-    pub fn struct_new(&mut self, dst: u32, type_id: TypeId, values: &[u32]) -> &mut Self {
+    pub fn struct_new(&mut self, dst: Reg, type_id: TypeId, values: &[Reg]) -> &mut Self {
         self.opcode(Opcode::StructNew);
         self.reg(dst);
         self.uleb(type_id.0);
@@ -3499,7 +3500,7 @@ impl Asm {
     }
 
     /// Encodes `struct_get dst, st, field_index`.
-    pub fn struct_get(&mut self, dst: u32, st: u32, field_index: u32) -> &mut Self {
+    pub fn struct_get(&mut self, dst: Reg, st: Reg, field_index: u32) -> &mut Self {
         self.opcode(Opcode::StructGet);
         self.reg(dst);
         self.reg(st);
@@ -3508,7 +3509,7 @@ impl Asm {
     }
 
     /// Encodes `array_new dst, elem_type_id, len, values...`.
-    pub fn array_new(&mut self, dst: u32, elem_type_id: ElemTypeId, values: &[u32]) -> &mut Self {
+    pub fn array_new(&mut self, dst: Reg, elem_type_id: ElemTypeId, values: &[Reg]) -> &mut Self {
         self.opcode(Opcode::ArrayNew);
         self.reg(dst);
         self.uleb(elem_type_id.0);
@@ -3520,7 +3521,7 @@ impl Asm {
     }
 
     /// Encodes `array_len dst, arr`.
-    pub fn array_len(&mut self, dst: u32, arr: u32) -> &mut Self {
+    pub fn array_len(&mut self, dst: Reg, arr: Reg) -> &mut Self {
         self.opcode(Opcode::ArrayLen);
         self.reg(dst);
         self.reg(arr);
@@ -3528,7 +3529,7 @@ impl Asm {
     }
 
     /// Encodes `array_get dst, arr, index_reg`.
-    pub fn array_get(&mut self, dst: u32, arr: u32, index_reg: u32) -> &mut Self {
+    pub fn array_get(&mut self, dst: Reg, arr: Reg, index_reg: Reg) -> &mut Self {
         self.opcode(Opcode::ArrayGet);
         self.reg(dst);
         self.reg(arr);
@@ -3537,7 +3538,7 @@ impl Asm {
     }
 
     /// Encodes `tuple_len dst, tuple`.
-    pub fn tuple_len(&mut self, dst: u32, tuple: u32) -> &mut Self {
+    pub fn tuple_len(&mut self, dst: Reg, tuple: Reg) -> &mut Self {
         self.opcode(Opcode::TupleLen);
         self.reg(dst);
         self.reg(tuple);
@@ -3545,7 +3546,7 @@ impl Asm {
     }
 
     /// Encodes `struct_field_count dst, st`.
-    pub fn struct_field_count(&mut self, dst: u32, st: u32) -> &mut Self {
+    pub fn struct_field_count(&mut self, dst: Reg, st: Reg) -> &mut Self {
         self.opcode(Opcode::StructFieldCount);
         self.reg(dst);
         self.reg(st);
@@ -3553,7 +3554,7 @@ impl Asm {
     }
 
     /// Encodes `array_get_imm dst, arr, index_uleb`.
-    pub fn array_get_imm(&mut self, dst: u32, arr: u32, index: u32) -> &mut Self {
+    pub fn array_get_imm(&mut self, dst: Reg, arr: Reg, index: u32) -> &mut Self {
         self.opcode(Opcode::ArrayGetImm);
         self.reg(dst);
         self.reg(arr);
@@ -3562,7 +3563,7 @@ impl Asm {
     }
 
     /// Encodes `bytes_len dst, bytes`.
-    pub fn bytes_len(&mut self, dst: u32, bytes: u32) -> &mut Self {
+    pub fn bytes_len(&mut self, dst: Reg, bytes: Reg) -> &mut Self {
         self.opcode(Opcode::BytesLen);
         self.reg(dst);
         self.reg(bytes);
@@ -3574,7 +3575,7 @@ impl Asm {
     /// Pairs the function reference in `func` with the captured environment aggregate in `env`. When the
     /// resulting closure is invoked via `call.indirect`, `env` is passed as the callee's first argument
     /// (an `Agg`); see [`Asm::call_indirect`].
-    pub fn closure_new(&mut self, dst: u32, func: u32, env: u32) -> &mut Self {
+    pub fn closure_new(&mut self, dst: Reg, func: Reg, env: Reg) -> &mut Self {
         self.opcode(Opcode::ClosureNew);
         self.reg(dst);
         self.reg(func);
@@ -3583,7 +3584,7 @@ impl Asm {
     }
 
     /// Encodes `str_len dst, s` (length in UTF-8 bytes).
-    pub fn str_len(&mut self, dst: u32, s: u32) -> &mut Self {
+    pub fn str_len(&mut self, dst: Reg, s: Reg) -> &mut Self {
         self.opcode(Opcode::StrLen);
         self.reg(dst);
         self.reg(s);
@@ -3591,7 +3592,7 @@ impl Asm {
     }
 
     /// Encodes `i64_div dst, a, b` (traps on divide-by-zero and `i64::MIN / -1`).
-    pub fn i64_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_div(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Div);
         self.reg(dst);
         self.reg(a);
@@ -3600,7 +3601,7 @@ impl Asm {
     }
 
     /// Encodes `i64_rem dst, a, b` (traps on divide-by-zero and `i64::MIN % -1`).
-    pub fn i64_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn i64_rem(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::I64Rem);
         self.reg(dst);
         self.reg(a);
@@ -3609,7 +3610,7 @@ impl Asm {
     }
 
     /// Encodes `u64_div dst, a, b` (traps on divide-by-zero).
-    pub fn u64_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_div(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Div);
         self.reg(dst);
         self.reg(a);
@@ -3618,7 +3619,7 @@ impl Asm {
     }
 
     /// Encodes `u64_rem dst, a, b` (traps on divide-by-zero).
-    pub fn u64_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn u64_rem(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Rem);
         self.reg(dst);
         self.reg(a);
@@ -3627,7 +3628,7 @@ impl Asm {
     }
 
     /// Encodes `i64_to_f64 dst, a`.
-    pub fn i64_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn i64_to_f64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::I64ToF64);
         self.reg(dst);
         self.reg(a);
@@ -3635,7 +3636,7 @@ impl Asm {
     }
 
     /// Encodes `u64_to_f64 dst, a`.
-    pub fn u64_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn u64_to_f64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::U64ToF64);
         self.reg(dst);
         self.reg(a);
@@ -3643,7 +3644,7 @@ impl Asm {
     }
 
     /// Encodes `f64_to_i64 dst, a` (truncates, traps on NaN/inf/out-of-range).
-    pub fn f64_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_i64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToI64);
         self.reg(dst);
         self.reg(a);
@@ -3651,7 +3652,7 @@ impl Asm {
     }
 
     /// Encodes `f64_to_u64 dst, a` (truncates, traps on NaN/inf/out-of-range; `-0.5` converts to `0`).
-    pub fn f64_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_u64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToU64);
         self.reg(dst);
         self.reg(a);
@@ -3659,7 +3660,7 @@ impl Asm {
     }
 
     /// Encodes `f64_to_i64_sat dst, a` (truncates and saturates; NaN converts to `0`, never traps).
-    pub fn f64_to_i64_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_i64_sat(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToI64Sat);
         self.reg(dst);
         self.reg(a);
@@ -3667,7 +3668,7 @@ impl Asm {
     }
 
     /// Encodes `f64_to_u64_sat dst, a` (truncates and saturates; NaN converts to `0`, never traps).
-    pub fn f64_to_u64_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn f64_to_u64_sat(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::F64ToU64Sat);
         self.reg(dst);
         self.reg(a);
@@ -3675,7 +3676,7 @@ impl Asm {
     }
 
     /// Encodes `dec_to_i64 dst, a` (traps if `a.scale != 0` or outside `i64`).
-    pub fn dec_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn dec_to_i64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::DecToI64);
         self.reg(dst);
         self.reg(a);
@@ -3683,7 +3684,7 @@ impl Asm {
     }
 
     /// Encodes `dec_to_u64 dst, a` (traps if `a.scale != 0` or outside `u64`).
-    pub fn dec_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
+    pub fn dec_to_u64(&mut self, dst: Reg, a: Reg) -> &mut Self {
         self.opcode(Opcode::DecToU64);
         self.reg(dst);
         self.reg(a);
@@ -3691,7 +3692,7 @@ impl Asm {
     }
 
     /// Encodes `i64_to_dec dst, a, scale_u8` (traps on overflow).
-    pub fn i64_to_dec(&mut self, dst: u32, a: u32, scale: u8) -> &mut Self {
+    pub fn i64_to_dec(&mut self, dst: Reg, a: Reg, scale: u8) -> &mut Self {
         self.opcode(Opcode::I64ToDec);
         self.reg(dst);
         self.reg(a);
@@ -3700,7 +3701,7 @@ impl Asm {
     }
 
     /// Encodes `u64_to_dec dst, a, scale_u8` (traps on overflow).
-    pub fn u64_to_dec(&mut self, dst: u32, a: u32, scale: u8) -> &mut Self {
+    pub fn u64_to_dec(&mut self, dst: Reg, a: Reg, scale: u8) -> &mut Self {
         self.opcode(Opcode::U64ToDec);
         self.reg(dst);
         self.reg(a);
@@ -3709,7 +3710,7 @@ impl Asm {
     }
 
     /// Encodes `bytes_eq dst, a, b`.
-    pub fn bytes_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn bytes_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::BytesEq);
         self.reg(dst);
         self.reg(a);
@@ -3718,7 +3719,7 @@ impl Asm {
     }
 
     /// Encodes `str_eq dst, a, b`.
-    pub fn str_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn str_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::StrEq);
         self.reg(dst);
         self.reg(a);
@@ -3727,7 +3728,7 @@ impl Asm {
     }
 
     /// Encodes `bytes_concat dst, a, b`.
-    pub fn bytes_concat(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn bytes_concat(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::BytesConcat);
         self.reg(dst);
         self.reg(a);
@@ -3736,7 +3737,7 @@ impl Asm {
     }
 
     /// Encodes `str_concat dst, a, b`.
-    pub fn str_concat(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+    pub fn str_concat(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::StrConcat);
         self.reg(dst);
         self.reg(a);
@@ -3745,7 +3746,7 @@ impl Asm {
     }
 
     /// Encodes `bytes_get dst, bytes, index_reg` (returns `u64` in `0..=255`, traps on OOB).
-    pub fn bytes_get(&mut self, dst: u32, bytes: u32, index_reg: u32) -> &mut Self {
+    pub fn bytes_get(&mut self, dst: Reg, bytes: Reg, index_reg: Reg) -> &mut Self {
         self.opcode(Opcode::BytesGet);
         self.reg(dst);
         self.reg(bytes);
@@ -3754,7 +3755,7 @@ impl Asm {
     }
 
     /// Encodes `bytes_get_imm dst, bytes, index_uleb` (returns `u64` in `0..=255`, traps on OOB).
-    pub fn bytes_get_imm(&mut self, dst: u32, bytes: u32, index: u32) -> &mut Self {
+    pub fn bytes_get_imm(&mut self, dst: Reg, bytes: Reg, index: u32) -> &mut Self {
         self.opcode(Opcode::BytesGetImm);
         self.reg(dst);
         self.reg(bytes);
@@ -3763,7 +3764,7 @@ impl Asm {
     }
 
     /// Encodes `bytes_slice dst, bytes, start, end` (traps on invalid range).
-    pub fn bytes_slice(&mut self, dst: u32, bytes: u32, start: u32, end: u32) -> &mut Self {
+    pub fn bytes_slice(&mut self, dst: Reg, bytes: Reg, start: Reg, end: Reg) -> &mut Self {
         self.opcode(Opcode::BytesSlice);
         self.reg(dst);
         self.reg(bytes);
@@ -3773,7 +3774,7 @@ impl Asm {
     }
 
     /// Encodes `str_slice dst, s, start, end` (byte indices; traps on invalid range/non-boundary).
-    pub fn str_slice(&mut self, dst: u32, s: u32, start: u32, end: u32) -> &mut Self {
+    pub fn str_slice(&mut self, dst: Reg, s: Reg, start: Reg, end: Reg) -> &mut Self {
         self.opcode(Opcode::StrSlice);
         self.reg(dst);
         self.reg(s);
@@ -3783,7 +3784,7 @@ impl Asm {
     }
 
     /// Encodes `str_to_bytes dst, s`.
-    pub fn str_to_bytes(&mut self, dst: u32, s: u32) -> &mut Self {
+    pub fn str_to_bytes(&mut self, dst: Reg, s: Reg) -> &mut Self {
         self.opcode(Opcode::StrToBytes);
         self.reg(dst);
         self.reg(s);
@@ -3791,7 +3792,7 @@ impl Asm {
     }
 
     /// Encodes `bytes_to_str dst, bytes` (traps on invalid UTF-8).
-    pub fn bytes_to_str(&mut self, dst: u32, bytes: u32) -> &mut Self {
+    pub fn bytes_to_str(&mut self, dst: Reg, bytes: Reg) -> &mut Self {
         self.opcode(Opcode::BytesToStr);
         self.reg(dst);
         self.reg(bytes);
@@ -3801,11 +3802,11 @@ impl Asm {
     /// Encodes a `host_call` for a known [`HostSigId`].
     pub fn host_call_sig_id(
         &mut self,
-        eff_out: u32,
+        eff_out: Reg,
         host_sig: HostSigId,
-        eff_in: u32,
-        args: &[u32],
-        rets: &[u32],
+        eff_in: Reg,
+        args: &[Reg],
+        rets: &[Reg],
     ) -> &mut Self {
         self.host_call(eff_out, host_sig, eff_in, args, rets)
     }
@@ -3819,8 +3820,8 @@ impl Asm {
         opcode.encode(&mut self.bytes);
     }
 
-    fn reg(&mut self, r: u32) {
-        self.uleb(r);
+    fn reg(&mut self, r: Reg) {
+        self.uleb(r.0);
     }
 
     fn pc_label(&mut self, label: Label) {
@@ -3869,12 +3870,12 @@ mod tests {
         let mut body = builder.function_asm(function).unwrap();
         assert_eq!(body.register_types, [ValueType::Unit, ValueType::Agg]);
         let result = body.alloc_register(ValueType::I64);
-        assert_eq!(result, 2);
+        assert_eq!(result, Reg(2));
         let text = body.alloc_register(ValueType::Str);
         let literal = builder.const_str("still mutable");
         body.const_pool(text, literal)
-            .tuple_get(result, 1, 0)
-            .ret(0, &[result]);
+            .tuple_get(result, Reg(1), 0)
+            .ret(Reg(0), &[result]);
         builder.define_function(function, body).unwrap();
         builder.build_verified().unwrap();
     }
@@ -3890,12 +3891,12 @@ mod tests {
             .unwrap();
         let mut body = builder.function_asm(function).unwrap();
         let result = body.alloc_register(ValueType::I64);
-        body.ret(0, &[result]);
+        body.ret(Reg(0), &[result]);
         builder.define_function(function, body).unwrap();
         assert!(matches!(
             builder.build_verified(),
             Err(BuildError::Verify(rejected))
-                if matches!(rejected.error, VerifyError::UninitializedRead { reg: 1, .. })
+                if matches!(rejected.error, VerifyError::UninitializedRead { reg: Reg(1), .. })
         ));
     }
 
@@ -3913,7 +3914,7 @@ mod tests {
     fn pre_numbered_ledger_can_append_typed_temporaries() {
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
-        assert_eq!(body.alloc_register(ValueType::Str), 3);
+        assert_eq!(body.alloc_register(ValueType::Str), Reg(3));
         assert_eq!(
             body.finish_parts().unwrap().register_types,
             [
@@ -3929,8 +3930,8 @@ mod tests {
     fn streaming_allocation_reserves_effect_without_a_signature() {
         let mut body = Asm::new();
         let result = body.alloc_register(ValueType::I64);
-        assert_eq!(result, 1);
-        body.const_i64(result, 42).ret(0, &[result]);
+        assert_eq!(result, Reg(1));
+        body.const_i64(result, 42).ret(Reg(0), &[result]);
         let mut builder = ProgramBuilder::new();
         builder
             .push_function_checked(
@@ -3952,7 +3953,7 @@ mod tests {
         let result = body.alloc_register(ValueType::I64);
         body.const_i64(one, 1)
             .i64_add(result, argument, one)
-            .ret(0, &[result]);
+            .ret(Reg(0), &[result]);
         let mut builder = ProgramBuilder::new();
         builder
             .push_function_checked(
@@ -3993,14 +3994,14 @@ mod tests {
         let l_then = a.label();
         let l_else = a.label();
 
-        a.const_bool(1, true);
-        a.br(1, l_then, l_else);
+        a.const_bool(Reg(1), true);
+        a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
-        a.const_i64(2, 1);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 1);
+        a.ret(Reg(0), &[Reg(2)]);
         a.place(l_else).unwrap();
-        a.const_i64(2, 2);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 2);
+        a.ret(Reg(0), &[Reg(2)]);
 
         let bytes = a.finish().unwrap();
         assert!(!bytes.is_empty());
@@ -4010,8 +4011,8 @@ mod tests {
     fn asm_finish_checked_accepts_simple_program() {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.const_i64(1, 7);
-        a.ret(0, &[1]);
+        a.const_i64(Reg(1), 7);
+        a.ret(Reg(0), &[Reg(1)]);
         let bytes = a
             .finish_checked(&FunctionSig {
                 arg_types: vec![],
@@ -4028,7 +4029,7 @@ mod tests {
         let l0 = a.label();
         a.place(l0).unwrap();
         // br r1, l0, l0  (r1 is uninitialized under arg_count=0)
-        a.br(1, l0, l0);
+        a.br(Reg(1), l0, l0);
         let err = a
             .finish_checked(&FunctionSig {
                 arg_types: vec![],
@@ -4061,14 +4062,14 @@ mod tests {
         // Define `foo` first; it calls `bar` by its declared `FuncId`.
         let mut a_foo = Asm::new();
         a_foo.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a_foo.call(0, bar, 0, &[], &[1]);
-        a_foo.ret(0, &[1]);
+        a_foo.call(Reg(0), bar, Reg(0), &[], &[Reg(1)]);
+        a_foo.ret(Reg(0), &[Reg(1)]);
         pb.define_function(foo, a_foo).unwrap();
 
         let mut a_bar = Asm::new();
         a_bar.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a_bar.const_i64(1, 7);
-        a_bar.ret(0, &[1]);
+        a_bar.const_i64(Reg(1), 7);
+        a_bar.ret(Reg(0), &[Reg(1)]);
         pb.define_function(bar, a_bar).unwrap();
 
         let p = pb.build_checked().unwrap();
@@ -4095,8 +4096,8 @@ mod tests {
             ValueType::Unit,
             ValueType::I64,
         ]);
-        a.const_i64(7, 1);
-        a.ret(0, &[]);
+        a.const_i64(Reg(7), 1);
+        a.ret(Reg(0), &[]);
         pb.define_function(func, a).unwrap();
 
         let p = pb.build_checked().unwrap();
@@ -4108,7 +4109,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Bool]);
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
         let func = pb
             .push_function_checked(
                 a,
@@ -4206,8 +4207,15 @@ mod tests {
     #[test]
     fn asm_encodes_closure_new_and_call_indirect() {
         let mut a = Asm::new();
-        a.closure_new(3, 1, 2);
-        a.call_indirect(0, CallSigId(7), 3, 0, &[4, 5], &[6]);
+        a.closure_new(Reg(3), Reg(1), Reg(2));
+        a.call_indirect(
+            Reg(0),
+            CallSigId(7),
+            Reg(3),
+            Reg(0),
+            &[Reg(4), Reg(5)],
+            &[Reg(6)],
+        );
 
         let bytes = a.finish().unwrap();
         let decoded = decode_instructions(&bytes).unwrap();
@@ -4270,7 +4278,7 @@ mod tests {
         let tuple = pb.contract(Contract::Tuple(&[Some(integer)])).unwrap();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
-        a.tuple_get(2, 1, 0).ret(0, &[2]);
+        a.tuple_get(Reg(2), Reg(1), 0).ret(Reg(0), &[Reg(2)]);
         let func = pb
             .push_function_checked(
                 a,
@@ -4318,7 +4326,7 @@ mod tests {
 
         let mut callee_asm = Asm::new();
         callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee_asm.ret(0, &[1]);
+        callee_asm.ret(Reg(0), &[Reg(1)]);
         pb.define_function(callee, callee_asm).unwrap();
 
         let mut caller_asm = Asm::new();
@@ -4328,10 +4336,10 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        caller_asm.const_func(1, callee);
-        caller_asm.const_i64(2, 7);
-        caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
-        caller_asm.ret(0, &[3]);
+        caller_asm.const_func(Reg(1), callee);
+        caller_asm.const_i64(Reg(2), 7);
+        caller_asm.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
+        caller_asm.ret(Reg(0), &[Reg(3)]);
         pb.define_function(caller, caller_asm).unwrap();
 
         let vp = pb.build_verified().unwrap();
@@ -4378,7 +4386,7 @@ mod tests {
 
         let mut callee_asm = Asm::new();
         callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee_asm.ret(0, &[1]);
+        callee_asm.ret(Reg(0), &[Reg(1)]);
         pb.define_function(callee, callee_asm).unwrap();
 
         let mut caller_asm = Asm::new();
@@ -4388,10 +4396,10 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        caller_asm.const_func(1, callee);
-        caller_asm.const_i64(2, 7);
-        caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
-        caller_asm.ret(0, &[3]);
+        caller_asm.const_func(Reg(1), callee);
+        caller_asm.const_i64(Reg(2), 7);
+        caller_asm.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
+        caller_asm.ret(Reg(0), &[Reg(3)]);
         pb.define_function(caller, caller_asm).unwrap();
 
         let program = pb.build();
@@ -4411,7 +4419,7 @@ mod tests {
         let mut a = Asm::new();
         a.span(SpanId::try_from(1).unwrap());
         a.span(SpanId::try_from(2).unwrap());
-        a.const_unit(0);
+        a.const_unit(Reg(0));
         a.span(SpanId::try_from(3).unwrap());
         a.trap(0);
 

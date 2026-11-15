@@ -20,16 +20,16 @@ use crate::format::{
     DecodeError as FormatDecodeError, Reader, write_sleb128_i64, write_uleb128_u64,
 };
 use crate::opcode::{CodeBytes, Opcode, OperandEncoding, OperandKind};
-use crate::program::{ConstId, ElemTypeId, HostSigId, TypeId};
+use crate::program::{ConstId, ElemTypeId, HostSigId, Reg, TypeId};
 use crate::value::{Decimal, FuncId};
 
 /// An operand value for encoding an instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operand<'a> {
     /// A single virtual register.
-    Reg(u32),
+    Reg(Reg),
     /// A list of virtual registers.
-    RegList(&'a [u32]),
+    RegList(&'a [Reg]),
     /// A bytecode PC (byte offset).
     Pc(u32),
 
@@ -88,9 +88,9 @@ impl Operand<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodedOperand {
     /// A single virtual register.
-    Reg(u32),
+    Reg(Reg),
     /// A list of virtual registers.
-    RegList(Vec<u32>),
+    RegList(Vec<Reg>),
     /// A bytecode PC (byte offset).
     Pc(u32),
 
@@ -311,7 +311,7 @@ pub fn encode_instruction(
 
         match (operand, spec.kind, spec.encoding) {
             (Operand::Reg(r), OperandKind::Reg, OperandEncoding::RegU32Uleb) => {
-                write_uleb128_u64(out, u64::from(r));
+                write_uleb128_u64(out, u64::from(r.0));
             }
             (
                 Operand::RegList(rs),
@@ -321,7 +321,7 @@ pub fn encode_instruction(
                 let n: u32 = rs.len().try_into().map_err(|_| EncodeError::OutOfBounds)?;
                 write_uleb128_u64(out, u64::from(n));
                 for &r in rs {
-                    write_uleb128_u64(out, u64::from(r));
+                    write_uleb128_u64(out, u64::from(r.0));
                 }
             }
             (Operand::Pc(pc), OperandKind::Pc, OperandEncoding::U32Uleb)
@@ -397,10 +397,15 @@ pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeErro
     for (i, spec) in schema.iter().enumerate() {
         let operand = match (spec.kind, spec.encoding) {
             (OperandKind::Reg, OperandEncoding::RegU32Uleb) => {
-                DecodedOperand::Reg(read_u32_uleb(&mut r)?)
+                DecodedOperand::Reg(Reg(read_u32_uleb(&mut r)?))
             }
             (OperandKind::RegList, OperandEncoding::RegListU32UlebCountThenRegs) => {
-                DecodedOperand::RegList(crate::codec_primitives::read_reg_list(&mut r)?)
+                DecodedOperand::RegList(
+                    crate::codec_primitives::read_reg_list(&mut r)?
+                        .into_iter()
+                        .map(Reg)
+                        .collect(),
+                )
             }
             (OperandKind::Pc, OperandEncoding::U32Uleb) => {
                 DecodedOperand::Pc(read_u32_uleb(&mut r)?)
@@ -532,16 +537,16 @@ mod tests {
         encode_instruction(Opcode::Trap, &[Operand::ImmU32(7)], &mut bytes).unwrap();
         encode_instruction(
             Opcode::ConstF64,
-            &[Operand::Reg(1), Operand::ImmU64(0x3ff0_0000_0000_0000)],
+            &[Operand::Reg(Reg(1)), Operand::ImmU64(0x3ff0_0000_0000_0000)],
             &mut bytes,
         )
         .unwrap();
         encode_instruction(
             Opcode::ArrayNew,
             &[
-                Operand::Reg(1),
+                Operand::Reg(Reg(1)),
                 Operand::ElemTypeId(ElemTypeId(0)),
-                Operand::RegList(&[2, 3]),
+                Operand::RegList(&[Reg(2), Reg(3)]),
             ],
             &mut bytes,
         )
@@ -554,7 +559,7 @@ mod tests {
         assert_eq!(
             decoded[2].operands,
             vec![
-                DecodedOperand::Reg(1),
+                DecodedOperand::Reg(Reg(1)),
                 DecodedOperand::ImmU64(0x3ff0_0000_0000_0000)
             ]
         );
@@ -562,9 +567,9 @@ mod tests {
         assert_eq!(
             decoded[3].operands,
             vec![
-                DecodedOperand::Reg(1),
+                DecodedOperand::Reg(Reg(1)),
                 DecodedOperand::ElemTypeId(ElemTypeId(0)),
-                DecodedOperand::RegList(vec![2, 3])
+                DecodedOperand::RegList(vec![Reg(2), Reg(3)])
             ]
         );
     }
@@ -574,7 +579,7 @@ mod tests {
         let mut out = Vec::new();
         let err = encode_instruction(
             Opcode::Mov,
-            &[Operand::ImmU32(1), Operand::Reg(2)],
+            &[Operand::ImmU32(1), Operand::Reg(Reg(2))],
             &mut out,
         )
         .unwrap_err();
@@ -584,7 +589,7 @@ mod tests {
     #[test]
     fn canonicalize_normalizes_noncanonical_uleb() {
         let mut canonical: Vec<u8> = Vec::new();
-        encode_instruction(Opcode::ConstUnit, &[Operand::Reg(0)], &mut canonical).unwrap();
+        encode_instruction(Opcode::ConstUnit, &[Operand::Reg(Reg(0))], &mut canonical).unwrap();
         assert_eq!(canonical.as_slice(), &[Opcode::ConstUnit as u8, 0x00]);
 
         let noncanonical = vec![Opcode::ConstUnit as u8, 0x80, 0x00];

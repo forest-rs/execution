@@ -5,7 +5,7 @@
 
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     callable::Callable,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{ElemTypeId, StructTypeDef, TypeId, ValueType},
@@ -44,11 +44,16 @@ fn program_shape(tail: bool, two_calls: bool) -> Callable {
     );
     let mut a = b.function_asm(entry).unwrap();
     let result = a.alloc_register(ValueType::Agg);
-    a.host_call_sig_id(0, import, 0, &[1], &[result]);
+    a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[result]);
     if two_calls {
         let bridge = a.alloc_register(ValueType::Agg);
-        a.tuple_new(bridge, &[result])
-            .host_call_sig_id(0, import, 0, &[bridge], &[result]);
+        a.tuple_new(bridge, &[result]).host_call_sig_id(
+            Reg(0),
+            import,
+            Reg(0),
+            &[bridge],
+            &[result],
+        );
     }
     let output = if tail {
         let wrapped = a.alloc_register(ValueType::Agg);
@@ -57,7 +62,7 @@ fn program_shape(tail: bool, two_calls: bool) -> Callable {
     } else {
         result
     };
-    a.ret(0, &[output]);
+    a.ret(Reg(0), &[output]);
     b.define_function(entry, a).unwrap();
     Callable::function(Arc::new(b.build_verified().unwrap()), entry).unwrap()
 }

@@ -12,7 +12,7 @@ use std::{hint::black_box, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::{
-    asm::{Asm, FunctionSig, ProgramBuilder},
+    asm::{Asm, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     math,
     program::{
@@ -91,27 +91,27 @@ impl Op {
     /// Emits one link of the chain on `r1`, with `r2` holding `1.01` and `r3` scratch.
     fn emit(self, body: &mut Asm, width: Width, host: Option<HostSigId>) {
         match (self, width) {
-            (Self::ExpNeg, Width::F32) => _ = body.f32_neg(3, 1),
-            (Self::ExpNeg, Width::F64) => _ = body.f64_neg(3, 1),
+            (Self::ExpNeg, Width::F32) => _ = body.f32_neg(Reg(3), Reg(1)),
+            (Self::ExpNeg, Width::F64) => _ = body.f64_neg(Reg(3), Reg(1)),
             _ => {}
         };
         let Some(host) = host else {
             match (self, width) {
-                (Self::Pow, Width::F32) => _ = body.f32_pow(1, 1, 2),
-                (Self::Sin, Width::F32) => _ = body.f32_sin(1, 1),
-                (Self::ExpNeg, Width::F32) => _ = body.f32_exp(1, 3),
-                (Self::Pow, Width::F64) => _ = body.f64_pow(1, 1, 2),
-                (Self::Sin, Width::F64) => _ = body.f64_sin(1, 1),
-                (Self::ExpNeg, Width::F64) => _ = body.f64_exp(1, 3),
+                (Self::Pow, Width::F32) => _ = body.f32_pow(Reg(1), Reg(1), Reg(2)),
+                (Self::Sin, Width::F32) => _ = body.f32_sin(Reg(1), Reg(1)),
+                (Self::ExpNeg, Width::F32) => _ = body.f32_exp(Reg(1), Reg(3)),
+                (Self::Pow, Width::F64) => _ = body.f64_pow(Reg(1), Reg(1), Reg(2)),
+                (Self::Sin, Width::F64) => _ = body.f64_sin(Reg(1), Reg(1)),
+                (Self::ExpNeg, Width::F64) => _ = body.f64_exp(Reg(1), Reg(3)),
             }
             return;
         };
-        let args: &[u32] = match self {
-            Self::Pow => &[1, 2],
-            Self::Sin => &[1],
-            Self::ExpNeg => &[3],
+        let args: &[Reg] = match self {
+            Self::Pow => &[Reg(1), Reg(2)],
+            Self::Sin => &[Reg(1)],
+            Self::ExpNeg => &[Reg(3)],
         };
-        body.host_call_sig_id(0, host, 0, args, &[1]);
+        body.host_call_sig_id(Reg(0), host, Reg(0), args, &[Reg(1)]);
     }
 }
 
@@ -175,13 +175,13 @@ fn chain(c: &mut Criterion) {
             let mut body = Asm::new();
             body.set_register_types(vec![Unit, ty, ty, ty]);
             match width {
-                Width::F32 => _ = body.const_f32(2, 1.01),
-                Width::F64 => _ = body.const_f64(2, 1.01),
+                Width::F32 => _ = body.const_f32(Reg(2), 1.01),
+                Width::F64 => _ = body.const_f64(Reg(2), 1.01),
             }
             for _ in 0..CHAIN {
                 op.emit(&mut body, width, (path == "host").then_some(host));
             }
-            body.ret(0, &[1]);
+            body.ret(Reg(0), &[Reg(1)]);
             let entry = builder
                 .push_function_checked(
                     body,

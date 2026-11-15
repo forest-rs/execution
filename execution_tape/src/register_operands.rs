@@ -4,6 +4,7 @@
 //! Register iteration shared by verification and disassembly.
 
 use crate::bytecode::{MAX_REGISTER_LISTS, MAX_SCALAR_OPERANDS};
+use crate::program::Reg;
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct OperandIter<'a, const SCALARS: usize, const LISTS: usize> {
@@ -29,6 +30,60 @@ impl<'a, const SCALARS: usize, const LISTS: usize> OperandIter<'a, SCALARS, LIST
             tail_idx: 0,
             item_idx: 0,
         }
+    }
+}
+
+/// A borrowed list of register operands, such as a call's arguments or a block's parameters.
+///
+/// Disassembly lends these from the decoded instruction without copying them.
+#[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+pub struct RegList<'a>(&'a [u32]);
+
+impl<'a> RegList<'a> {
+    pub(crate) fn new(regs: &'a [u32]) -> Self {
+        Self(regs)
+    }
+
+    pub(crate) fn raw(self) -> &'a [u32] {
+        self.0
+    }
+
+    /// Number of registers in the list.
+    #[must_use]
+    pub fn len(self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the list is empty.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the register at `index`, or `None` when it is out of range.
+    #[must_use]
+    pub fn get(self, index: usize) -> Option<Reg> {
+        self.0.get(index).copied().map(Reg)
+    }
+
+    /// Iterates the registers in operand order.
+    pub fn iter(self) -> impl DoubleEndedIterator<Item = Reg> + ExactSizeIterator + 'a {
+        self.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for RegList<'a> {
+    type Item = Reg;
+    type IntoIter = core::iter::Map<core::slice::Iter<'a, u32>, fn(&u32) -> Reg>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().map(|&register| Reg(register))
+    }
+}
+
+impl core::fmt::Debug for RegList<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -71,32 +126,32 @@ impl<'a> RegIter<'a> {
 
     /// Returns an iterator over a single register.
     #[must_use]
-    pub fn one(a: u32) -> Self {
-        Self::new(&[a], &[])
+    pub fn one(a: Reg) -> Self {
+        Self::new(&[a.0], &[])
     }
 
     /// Returns an iterator over two registers.
     #[must_use]
-    pub fn two(a: u32, b: u32) -> Self {
-        Self::new(&[a, b], &[])
+    pub fn two(a: Reg, b: Reg) -> Self {
+        Self::new(&[a.0, b.0], &[])
     }
 
     /// Returns an iterator over three registers.
     #[must_use]
-    pub fn three(a: u32, b: u32, c: u32) -> Self {
-        Self::new(&[a, b, c], &[])
+    pub fn three(a: Reg, b: Reg, c: Reg) -> Self {
+        Self::new(&[a.0, b.0, c.0], &[])
     }
 
-    /// Returns an iterator over a slice of registers.
+    /// Returns an iterator over a list of registers.
     #[must_use]
-    pub fn slice(tail: &'a [u32]) -> Self {
-        Self::new(&[], &[tail])
+    pub fn slice(tail: RegList<'a>) -> Self {
+        Self::new(&[], &[tail.0])
     }
 
     /// Returns an iterator over `first`, followed by all registers in `tail`.
     #[must_use]
-    pub fn one_plus_slice(first: u32, tail: &'a [u32]) -> Self {
-        Self::new(&[first], &[tail])
+    pub fn one_plus_slice(first: Reg, tail: RegList<'a>) -> Self {
+        Self::new(&[first.0], &[tail.0])
     }
 }
 
@@ -134,15 +189,15 @@ impl<const SCALARS: usize, const LISTS: usize> Iterator for OperandIter<'_, SCAL
 }
 
 impl Iterator for RegIter<'_> {
-    type Item = u32;
+    type Item = Reg;
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.inner.next().map(Reg)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OperandIter, RegIter};
+    use super::{OperandIter, Reg, RegIter, RegList};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -158,10 +213,11 @@ mod tests {
             let exposed = RegIter::from_operands(source);
             let mut exposed_copy = exposed;
             let expected: Vec<_> = [7, 8, 9].into_iter().skip(consumed).collect();
+            let registers: Vec<_> = expected.iter().copied().map(Reg).collect();
             assert_eq!(source.collect::<Vec<_>>(), expected);
             assert_eq!(copy.collect::<Vec<_>>(), expected);
-            assert_eq!(exposed.collect::<Vec<_>>(), expected);
-            assert_eq!(exposed_copy.by_ref().collect::<Vec<_>>(), expected);
+            assert_eq!(exposed.collect::<Vec<_>>(), registers);
+            assert_eq!(exposed_copy.by_ref().collect::<Vec<_>>(), registers);
             assert_eq!(exposed_copy.next(), None);
             assert_eq!(exposed_copy.next(), None);
         }
@@ -176,12 +232,16 @@ mod tests {
     fn public_constructors_keep_their_register_order() {
         for (iterator, expected) in [
             (RegIter::empty(), vec![]),
-            (RegIter::one(1), vec![1]),
-            (RegIter::two(1, 2), vec![1, 2]),
-            (RegIter::three(1, 2, 3), vec![1, 2, 3]),
-            (RegIter::slice(&[4, 5]), vec![4, 5]),
-            (RegIter::one_plus_slice(1, &[4, 5]), vec![1, 4, 5]),
+            (RegIter::one(Reg(1)), vec![1]),
+            (RegIter::two(Reg(1), Reg(2)), vec![1, 2]),
+            (RegIter::three(Reg(1), Reg(2), Reg(3)), vec![1, 2, 3]),
+            (RegIter::slice(RegList::new(&[4, 5])), vec![4, 5]),
+            (
+                RegIter::one_plus_slice(Reg(1), RegList::new(&[4, 5])),
+                vec![1, 4, 5],
+            ),
         ] {
+            let expected: Vec<_> = expected.into_iter().map(Reg).collect();
             assert_eq!(iterator.collect::<Vec<_>>(), expected);
         }
     }

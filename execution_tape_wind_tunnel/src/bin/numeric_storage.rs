@@ -5,7 +5,7 @@
 
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{Asm, FunctionSig, ProgramBuilder},
+    asm::{Asm, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{Const, VERSION_MAJOR, VERSION_MINOR, ValueType},
     recording::{RecordLimits, RecordedValue, Recorder},
@@ -39,31 +39,31 @@ fn main() {
         body.set_register_types(vec![ValueType::Unit, kind, kind]);
         match kind {
             ValueType::I64 => {
-                body.const_i64(2, 1);
+                body.const_i64(Reg(2), 1);
             }
             ValueType::F64 => {
-                body.const_f64(2, 0.01);
+                body.const_f64(Reg(2), 0.01);
             }
             ValueType::Decimal => {
-                body.const_decimal(2, 1, 2);
+                body.const_decimal(Reg(2), 1, 2);
             }
             _ => unreachable!(),
         }
         for _ in 0..1024 {
             match kind {
                 ValueType::I64 => {
-                    body.i64_add(1, 1, 2);
+                    body.i64_add(Reg(1), Reg(1), Reg(2));
                 }
                 ValueType::F64 => {
-                    body.f64_add(1, 1, 2);
+                    body.f64_add(Reg(1), Reg(1), Reg(2));
                 }
                 ValueType::Decimal => {
-                    body.dec_add(1, 1, 2);
+                    body.dec_add(Reg(1), Reg(1), Reg(2));
                 }
                 _ => unreachable!(),
             }
         }
-        body.ret(0, &[1]);
+        body.ret(Reg(0), &[Reg(1)]);
         let id = builder
             .push_function_checked(
                 body,
@@ -107,11 +107,11 @@ fn main() {
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, kind]);
         if kind == ValueType::I64 {
-            body.const_i64(1, 12345);
+            body.const_i64(Reg(1), 12345);
         } else {
-            body.const_decimal(1, 12345, 2);
+            body.const_decimal(Reg(1), 12345, 2);
         }
-        body.ret(0, &vec![1; 1024]);
+        body.ret(Reg(0), &vec![Reg(1); 1024]);
         let mut builder = ProgramBuilder::new();
         let id = builder
             .push_function_checked(

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+use crate::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use crate::host::{HostError, HostSig, SigHash, ValueRef};
 use crate::program::StructTypeDef;
 use alloc::vec;
@@ -113,17 +113,17 @@ fn doubling_traps_before_next_copy_and_context_resets() {
             |a, _| {
                 for _ in 0..7 {
                     if text {
-                        a.str_concat(1, 1, 1);
+                        a.str_concat(Reg(1), Reg(1), Reg(1));
                     } else {
-                        a.bytes_concat(1, 1, 1);
+                        a.bytes_concat(Reg(1), Reg(1), Reg(1));
                     }
                 }
                 if text {
-                    a.str_len(2, 1);
+                    a.str_len(Reg(2), Reg(1));
                 } else {
-                    a.bytes_len(2, 1);
+                    a.bytes_len(Reg(2), Reg(1));
                 }
-                a.ret(0, &[2]);
+                a.ret(Reg(0), &[Reg(2)]);
             },
         );
         let args = [if text {
@@ -193,21 +193,21 @@ fn aggregate_fields_and_repeated_root_returns_charge_each_owned_copy() {
                 |a, b| {
                     match constructor {
                         0 => {
-                            a.tuple_new(2, &[1, 1]);
+                            a.tuple_new(Reg(2), &[Reg(1), Reg(1)]);
                         }
                         1 => {
                             let ty = b.struct_type(StructTypeDef {
                                 field_names: vec!["a".into(), "b".into()],
                                 field_types: vec![kind, kind],
                             });
-                            a.struct_new(2, ty, &[1, 1]);
+                            a.struct_new(Reg(2), ty, &[Reg(1), Reg(1)]);
                         }
                         _ => {
                             let ty = b.array_elem(kind);
-                            a.array_new(2, ty, &[1, 1]);
+                            a.array_new(Reg(2), ty, &[Reg(1), Reg(1)]);
                         }
                     }
-                    a.ret(0, &[2, 1, 1]);
+                    a.ret(Reg(0), &[Reg(2), Reg(1), Reg(1)]);
                 },
             );
             exact_work(
@@ -237,11 +237,11 @@ fn equality_uses_deterministic_length_work() {
             vec![ValueType::Unit, kind, kind, ValueType::Bool],
             |a, _| {
                 if text {
-                    a.str_eq(3, 1, 2);
+                    a.str_eq(Reg(3), Reg(1), Reg(2));
                 } else {
-                    a.bytes_eq(3, 1, 2);
+                    a.bytes_eq(Reg(3), Reg(1), Reg(2));
                 }
-                a.ret(0, &[3]);
+                a.ret(Reg(0), &[Reg(3)]);
             },
         );
         for unequal in [false, true] {
@@ -288,11 +288,13 @@ fn slices_charge_output_bytes_after_index_and_character_validation() {
             ],
             |a, _| {
                 if text {
-                    a.str_slice(4, 1, 2, 3).str_len(5, 4);
+                    a.str_slice(Reg(4), Reg(1), Reg(2), Reg(3))
+                        .str_len(Reg(5), Reg(4));
                 } else {
-                    a.bytes_slice(4, 1, 2, 3).bytes_len(5, 4);
+                    a.bytes_slice(Reg(4), Reg(1), Reg(2), Reg(3))
+                        .bytes_len(Reg(5), Reg(4));
                 }
-                a.ret(0, &[5]);
+                a.ret(Reg(0), &[Reg(5)]);
             },
         );
         let value = if text {
@@ -346,11 +348,11 @@ fn conversions_charge_copy_and_utf8_work_before_it_occurs() {
             vec![ValueType::Unit, kind, result_kind, ValueType::U64],
             |a, _| {
                 if to_text {
-                    a.bytes_to_str(2, 1).str_len(3, 2);
+                    a.bytes_to_str(Reg(2), Reg(1)).str_len(Reg(3), Reg(2));
                 } else {
-                    a.str_to_bytes(2, 1).bytes_len(3, 2);
+                    a.str_to_bytes(Reg(2), Reg(1)).bytes_len(Reg(3), Reg(2));
                 }
-                a.ret(0, &[3]);
+                a.ret(Reg(0), &[Reg(3)]);
             },
         );
         exact_work(
@@ -399,10 +401,10 @@ fn borrowed_constants_and_guest_transfers_do_not_charge() {
         ValueType::U64,
     ]);
     let text = builder.const_str("large enough to require payload storage");
-    body.const_pool(1, text)
-        .call(0, FuncId(1), 0, &[1], &[2])
-        .str_len(3, 2)
-        .ret(0, &[3]);
+    body.const_pool(Reg(1), text)
+        .call(Reg(0), FuncId(1), Reg(0), &[Reg(1)], &[Reg(2)])
+        .str_len(Reg(3), Reg(2))
+        .ret(Reg(0), &[Reg(3)]);
     builder
         .push_function_checked(
             body,
@@ -414,7 +416,7 @@ fn borrowed_constants_and_guest_transfers_do_not_charge() {
         .unwrap();
     let mut callee = Asm::new();
     callee.set_register_types(vec![ValueType::Unit, ValueType::Str]);
-    callee.mov(1, 1).ret(0, &[1]);
+    callee.mov(Reg(1), Reg(1)).ret(Reg(0), &[Reg(1)]);
     builder
         .push_function_checked(
             callee,
@@ -436,7 +438,7 @@ fn zero_budget_accepts_empty_copies_and_rejects_nonempty_root_materialization() 
             ValueType::Bytes
         };
         let p = program(&[kind], &[kind], vec![ValueType::Unit, kind], |a, _| {
-            a.ret(0, &[1]);
+            a.ret(Reg(0), &[Reg(1)]);
         });
         exact_work(
             &p,
@@ -500,9 +502,9 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
                     rets: vec![ValueType::Bytes, ValueType::Str],
                 },
             );
-            a.host_call_sig_id(0, host, 0, &[], &[1, 2])
-                .bytes_len(3, 1)
-                .ret(0, &[3]);
+            a.host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(1), Reg(2)])
+                .bytes_len(Reg(3), Reg(1))
+                .ret(Reg(0), &[Reg(3)]);
         },
     );
     for (second, fail, limit) in [
@@ -614,9 +616,9 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
             ValueType::Bytes,
             ValueType::U64,
         ]);
-        a.tuple_get(2, 1, 0)
-            .bytes_len(3, 2)
-            .ret(0, &[if return_payload { 2 } else { 3 }]);
+        a.tuple_get(Reg(2), Reg(1), 0)
+            .bytes_len(Reg(3), Reg(2))
+            .ret(Reg(0), &[Reg(if return_payload { 2 } else { 3 })]);
         b.push_function_checked(
             a,
             crate::asm::FunctionAbi {
@@ -685,7 +687,8 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
                     rets: vec![ValueType::Agg],
                 },
             );
-            a.host_call_sig_id(0, host, 0, &[], &[1]).ret(0, &[1]);
+            a.host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(1)])
+                .ret(Reg(0), &[Reg(1)]);
         },
     );
     let unit = vm.install(returned.clone()).unwrap();

@@ -15,7 +15,7 @@
 //!
 //! ```
 //! use execution_tape::{
-//!     asm::{FunctionSig, ProgramBuilder}, program::ValueType,
+//!     asm::{FunctionSig, ProgramBuilder, Reg}, program::ValueType,
 //!     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping, SourcePosition},
 //!     trace::CodeLocation,
 //! };
@@ -26,7 +26,7 @@
 //! let mut body = builder.function_asm(function)?;
 //! let result = body.alloc_register(ValueType::I64);
 //! let location = CodeLocation { func: function, pc: body.pc() };
-//! body.const_i64(result, 42).ret(0, &[result]);
+//! body.const_i64(result, 42).ret(Reg(0), &[result]);
 //! builder.define_function(function, body)?;
 //! let program = builder.build_verified()?;
 //! let sources = SourceMap::new(program.program(), vec![SourceDocument {
@@ -655,14 +655,14 @@ impl<'a> BoundSources<'a> {
 mod tests {
     use super::*;
     use crate::{
-        asm::{Asm, FunctionSig, ProgramBuilder},
+        asm::{Asm, FunctionSig, ProgramBuilder, Reg},
         program::ValueType,
     };
     use alloc::{format, vec};
     fn fixture(value: i64) -> (Program, CodeLocation) {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.const_i64(1, value).ret(0, &[1]);
+        a.const_i64(Reg(1), value).ret(Reg(0), &[Reg(1)]);
         let mut b = ProgramBuilder::new();
         let func = b
             .push_function_checked(

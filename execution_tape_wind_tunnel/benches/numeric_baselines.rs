@@ -8,7 +8,7 @@ use std::{hint::black_box, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::{
-    asm::{Asm, FunctionSig, ProgramBuilder},
+    asm::{Asm, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{Const, ValueType},
     trace::TraceMask,
@@ -53,15 +53,15 @@ fn numeric(c: &mut Criterion) {
             body.set_register_types(vec![ValueType::Unit, kind, kind]);
             let input = match kind {
                 ValueType::I64 => {
-                    body.const_i64(2, 1);
+                    body.const_i64(Reg(2), 1);
                     Value::I64(12345)
                 }
                 ValueType::F64 => {
-                    body.const_f64(2, 0.01);
+                    body.const_f64(Reg(2), 0.01);
                     Value::F64(123.45)
                 }
                 ValueType::Decimal => {
-                    body.const_decimal(2, 1, 2);
+                    body.const_decimal(Reg(2), 1, 2);
                     Value::Decimal(Decimal::new(12345, 2))
                 }
                 _ => unreachable!(),
@@ -69,18 +69,18 @@ fn numeric(c: &mut Criterion) {
             for _ in 0..count {
                 match kind {
                     ValueType::I64 => {
-                        body.i64_add(1, 1, 2);
+                        body.i64_add(Reg(1), Reg(1), Reg(2));
                     }
                     ValueType::F64 => {
-                        body.f64_add(1, 1, 2);
+                        body.f64_add(Reg(1), Reg(1), Reg(2));
                     }
                     ValueType::Decimal => {
-                        body.dec_add(1, 1, 2);
+                        body.dec_add(Reg(1), Reg(1), Reg(2));
                     }
                     _ => unreachable!(),
                 }
             }
-            body.ret(0, &[1]);
+            body.ret(Reg(0), &[Reg(1)]);
             let mut builder = ProgramBuilder::new();
             let entry = builder
                 .push_function_checked(
@@ -164,24 +164,24 @@ fn boundaries(c: &mut Criterion) {
             );
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, kind]);
-            body.const_pool(1, literal);
+            body.const_pool(Reg(1), literal);
             for _ in 0..128 {
                 match path {
                     "inline" if kind == ValueType::I64 => {
-                        body.const_i64(1, 12345);
+                        body.const_i64(Reg(1), 12345);
                     }
                     "inline" => {
-                        body.const_decimal_value(1, decimal);
+                        body.const_decimal_value(Reg(1), decimal);
                     }
                     "pool" => {
-                        body.const_pool(1, literal);
+                        body.const_pool(Reg(1), literal);
                     }
                     _ => {
-                        body.host_call_sig_id(0, host, 0, &[1], &[1]);
+                        body.host_call_sig_id(Reg(0), host, Reg(0), &[Reg(1)], &[Reg(1)]);
                     }
                 }
             }
-            body.ret(0, &[1]);
+            body.ret(Reg(0), &[Reg(1)]);
             let entry = builder
                 .push_function_checked(
                     body,

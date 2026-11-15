@@ -3,7 +3,7 @@
 
 //! Two frontend workloads: incremental temporary allocation and pre-numbered lowered bodies.
 
-use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::contract::Contract;
 use execution_tape::program::{Program, SpanId, ValueType};
 
@@ -18,7 +18,7 @@ pub(super) fn streaming(steps: u32) -> Program {
     let mut body = builder.function_asm(function).unwrap();
     let one = body.alloc_register(ValueType::I64);
     body.const_i64(one, 1);
-    let mut value = 1;
+    let mut value = Reg(1);
     for step in 0..steps {
         body.span(SpanId::try_from(u64::from(step) + 1).unwrap());
         let next = body.alloc_register(ValueType::I64);
@@ -35,7 +35,7 @@ pub(super) fn streaming(steps: u32) -> Program {
             value = next;
         }
     }
-    body.ret(0, &[value]);
+    body.ret(Reg(0), &[value]);
     builder.define_function(function, body).unwrap();
     builder.build()
 }
@@ -78,7 +78,9 @@ pub(super) fn lowered(callers: u32) -> Program {
         ValueType::I64,
         ValueType::I64,
     ]);
-    body.tuple_get(3, 1, 0).i64_add(4, 2, 3).ret(0, &[4]);
+    body.tuple_get(Reg(3), Reg(1), 0)
+        .i64_add(Reg(4), Reg(2), Reg(3))
+        .ret(Reg(0), &[Reg(4)]);
     builder.define_function(callee, body).unwrap();
     for function in functions {
         let mut body = Asm::new();
@@ -92,12 +94,12 @@ pub(super) fn lowered(callers: u32) -> Program {
             ValueType::I64,
         ]);
         body.span(SpanId::try_from(u64::from(function.0) + 1).unwrap());
-        body.const_i64(2, 42)
-            .tuple_new(3, &[2])
-            .const_func(4, callee)
-            .closure_new(5, 4, 3)
-            .call_indirect(0, call, 5, 0, &[1], &[6])
-            .ret(0, &[6]);
+        body.const_i64(Reg(2), 42)
+            .tuple_new(Reg(3), &[Reg(2)])
+            .const_func(Reg(4), callee)
+            .closure_new(Reg(5), Reg(4), Reg(3))
+            .call_indirect(Reg(0), call, Reg(5), Reg(0), &[Reg(1)], &[Reg(6)])
+            .ret(Reg(0), &[Reg(6)]);
         builder.define_function(function, body).unwrap();
     }
     builder.build()

@@ -8,7 +8,7 @@ use alloc::boxed::Box;
 use super::VerifyError;
 use super::metadata::MetadataTable;
 use crate::bytecode::DecodedInstr;
-use crate::program::{Function, Program, ValueType};
+use crate::program::{Function, Program, Reg, ValueType};
 
 /// Why a protected region or one of its clauses is invalid.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,7 +234,9 @@ pub(super) fn verify(
             }
             if let Some((tag, payload)) = payload {
                 for (position, (&param, &kind)) in params.iter().zip(payload.iter()).enumerate() {
-                    let actual = function.register_type(program, param).map_err(malformed)?;
+                    let actual = function
+                        .register_type(program, Reg(param))
+                        .map_err(malformed)?;
                     if actual != kind {
                         return Err(invalid(
                             index,
@@ -252,7 +254,9 @@ pub(super) fn verify(
             }
             if catch.binds_exception() {
                 let last = *params.last().expect("checked parameter count");
-                let actual = function.register_type(program, last).map_err(malformed)?;
+                let actual = function
+                    .register_type(program, Reg(last))
+                    .map_err(malformed)?;
                 if actual != ValueType::Exn {
                     return Err(invalid(
                         index,
@@ -262,7 +266,9 @@ pub(super) fn verify(
             }
             if catch.handles_suspension() {
                 let last = *params.last().expect("checked parameter count");
-                let actual = function.register_type(program, last).map_err(malformed)?;
+                let actual = function
+                    .register_type(program, Reg(last))
+                    .map_err(malformed)?;
                 if actual != ValueType::Cont {
                     return Err(invalid(
                         index,

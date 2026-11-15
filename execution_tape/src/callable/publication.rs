@@ -565,7 +565,7 @@ impl fmt::Display for CodeUpdateError {
 mod tests {
     use super::*;
     use crate::{
-        asm::{FunctionSig, ProgramBuilder},
+        asm::{FunctionSig, ProgramBuilder, Reg},
         program::ValueType,
     };
     use alloc::vec;
@@ -579,7 +579,7 @@ mod tests {
             .unwrap();
         let mut body = builder.function_asm(function).unwrap();
         let result = body.alloc_register(ValueType::I64);
-        body.const_i64(result, value).ret(0, &[result]);
+        body.const_i64(result, value).ret(Reg(0), &[result]);
         builder.define_function(function, body).unwrap();
         Callable::function(Arc::new(builder.build_verified().unwrap()), function).unwrap()
     }

@@ -3,7 +3,7 @@
 
 //! Decimal range, representation, codec, and ABI boundaries through the public API.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::codec::{self, DecodedOperand, Operand};
 use execution_tape::disasm::{ConstValue, InputIndex};
 use execution_tape::format::DecodeError;
@@ -86,7 +86,7 @@ fn wide_literals_roundtrip_inline_pool_and_disassembly() {
                     let id = builder.constant(Const::Decimal(decimal));
                     body.const_decimal_value(inline, decimal)
                         .const_pool(pooled, id)
-                        .ret(0, &[inline, pooled]);
+                        .ret(Reg(0), &[inline, pooled]);
                 },
             );
             assert_eq!(
@@ -119,14 +119,14 @@ fn wide_operand_codec_preserves_both_parts_and_canonical_bytes() {
         let mut bytes = Vec::new();
         codec::encode_instruction(
             Opcode::ConstDecimal,
-            &[Operand::Reg(1), Operand::Decimal(value)],
+            &[Operand::Reg(Reg(1)), Operand::Decimal(value)],
             &mut bytes,
         )
         .unwrap();
         let decoded = codec::decode_instruction(&bytes).unwrap();
         assert_eq!(
             decoded.operands,
-            [DecodedOperand::Reg(1), DecodedOperand::Decimal(value)]
+            [DecodedOperand::Reg(Reg(1)), DecodedOperand::Decimal(value)]
         );
         assert_eq!(codec::canonicalize(&bytes).unwrap(), bytes);
     }
@@ -141,11 +141,11 @@ fn decimal_arithmetic_matches_checked_i128_at_boundaries() {
             |body, _| {
                 let result = body.alloc_register(ValueType::Decimal);
                 match operation {
-                    0 => body.dec_add(result, 1, 2),
-                    1 => body.dec_sub(result, 1, 2),
-                    _ => body.dec_mul(result, 1, 2),
+                    0 => body.dec_add(result, Reg(1), Reg(2)),
+                    1 => body.dec_sub(result, Reg(1), Reg(2)),
+                    _ => body.dec_mul(result, Reg(1), Reg(2)),
                 };
-                body.ret(0, &[result]);
+                body.ret(Reg(0), &[result]);
             },
         );
         let values = [
@@ -199,9 +199,9 @@ fn add_sub_program() -> VerifiedProgram {
         |body, _| {
             let sum = body.alloc_register(ValueType::Decimal);
             let difference = body.alloc_register(ValueType::Decimal);
-            body.dec_add(sum, 1, 2)
-                .dec_sub(difference, 1, 2)
-                .ret(0, &[sum, difference]);
+            body.dec_add(sum, Reg(1), Reg(2))
+                .dec_sub(difference, Reg(1), Reg(2))
+                .ret(Reg(0), &[sum, difference]);
         },
     )
 }
@@ -243,11 +243,11 @@ fn decimal_ops_program(rounding: DecimalRounding) -> VerifiedProgram {
             let scale = body.alloc_register(ValueType::U64);
             let rescaled = body.alloc_register(ValueType::Decimal);
             let quotient = body.alloc_register(ValueType::Decimal);
-            body.dec_cmp(order, 1, 2)
-                .dec_scale(scale, 1)
-                .dec_rescale(rescaled, 1, 3, rounding)
-                .dec_div(quotient, 1, 2, 3, rounding)
-                .ret(0, &[order, scale, rescaled, quotient]);
+            body.dec_cmp(order, Reg(1), Reg(2))
+                .dec_scale(scale, Reg(1))
+                .dec_rescale(rescaled, Reg(1), Reg(3), rounding)
+                .dec_div(quotient, Reg(1), Reg(2), Reg(3), rounding)
+                .ret(Reg(0), &[order, scale, rescaled, quotient]);
         },
     );
     // Roundtrip through the wire format.
@@ -263,9 +263,9 @@ fn comparison_and_scale_ignore_and_report_representation() {
         |body, _| {
             let order = body.alloc_register(ValueType::I64);
             let scale = body.alloc_register(ValueType::U64);
-            body.dec_cmp(order, 1, 2)
-                .dec_scale(scale, 1)
-                .ret(0, &[order, scale]);
+            body.dec_cmp(order, Reg(1), Reg(2))
+                .dec_scale(scale, Reg(1))
+                .ret(Reg(0), &[order, scale]);
         },
     );
     for (a, b, order) in [
@@ -326,8 +326,8 @@ fn division_charges_fuel_for_each_long_division_step() {
         &[ValueType::Decimal],
         |body, _| {
             let quotient = body.alloc_register(ValueType::Decimal);
-            body.dec_div(quotient, 1, 2, 3, DecimalRounding::HalfEven)
-                .ret(0, &[quotient]);
+            body.dec_div(quotient, Reg(1), Reg(2), Reg(3), DecimalRounding::HalfEven)
+                .ret(Reg(0), &[quotient]);
         },
     );
     let run_with = |fuel: u64, a: Value, b: Value, scale: u64| {
@@ -508,8 +508,8 @@ fn verifier_rejects_unknown_rounding_modes_and_mistyped_scales() {
             .unwrap();
         let mut body = builder.function_asm(id).unwrap();
         let out = body.alloc_register(ValueType::Decimal);
-        body.dec_rescale(out, 1, 2, DecimalRounding::Ceiling)
-            .ret(0, &[out]);
+        body.dec_rescale(out, Reg(1), Reg(2), DecimalRounding::Ceiling)
+            .ret(Reg(0), &[out]);
         builder.define_function(id, body).unwrap();
         builder.build()
     };
@@ -563,11 +563,11 @@ fn decimal_integer_narrowing_is_checked_and_requires_zero_scale() {
         let program = function(&[ValueType::Decimal], &[kind], |body, _| {
             let result = body.alloc_register(kind);
             if unsigned {
-                body.dec_to_u64(result, 1);
+                body.dec_to_u64(result, Reg(1));
             } else {
-                body.dec_to_i64(result, 1);
+                body.dec_to_i64(result, Reg(1));
             }
-            body.ret(0, &[result]);
+            body.ret(Reg(0), &[result]);
         });
         for mantissa in [
             i128::MIN,
@@ -611,11 +611,11 @@ fn integer_to_decimal_supports_full_unsigned_range_and_zero_at_any_scale() {
             let program = function(&[kind], &[ValueType::Decimal], |body, _| {
                 let result = body.alloc_register(ValueType::Decimal);
                 if unsigned {
-                    body.u64_to_dec(result, 1, scale);
+                    body.u64_to_dec(result, Reg(1), scale);
                 } else {
-                    body.i64_to_dec(result, 1, scale);
+                    body.i64_to_dec(result, Reg(1), scale);
                 }
-                body.ret(0, &[result]);
+                body.ret(Reg(0), &[result]);
             });
             for integer in [
                 0,

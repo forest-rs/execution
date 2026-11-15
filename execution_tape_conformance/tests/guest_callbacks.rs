@@ -6,7 +6,7 @@
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
-    asm::{FunctionAbi, FunctionSig, ProgramBuilder},
+    asm::{FunctionAbi, FunctionSig, ProgramBuilder, Reg},
     contract::Contract,
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
     program::{HostTypeId, Program, ValueType},
@@ -97,40 +97,46 @@ fn fixture() -> Fixture {
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let r = a.alloc_register(ValueType::I64);
-    a.call(0, signal, 0, &[1], &[r]).ret(0, &[r]);
+    a.call(Reg(0), signal, Reg(0), &[Reg(1)], &[r])
+        .ret(Reg(0), &[r]);
     b.define_function(entry, a).unwrap();
     for (function, import) in [(signal, outer), (handler, inner)] {
         let mut a = b.function_asm(function).unwrap();
         let r = a.alloc_register(ValueType::I64);
-        a.host_call_sig_id(0, import, 0, &[1], &[r]).ret(0, &[r]);
+        a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[r])
+            .ret(Reg(0), &[r]);
         b.define_function(function, a).unwrap();
     }
     let mut a = b.function_asm(plus_one).unwrap();
     let one = a.alloc_register(ValueType::I64);
     let r = a.alloc_register(ValueType::I64);
-    a.const_i64(one, 1).i64_add(r, 1, one).ret(0, &[r]);
+    a.const_i64(one, 1)
+        .i64_add(r, Reg(1), one)
+        .ret(Reg(0), &[r]);
     b.define_function(plus_one, a).unwrap();
     let mut a = b.function_asm(multi).unwrap();
     let one = a.alloc_register(ValueType::I64);
     let r = a.alloc_register(ValueType::I64);
-    a.const_i64(one, 1).i64_add(r, 1, one).ret(0, &[1, r]);
+    a.const_i64(one, 1)
+        .i64_add(r, Reg(1), one)
+        .ret(Reg(0), &[Reg(1), r]);
     b.define_function(multi, a).unwrap();
     let mut a = b.function_asm(text).unwrap();
-    a.ret(0, &[1]);
+    a.ret(Reg(0), &[Reg(1)]);
     b.define_function(text, a).unwrap();
     let mut a = b.function_asm(object).unwrap();
-    a.ret(0, &[1]);
+    a.ret(Reg(0), &[Reg(1)]);
     b.define_function(object, a).unwrap();
     let mut a = b.function_asm(tuple).unwrap();
     let wrapped = a.alloc_register(ValueType::Agg);
-    a.tuple_new(wrapped, &[1]).ret(0, &[wrapped]);
+    a.tuple_new(wrapped, &[Reg(1)]).ret(Reg(0), &[wrapped]);
     b.define_function(tuple, a).unwrap();
     let mut a = b.function_asm(closure).unwrap();
     let captured = a.alloc_register(ValueType::I64);
     let r = a.alloc_register(ValueType::I64);
-    a.tuple_get(captured, 1, 0)
-        .i64_add(r, captured, 2)
-        .ret(0, &[r]);
+    a.tuple_get(captured, Reg(1), 0)
+        .i64_add(r, captured, Reg(2))
+        .ret(Reg(0), &[r]);
     b.define_function(closure, a).unwrap();
     for (function, name) in [
         (entry, "main"),
@@ -200,7 +206,7 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     assert!(nested.iter().all(|frame| frame.waiting_for_return));
     assert!(
         run.inspect()
-            .register(&before[0].activation, 2)
+            .register(&before[0].activation, Reg(2))
             .unwrap()
             .value
             .is_none(),
@@ -920,12 +926,14 @@ fn callback_results_must_satisfy_their_own_rich_contract_before_returning_to_hos
     );
     let mut a = b.function_asm(callback).unwrap();
     let r = a.alloc_register(ValueType::Agg);
-    a.host_call_sig_id(0, import, 0, &[], &[r]).ret(0, &[r]);
+    a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[r])
+        .ret(Reg(0), &[r]);
     b.define_function(callback, a).unwrap();
     let entry = b.declare_function(sig(&[], &[ValueType::Agg])).unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let r = a.alloc_register(ValueType::Agg);
-    a.host_call_sig_id(0, import, 0, &[], &[r]).ret(0, &[r]);
+    a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[r])
+        .ret(Reg(0), &[r]);
     b.define_function(entry, a).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
@@ -1029,7 +1037,7 @@ fn pending_callback_object_results_remain_visible_to_the_embedding_collector() {
     let activation = run.inspect().frames().next().unwrap().activation;
     run.resume(u64::MAX).unwrap();
     assert!(
-        run.inspect().register(&activation, 1).is_none(),
+        run.inspect().register(&activation, Reg(1)).is_none(),
         "returned callback frame must expire"
     );
     assert_eq!(

@@ -3,7 +3,7 @@
 
 //! Producer-declared register kinds through the public assembly, codec and preparation APIs.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::format::{DecodeError, Reader};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{HostTypeId, Program, ValueType};
@@ -74,7 +74,7 @@ fn error(program: &Program) -> VerifyError {
 #[test]
 fn declared_kinds_roundtrip_share_storage_and_ignore_section_order() {
     let mut asm = Asm::new();
-    asm.ret(0, &[1]);
+    asm.ret(Reg(0), &[Reg(1)]);
     let kinds = [
         ValueType::Unit,
         ValueType::Obj(HostTypeId(u64::MAX)),
@@ -94,7 +94,7 @@ fn declared_kinds_roundtrip_share_storage_and_ignore_section_order() {
             .collect::<Vec<_>>(),
         kinds
     );
-    assert_eq!(function.register_type(&p, 4).unwrap(), kinds[4]);
+    assert_eq!(function.register_type(&p, Reg(4)).unwrap(), kinds[4]);
     verify_program(&p, &VerifyConfig::default()).unwrap();
     let encoded = p.encode();
     assert_eq!(Program::decode(&encoded).unwrap(), p);
@@ -118,7 +118,7 @@ fn declared_kinds_roundtrip_share_storage_and_ignore_section_order() {
 #[test]
 fn declarations_do_not_initialize_registers() {
     let mut asm = Asm::new();
-    asm.ret(0, &[1]);
+    asm.ret(Reg(0), &[Reg(1)]);
     let p = program(
         asm,
         &[ValueType::Unit, ValueType::I64],
@@ -127,21 +127,21 @@ fn declarations_do_not_initialize_registers() {
     );
     assert!(matches!(
         error(&p),
-        VerifyError::UninitializedRead { reg: 1, .. }
+        VerifyError::UninitializedRead { reg: Reg(1), .. }
     ));
 }
 
 #[test]
 fn every_definition_must_match_even_without_a_typed_use() {
     let mut asm = Asm::new();
-    asm.const_bool(1, true).ret(0, &[]);
+    asm.const_bool(Reg(1), true).ret(Reg(0), &[]);
     let p = program(asm, &[ValueType::Unit, ValueType::I64], &[], &[]);
     assert!(matches!(
         error(&p),
         VerifyError::RegisterTypeMismatch {
             func: 0,
             pc: Some(0),
-            reg: 1,
+            reg: Reg(1),
             declared: ValueType::I64,
             required: ValueType::Bool,
         }
@@ -155,7 +155,7 @@ fn argument_prefix_and_effect_register_are_checked() {
         [ValueType::Unit, ValueType::Bool],
     ] {
         let mut asm = Asm::new();
-        asm.ret(0, &[]);
+        asm.ret(Reg(0), &[]);
         let p = program(asm, &kinds, &[ValueType::I64], &[]);
         assert!(matches!(
             error(&p),
@@ -167,7 +167,7 @@ fn argument_prefix_and_effect_register_are_checked() {
 #[test]
 fn declarations_cannot_forge_projection_proofs() {
     let mut opaque = Asm::new();
-    opaque.tuple_get(2, 1, 0).ret(0, &[2]);
+    opaque.tuple_get(Reg(2), Reg(1), 0).ret(Reg(0), &[Reg(2)]);
     let p = program(
         opaque,
         &[ValueType::Unit, ValueType::Agg, ValueType::I64],
@@ -176,15 +176,15 @@ fn declarations_cannot_forge_projection_proofs() {
     );
     assert!(matches!(
         error(&p),
-        VerifyError::UnknownAggregateShape { reg: 1, .. }
+        VerifyError::UnknownAggregateShape { reg: Reg(1), .. }
     ));
 
     let mut known = Asm::new();
     known
-        .const_bool(1, true)
-        .tuple_new(2, &[1])
-        .tuple_get(3, 2, 0)
-        .ret(0, &[3]);
+        .const_bool(Reg(1), true)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_get(Reg(3), Reg(2), 0)
+        .ret(Reg(0), &[Reg(3)]);
     let p = program(
         known,
         &[
@@ -199,7 +199,7 @@ fn declarations_cannot_forge_projection_proofs() {
     assert!(matches!(
         error(&p),
         VerifyError::RegisterTypeMismatch {
-            reg: 3,
+            reg: Reg(3),
             declared: ValueType::I64,
             required: ValueType::Bool,
             ..
@@ -210,7 +210,7 @@ fn declarations_cannot_forge_projection_proofs() {
 #[test]
 fn malformed_ledger_ranges_counts_and_unused_ids_are_rejected() {
     let mut asm = Asm::new();
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let base = program(asm, &[ValueType::Unit], &[], &[]);
     for case in 0..4 {
         let mut p = base.clone();
@@ -233,10 +233,10 @@ fn malformed_ledger_ranges_counts_and_unused_ids_are_rejected() {
 #[test]
 fn block_parameter_kinds_come_from_the_function() {
     let mut asm = Asm::new();
-    let join = asm.block(&[2]);
-    asm.const_i64(1, 7).jmp(join.with_args(&[1]));
+    let join = asm.block(&[Reg(2)]);
+    asm.const_i64(Reg(1), 7).jmp(join.with_args(&[Reg(1)]));
     asm.place(join).unwrap();
-    asm.ret(0, &[2]);
+    asm.ret(Reg(0), &[Reg(2)]);
     let p = program(
         asm,
         &[ValueType::Unit, ValueType::I64, ValueType::I64],
@@ -261,7 +261,7 @@ fn block_parameter_kinds_come_from_the_function() {
 #[test]
 fn prior_wire_version_is_rejected_explicitly() {
     let mut asm = Asm::new();
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let mut bytes = program(asm, &[ValueType::Unit], &[], &[]).encode();
     bytes[10..12].copy_from_slice(&1_u16.to_le_bytes());
     assert!(matches!(
@@ -273,10 +273,10 @@ fn prior_wire_version_is_rejected_explicitly() {
 #[test]
 fn invalid_definition_is_reported_before_dependent_shape_facts() {
     let mut asm = Asm::new();
-    asm.const_i64(1, 7)
-        .tuple_new(2, &[1])
-        .tuple_get(3, 2, 0)
-        .ret(0, &[3]);
+    asm.const_i64(Reg(1), 7)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_get(Reg(3), Reg(2), 0)
+        .ret(Reg(0), &[Reg(3)]);
     let p = program(
         asm,
         &[
@@ -293,7 +293,7 @@ fn invalid_definition_is_reported_before_dependent_shape_facts() {
         VerifyError::RegisterTypeMismatch {
             func: 0,
             pc: Some(0),
-            reg: 1,
+            reg: Reg(1),
             declared: ValueType::Bool,
             required: ValueType::I64,
         }
@@ -303,11 +303,11 @@ fn invalid_definition_is_reported_before_dependent_shape_facts() {
 #[test]
 fn nested_projection_overwriting_its_source_keeps_the_inner_proof() {
     let mut asm = Asm::new();
-    asm.const_i64(1, 7)
-        .tuple_new(2, &[1])
-        .tuple_new(3, &[2])
-        .tuple_get(3, 3, 0);
-    asm.tuple_get(4, 3, 0).ret(0, &[4]);
+    asm.const_i64(Reg(1), 7)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_new(Reg(3), &[Reg(2)])
+        .tuple_get(Reg(3), Reg(3), 0);
+    asm.tuple_get(Reg(4), Reg(3), 0).ret(Reg(0), &[Reg(4)]);
     let p = program(
         asm,
         &[
@@ -347,7 +347,7 @@ fn logical_register_views_ignore_backing_pool_ids_and_unrelated_entries() {
         ValueType::Obj(HostTypeId(u64::MAX)),
     ];
     let mut asm = Asm::new();
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let first = program(asm, &kinds, &[], &[]);
     let mut builder = ProgramBuilder::new();
     builder.host_sig_for(
@@ -365,7 +365,7 @@ fn logical_register_views_ignore_backing_pool_ids_and_unrelated_entries() {
         .unwrap();
     for _ in 0..2 {
         let mut asm = Asm::new();
-        asm.set_register_types(kinds.to_vec()).ret(0, &[]);
+        asm.set_register_types(kinds.to_vec()).ret(Reg(0), &[]);
         builder
             .push_function_checked(
                 asm,
@@ -394,12 +394,12 @@ fn logical_register_views_ignore_backing_pool_ids_and_unrelated_entries() {
 #[test]
 fn inactive_functions_and_instructions_have_static_contracts_checked() {
     let mut asm = Asm::new();
-    asm.trap(7).const_bool(1, true).ret(0, &[]);
+    asm.trap(7).const_bool(Reg(1), true).ret(Reg(0), &[]);
     let p = program(asm, &[ValueType::Unit, ValueType::I64], &[], &[]);
     assert!(matches!(
         error(&p),
         VerifyError::RegisterTypeMismatch {
-            reg: 1,
+            reg: Reg(1),
             required: ValueType::Bool,
             ..
         }
@@ -408,7 +408,7 @@ fn inactive_functions_and_instructions_have_static_contracts_checked() {
     for declared in [ValueType::I64, ValueType::Bool] {
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, declared])
-            .ret(0, &[]);
+            .ret(Reg(0), &[]);
         builder
             .push_function_checked(
                 asm,
@@ -424,7 +424,7 @@ fn inactive_functions_and_instructions_have_static_contracts_checked() {
         VerifyError::RegisterTypeMismatch {
             func: 1,
             pc: None,
-            reg: 1,
+            reg: Reg(1),
             ..
         }
     ));
@@ -433,7 +433,7 @@ fn inactive_functions_and_instructions_have_static_contracts_checked() {
 #[test]
 fn missing_declarations_are_not_inferred() {
     let mut asm = Asm::new();
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let p = program(asm, &[], &[], &[]);
     assert_eq!(error(&p), VerifyError::MissingRegisterTypes { func: 0 });
 }
@@ -442,7 +442,7 @@ fn missing_declarations_are_not_inferred() {
 fn malformed_encoded_ledgers_are_rejected_before_allocation_or_field_reinterpretation() {
     use execution_tape::format::Writer;
     let mut asm = Asm::new();
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let encoded = program(asm, &[ValueType::Unit], &[], &[]).encode();
     for table in [
         // One function, no arguments/results, two kinds: Unit then truncated Obj(u64).
@@ -474,7 +474,7 @@ fn malformed_encoded_ledgers_are_rejected_before_allocation_or_field_reinterpret
 #[should_panic(expected = "cannot encode malformed register declarations")]
 fn encoder_never_silently_omits_required_declarations() {
     let mut asm = Asm::new();
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let mut p = program(asm, &[ValueType::Unit], &[], &[]);
     p.register_type_ids[0] = u32::MAX;
     let _ = p.encode();

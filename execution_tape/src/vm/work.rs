@@ -57,7 +57,7 @@ mod tests {
     use super::*;
     use crate::vm::FuncRef;
     use crate::{
-        asm::{FunctionAbi, ProgramBuilder},
+        asm::{FunctionAbi, ProgramBuilder, Reg},
         contract::Contract,
         host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
         program::ValueType,
@@ -101,7 +101,7 @@ mod tests {
         );
         let mut body = b.function_asm(function).unwrap();
         let [value] = b.emit_call(&mut body, produce, &[]).unwrap();
-        body.ret(0, &[value]);
+        body.ret(Reg(0), &[value]);
         b.define_function(function, body).unwrap();
         b.build_verified().unwrap()
     }

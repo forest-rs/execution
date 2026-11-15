@@ -7,7 +7,7 @@ use execution_tape::value::FuncRef;
 use std::error::Error;
 use std::io::Write;
 
-use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
@@ -62,11 +62,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         ValueType::Agg,
     ]);
     producer
-        .const_i64(1, 42)
-        .const_bool(2, true)
-        .tuple_new(3, &[1])
-        .tuple_new(4, &[3, 2])
-        .ret(0, &[4]);
+        .const_i64(Reg(1), 42)
+        .const_bool(Reg(2), true)
+        .tuple_new(Reg(3), &[Reg(1)])
+        .tuple_new(Reg(4), &[Reg(3), Reg(2)])
+        .ret(Reg(0), &[Reg(4)]);
     let make = builder.push_function_checked(
         producer,
         FunctionAbi {
@@ -78,10 +78,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut consumer = Asm::new();
     consumer.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
     consumer
-        .call(0, make, 0, &[], &[1])
-        .tuple_get(1, 1, 0)
-        .tuple_get(2, 1, 0)
-        .ret(0, &[2]);
+        .call(Reg(0), make, Reg(0), &[], &[Reg(1)])
+        .tuple_get(Reg(1), Reg(1), 0)
+        .tuple_get(Reg(2), Reg(1), 0)
+        .ret(Reg(0), &[Reg(2)]);
     builder.define_function(entry, consumer)?;
     builder.set_function_name(entry, "main")?;
     let source = builder.build_checked()?;

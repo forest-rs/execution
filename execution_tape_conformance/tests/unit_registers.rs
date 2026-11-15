@@ -7,7 +7,7 @@ use execution_tape::value::FuncRef;
 use std::sync::Arc;
 
 use execution_tape::{
-    asm::{BuildError, FunctionSig, ProgramBuilder},
+    asm::{BuildError, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     opcode::Opcode,
     program::{Const, Program, ValueType},
@@ -50,7 +50,7 @@ impl Host for UnitHost {
 #[derive(Default)]
 struct Observe {
     instructions: Vec<(u32, u16)>,
-    writes: Vec<(u32, Value)>,
+    writes: Vec<(Reg, Value)>,
 }
 impl TraceSink for Observe {
     fn instr(
@@ -93,8 +93,8 @@ fn operations() -> VerifiedProgram {
     body.const_unit(constant)
         .const_pool(pooled, pool)
         .mov(copied, constant)
-        .select(selected, 1, pooled, copied)
-        .ret(0, &[selected, constant, pooled]);
+        .select(selected, Reg(1), pooled, copied)
+        .ret(Reg(0), &[selected, constant, pooled]);
     builder.define_function(entry, body).unwrap();
     builder.build_verified().unwrap()
 }
@@ -152,10 +152,10 @@ fn unit_operations_preserve_source_instructions_registers_and_fuel() {
         assert_eq!(
             observe.writes,
             [
-                (2, Value::Unit),
-                (3, Value::Unit),
-                (4, Value::Unit),
-                (5, Value::Unit)
+                (Reg(2), Value::Unit),
+                (Reg(3), Value::Unit),
+                (Reg(4), Value::Unit),
+                (Reg(5), Value::Unit)
             ]
         );
         let error = {
@@ -196,16 +196,16 @@ fn unit_declarations_and_unselected_operands_still_require_initialization() {
             let initialized = body.alloc_register(ValueType::Unit);
             let result = body.alloc_register(ValueType::Unit);
             body.const_unit(initialized)
-                .select(result, 1, initialized, uninitialized)
-                .ret(0, &[result]);
+                .select(result, Reg(1), initialized, uninitialized)
+                .ret(Reg(0), &[result]);
         } else {
-            body.ret(0, &[uninitialized]);
+            body.ret(Reg(0), &[uninitialized]);
         }
         builder.define_function(entry, body).unwrap();
         assert!(matches!(
             builder.build_verified(),
             Err(BuildError::Verify(rejected))
-                if matches!(rejected.error, VerifyError::UninitializedRead { reg: 2, .. })
+                if matches!(rejected.error, VerifyError::UninitializedRead { reg: Reg(2), .. })
         ));
     }
 }
@@ -226,14 +226,14 @@ fn repeated_guest_host_unit_boundaries_validate_kinds_and_replay() {
             rets: vec![ValueType::Unit; 10],
         },
     );
-    let registers: Vec<_> = (1..=10).collect();
+    let registers: Vec<_> = (1..=10).map(Reg).collect();
     let mut body = builder.function_asm(helper).unwrap();
-    body.ret(0, &registers);
+    body.ret(Reg(0), &registers);
     builder.define_function(helper, body).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
-    body.call(0, helper, 0, &registers, &registers)
-        .host_call_sig_id(0, host, 0, &registers, &registers)
-        .ret(0, &registers);
+    body.call(Reg(0), helper, Reg(0), &registers, &registers)
+        .host_call_sig_id(Reg(0), host, Reg(0), &registers, &registers)
+        .ret(Reg(0), &registers);
     builder.define_function(entry, body).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     for bad_return in [false, true] {

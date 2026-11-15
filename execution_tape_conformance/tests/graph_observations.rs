@@ -7,7 +7,7 @@ use execution_graph::{
     ExecutionGraph, GraphError, HostOpId, NodeId, ResourceKey, TapeError, TapeExecutor,
     TapeInvocation, TapeNode, TapeObserver, TapeValue,
 };
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef,
 };
@@ -82,7 +82,7 @@ impl TapeObserver for Observe {
                             func: invocation.entry,
                             pc: 0,
                         },
-                        registers: vec![1, 2],
+                        registers: vec![Reg(1), Reg(2)],
                     }],
                 }),
         )
@@ -119,10 +119,10 @@ fn fixture() -> (Arc<VerifiedProgram>, FuncId) {
         ValueType::I64,
         ValueType::I64,
     ]);
-    body.i64_add(2, 1, 1)
-        .host_call_sig_id(0, host, 0, &[], &[3])
-        .i64_add(4, 2, 3)
-        .ret(0, &[4]);
+    body.i64_add(Reg(2), Reg(1), Reg(1))
+        .host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(3)])
+        .i64_add(Reg(4), Reg(2), Reg(3))
+        .ret(Reg(0), &[Reg(4)]);
     let entry = builder
         .push_function_checked(
             body,

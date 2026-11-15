@@ -6,7 +6,7 @@
 use execution_graph::{ExecutionGraph, TapeExecutor};
 use execution_tape::trace::CodeLocation;
 use execution_tape::{
-    asm::{FunctionAbi, ProgramBuilder},
+    asm::{FunctionAbi, ProgramBuilder, Reg},
     callable::{Callable, CodeSlot, CodeUpdate, CodeVersion},
     contract::Contract,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -123,7 +123,7 @@ fn revision(increment: i64) -> Result<Revision> {
     let delta = a.alloc_register(ValueType::I64);
     let answer = a.alloc_register(ValueType::I64);
     let mut mappings = vec![mapping(&source, body, a.pc(), "let cell = receiver;")];
-    a.tuple_get(cell, 1, 0);
+    a.tuple_get(cell, Reg(1), 0);
     mappings.push(mapping(&source, body, a.pc(), &increment.to_string()));
     a.const_i64(delta, increment);
     mappings.push(mapping(
@@ -132,14 +132,14 @@ fn revision(increment: i64) -> Result<Revision> {
         a.pc(),
         &format!("CounterCell.add(cell, {increment})"),
     ));
-    a.host_call_sig_id(0, add, 0, &[cell, delta], &[answer]);
+    a.host_call_sig_id(Reg(0), add, Reg(0), &[cell, delta], &[answer]);
     mappings.push(mapping(
         &source,
         body,
         a.pc(),
         &format!("return CounterCell.add(cell, {increment});"),
     ));
-    a.ret(0, &[answer]);
+    a.ret(Reg(0), &[answer]);
     b.define_function(body, a)?;
     b.set_function_name(body, "counter_block")?;
     let factory = b.declare_function(FunctionAbi {
@@ -154,7 +154,7 @@ fn revision(increment: i64) -> Result<Revision> {
         mappings.push(mapping(&source, factory, a.pc(), "return || {"));
         match step {
             0 => {
-                a.tuple_new(env, &[1]);
+                a.tuple_new(env, &[Reg(1)]);
             }
             1 => {
                 a.const_func(function, body);
@@ -163,7 +163,7 @@ fn revision(increment: i64) -> Result<Revision> {
                 a.closure_new(block, function, env);
             }
             _ => {
-                a.ret(0, &[block]);
+                a.ret(Reg(0), &[block]);
             }
         }
     }

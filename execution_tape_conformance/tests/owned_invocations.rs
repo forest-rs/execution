@@ -7,7 +7,7 @@ use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
     aggregates::AggHeap,
-    asm::{FunctionAbi, FunctionSig, ProgramBuilder},
+    asm::{FunctionAbi, FunctionSig, ProgramBuilder, Reg},
     callable::Callable,
     contract::Contract,
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
@@ -86,9 +86,9 @@ fn echo() -> Callable {
     let mut asm = builder.function_asm(entry).unwrap();
     let temporary = asm.alloc_register(ValueType::Agg);
     let answer = asm.alloc_register(ValueType::Str);
-    asm.tuple_new(temporary, &[1])
-        .host_call_sig_id(0, import, 0, &[1], &[answer])
-        .ret(0, &[answer]);
+    asm.tuple_new(temporary, &[Reg(1)])
+        .host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[answer])
+        .ret(Reg(0), &[answer]);
     builder.define_function(entry, asm).unwrap();
     Callable::function(Arc::new(builder.build_verified().unwrap()), entry).unwrap()
 }
@@ -105,9 +105,9 @@ fn retained_closure() -> Callable {
     let mut asm = builder.function_asm(body).unwrap();
     let capture = asm.alloc_register(ValueType::I64);
     let answer = asm.alloc_register(ValueType::I64);
-    asm.tuple_get(capture, 1, 0)
-        .i64_add(answer, capture, 2)
-        .ret(0, &[answer]);
+    asm.tuple_get(capture, Reg(1), 0)
+        .i64_add(answer, capture, Reg(2))
+        .ret(Reg(0), &[answer]);
     builder.define_function(body, asm).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -619,7 +619,7 @@ fn pack_text() -> Callable {
         .unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let packed = body.alloc_register(ValueType::Agg);
-    body.tuple_new(packed, &[1]).ret(0, &[packed]);
+    body.tuple_new(packed, &[Reg(1)]).ret(Reg(0), &[packed]);
     builder.define_function(entry, body).unwrap();
     Callable::function(Arc::new(builder.build_verified().unwrap()), entry).unwrap()
 }

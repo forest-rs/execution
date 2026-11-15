@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::codec::{Operand, encode_instruction};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
@@ -456,8 +456,8 @@ fn cases() -> Vec<(Opcode, Vec<Value>, Want)> {
 /// Builds `f(ins...) -> out` whose body is the one instruction, round-tripped through the wire
 /// format.
 fn program(op: Opcode, ins: &[ValueType], out: ValueType) -> Arc<VerifiedProgram> {
-    let args: Vec<u32> = (1..).take(ins.len()).collect();
-    let dst = u32::try_from(ins.len()).unwrap() + 1;
+    let args: Vec<Reg> = (1..).take(ins.len()).map(Reg).collect();
+    let dst = Reg(u32::try_from(ins.len()).unwrap() + 1);
     let operands: Vec<Operand<'_>> = std::iter::once(dst)
         .chain(args.iter().copied())
         .map(Operand::Reg)
@@ -466,7 +466,7 @@ fn program(op: Opcode, ins: &[ValueType], out: ValueType) -> Arc<VerifiedProgram
     encode_instruction(op, &operands, &mut bytecode).unwrap();
     encode_instruction(
         Opcode::Ret,
-        &[Operand::Reg(0), Operand::RegList(&[dst])],
+        &[Operand::Reg(Reg(0)), Operand::RegList(&[dst])],
         &mut bytecode,
     )
     .unwrap();
@@ -561,11 +561,13 @@ fn multiply_add(ty: ValueType) -> Arc<VerifiedProgram> {
     let mut asm = Asm::new();
     asm.set_register_types(vec![ValueType::Unit, ty, ty, ty, ty, ty]);
     if ty == F32 {
-        asm.f32_mul(4, 1, 2).f32_add(5, 4, 3);
+        asm.f32_mul(Reg(4), Reg(1), Reg(2))
+            .f32_add(Reg(5), Reg(4), Reg(3));
     } else {
-        asm.f64_mul(4, 1, 2).f64_add(5, 4, 3);
+        asm.f64_mul(Reg(4), Reg(1), Reg(2))
+            .f64_add(Reg(5), Reg(4), Reg(3));
     }
-    asm.ret(0, &[5]);
+    asm.ret(Reg(0), &[Reg(5)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -617,11 +619,11 @@ fn moves_constants_and_recordings_keep_float_bits() {
     const SNAN64: u64 = 0xFFF0_0000_0000_0002;
     let mut asm = Asm::new();
     asm.set_register_types(vec![ValueType::Unit, F32, F64, F32, F64, F32, F64]);
-    asm.mov(3, 1)
-        .mov(4, 2)
-        .const_f32_bits(5, SNAN32)
-        .const_f64_bits(6, SNAN64)
-        .ret(0, &[3, 4, 5, 6]);
+    asm.mov(Reg(3), Reg(1))
+        .mov(Reg(4), Reg(2))
+        .const_f32_bits(Reg(5), SNAN32)
+        .const_f64_bits(Reg(6), SNAN64)
+        .ret(Reg(0), &[Reg(3), Reg(4), Reg(5), Reg(6)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(

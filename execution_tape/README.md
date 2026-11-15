@@ -26,7 +26,7 @@ extern crate alloc;
 
 use alloc::vec;
 
-use execution_tape::asm::{FunctionSig, ProgramBuilder};
+use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut asm = builder.function_asm(entry)?;
     let one = asm.alloc_register(ValueType::I64);
     let result = asm.alloc_register(ValueType::I64);
-    asm.const_i64(one, 1).i64_add(result, 1, one).ret(0, &[result]);
+    asm.const_i64(one, 1).i64_add(result, Reg(1), one).ret(Reg(0), &[result]);
     builder.define_function(entry, asm)?;
     builder.set_function_input_name(entry, 0, "x")?;
     builder.set_function_output_name(entry, 0, "y")?;
@@ -196,7 +196,7 @@ for one call only outlive it. Recordings treat handles as opaque and replay with
 arguments/results need richer structure, then use the ordinary function builder and VM:
 
 ```rust
-use execution_tape::asm::{FunctionAbi, ProgramBuilder};
+use execution_tape::asm::{FunctionAbi, ProgramBuilder, Reg};
 use execution_tape::contract::Contract;
 use execution_tape::program::ValueType;
 let mut builder = ProgramBuilder::new();
@@ -260,14 +260,14 @@ program already exists, `ProgramAnalysis::from(&prepared)` reuses its proof. Req
 function, then query source PCs without retaining register snapshots at every instruction:
 
 ```rust
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::program::ValueType;
 use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig};
 let mut body = Asm::new();
 body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
-body.const_i64(1, 42).tuple_new(2, &[1]);
+body.const_i64(Reg(1), 42).tuple_new(Reg(2), &[Reg(1)]);
 let pc = body.pc();
-body.tuple_get(1, 2, 0).ret(0, &[1]);
+body.tuple_get(Reg(1), Reg(2), 0).ret(Reg(0), &[Reg(1)]);
 let mut builder = ProgramBuilder::new();
 let entry = builder.push_function_checked(body, FunctionSig {
     arg_types: vec![], ret_types: vec![ValueType::I64],
@@ -276,7 +276,7 @@ let program = builder.build_checked().unwrap();
 let proof = ProgramAnalysis::new(&program, &VerifyConfig::default()).unwrap();
 let mut function = proof.function(entry).unwrap();
 let facts = function.instruction(pc).unwrap();
-let aggregate = facts.register(2).unwrap();
+let aggregate = facts.register(Reg(2)).unwrap();
 assert_eq!(aggregate.storage_kind, ValueType::Agg);
 assert!(matches!(aggregate.before, ValueFact::Contract(_)));
 ```

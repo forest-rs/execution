@@ -125,10 +125,10 @@ registers through the existing branch methods. Parameter kinds come from the fun
 ```rust
 asm.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64,
     ValueType::I64, ValueType::I64, ValueType::I64]);
-let join = asm.block(&[4, 5]);
-asm.br(1, join.with_args(&[2, 3]), join.with_args(&[3, 2]));
+let join = asm.block(&[Reg(4), Reg(5)]);
+asm.br(Reg(1), join.with_args(&[Reg(2), Reg(3)]), join.with_args(&[Reg(3), Reg(2)]));
 asm.place(join)?;
-asm.ret(0, &[4, 5]);
+asm.ret(Reg(0), &[Reg(4), Reg(5)]);
 ```
 
 Kinds, register bounds, and call/return arity are checked even in unreachable instructions.

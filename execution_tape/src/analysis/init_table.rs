@@ -160,7 +160,7 @@ pub(crate) fn is_wait_point(opcode: Opcode) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::asm::{Catch, FunctionSig, ProgramBuilder};
+    use crate::asm::{Catch, FunctionSig, ProgramBuilder, Reg};
     use crate::host::HostSig;
     use crate::opcode::Opcode;
     use crate::program::ValueType;
@@ -191,7 +191,10 @@ mod tests {
                 let expected: Option<Vec<bool>> = reference.instruction(pc).map(|facts| {
                     (0..registers)
                         .map(|r| {
-                            matches!(facts.register(r).unwrap().before, ValueFact::Contract(_))
+                            matches!(
+                                facts.register(Reg(r)).unwrap().before,
+                                ValueFact::Contract(_)
+                            )
                         })
                         .collect()
                 });
@@ -210,7 +213,7 @@ mod tests {
             .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
             .unwrap();
         let mut a = b.function_asm(helper).unwrap();
-        a.ret(0, &[1]);
+        a.ret(Reg(0), &[Reg(1)]);
         b.define_function(helper, a).unwrap();
         let probe = b.host_sig_for(
             "probe",
@@ -224,7 +227,7 @@ mod tests {
             .unwrap();
         let mut a = b.function_asm(entry).unwrap();
         // More than 64 registers, so rows span several words.
-        let wide: Vec<u32> = (0..70).map(|_| a.alloc_register(ValueType::I64)).collect();
+        let wide: Vec<Reg> = (0..70).map(|_| a.alloc_register(ValueType::I64)).collect();
         let (i, one, done, text, late) = (
             a.alloc_register(ValueType::I64),
             a.alloc_register(ValueType::I64),
@@ -237,26 +240,27 @@ mod tests {
         a.const_i64(i, 0).const_i64(one, 1);
         for (n, &register) in wide.iter().enumerate() {
             if n % 16 == 0 {
-                a.call(0, helper, 0, &[i], &[register]);
+                a.call(Reg(0), helper, Reg(0), &[i], &[register]);
             } else {
                 a.mov(register, i);
             }
         }
         a.jmp(check);
         a.place(check).unwrap();
-        a.i64_ge(done, i, 1);
+        a.i64_ge(done, i, Reg(1));
         a.br(done, exit.with_args(&[i]), body);
         a.place(body).unwrap();
-        a.host_call(0, probe, 0, &[i], &[text])
-            .call(0, helper, 0, &[i], &[late])
+        a.host_call(Reg(0), probe, Reg(0), &[i], &[text])
+            .call(Reg(0), helper, Reg(0), &[i], &[late])
             .i64_add(i, i, one)
             .jmp(check);
         a.place(exit).unwrap();
-        a.i64_add(carried, carried, wide[69]).ret(0, &[carried]);
+        a.i64_add(carried, carried, wide[69])
+            .ret(Reg(0), &[carried]);
         a.place(dead).unwrap();
         a.const_i64(late, 3)
-            .call(0, helper, 0, &[late], &[late])
-            .ret(0, &[late]);
+            .call(Reg(0), helper, Reg(0), &[late], &[late])
+            .ret(Reg(0), &[late]);
         b.define_function(entry, a).unwrap();
         assert_matches_analysis(&b.build_verified().unwrap());
     }
@@ -280,14 +284,14 @@ mod tests {
         let (check, body, exit) = (a.label(), a.label(), a.label());
         a.const_i64(i, 0).const_i64(one, 1).jmp(check);
         a.place(check).unwrap();
-        a.i64_ge(done, i, 1);
+        a.i64_ge(done, i, Reg(1));
         a.br(done, exit, body);
         a.place(body).unwrap();
-        a.suspend(0, yield_tag, 0, &[i], &[])
+        a.suspend(Reg(0), yield_tag, Reg(0), &[i], &[])
             .i64_add(i, i, one)
             .jmp(check);
         a.place(exit).unwrap();
-        a.throw(0, failed, &[i]);
+        a.throw(Reg(0), failed, &[i]);
         b.define_function(generator, a).unwrap();
 
         // Drives the generator under `on` and `catch` clauses; a raise mid-block leaves the
@@ -311,17 +315,17 @@ mod tests {
         a.const_func(f, generator).cont_new(cont, start, f);
         a.begin_region(&[Catch::On(yield_tag, yielded), Catch::Tag(failed, handler)]);
         a.const_i64(before, 1)
-            .resume(0, start, cont, 0, &[1], &[])
+            .resume(Reg(0), start, cont, Reg(0), &[Reg(1)], &[])
             .const_i64(after, 2);
         a.end_region();
-        a.const_i64(total, 0).ret(0, &[total]);
+        a.const_i64(total, 0).ret(Reg(0), &[total]);
         a.place(yielded).unwrap();
         a.begin_region(&[Catch::On(yield_tag, yielded), Catch::Tag(failed, handler)]);
-        a.resume(0, next, rest, 0, &[], &[]);
+        a.resume(Reg(0), next, rest, Reg(0), &[], &[]);
         a.end_region();
-        a.ret(0, &[value]);
+        a.ret(Reg(0), &[value]);
         a.place(handler).unwrap();
-        a.i64_add(caught, caught, before).ret(0, &[caught]);
+        a.i64_add(caught, caught, before).ret(Reg(0), &[caught]);
         b.define_function(driver, a).unwrap();
         assert_matches_analysis(&b.build_verified().unwrap());
     }
@@ -344,14 +348,15 @@ mod tests {
         let mut b = ProgramBuilder::new();
         let helper = b.declare_function(sig(&[], &[])).unwrap();
         let mut a = b.function_asm(helper).unwrap();
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
         b.define_function(helper, a).unwrap();
         let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
         let mut a = b.function_asm(entry).unwrap();
         let value = a.alloc_register(ValueType::I64);
         a.const_i64(value, 1);
         let call = a.pc();
-        a.call(0, helper, 0, &[], &[]).ret(0, &[value]);
+        a.call(Reg(0), helper, Reg(0), &[], &[])
+            .ret(Reg(0), &[value]);
         b.define_function(entry, a).unwrap();
         let verified = b.build_verified().unwrap();
         let table = verified.init_table(entry).unwrap();

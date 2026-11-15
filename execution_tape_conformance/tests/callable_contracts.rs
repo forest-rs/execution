@@ -3,7 +3,7 @@
 
 //! Callable contracts through ordinary authoring, storage, verification and execution.
 
-use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::contract::{Contract, ContractId, ContractPath, ContractPosition};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
@@ -53,10 +53,10 @@ fn maker(b: &mut ProgramBuilder, result: ContractId) -> FuncId {
         ValueType::Agg,
         ValueType::Agg,
     ]);
-    a.const_i64(1, 42)
-        .tuple_new(2, &[1])
-        .tuple_new(3, &[2])
-        .ret(0, &[3]);
+    a.const_i64(Reg(1), 42)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_new(Reg(3), &[Reg(2)])
+        .ret(Reg(0), &[Reg(3)]);
     b.push_function_checked(
         a,
         FunctionAbi {
@@ -90,10 +90,10 @@ fn rich_indirect_results_roundtrip_and_feed_projection_and_inspection() {
         ValueType::I64,
     ]);
     let pc = a.pc();
-    a.call_indirect(0, call, 1, 0, &[], &[2])
-        .tuple_get(2, 2, 0)
-        .tuple_get(3, 2, 0)
-        .ret(0, &[3]);
+    a.call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .tuple_get(Reg(2), Reg(2), 0)
+        .tuple_get(Reg(3), Reg(2), 0)
+        .ret(Reg(0), &[Reg(3)]);
     let entry = b
         .push_function_checked(
             a,
@@ -109,13 +109,13 @@ fn rich_indirect_results_roundtrip_and_feed_projection_and_inspection() {
         execution_tape::verifier::verify_program_owned(p, &VerifyConfig::default()).unwrap();
     let mut facts = ProgramAnalysis::from(&verified).function(entry).unwrap();
     let at = facts.instruction(pc).unwrap();
-    let ValueFact::Contract(id) = at.register(1).unwrap().before else {
+    let ValueFact::Contract(id) = at.register(Reg(1)).unwrap().before else {
         panic!("missing callable fact")
     };
     assert!(
         matches!(at.contracts().get(id),Some(Contract::Function{args:[],rets}) if rets.len()==1)
     );
-    let ValueFact::Contract(id) = at.register(2).unwrap().after else {
+    let ValueFact::Contract(id) = at.register(Reg(2)).unwrap().after else {
         panic!("missing result fact")
     };
     assert!(matches!(at.contracts().get(id), Some(Contract::Tuple(_))));
@@ -151,13 +151,13 @@ fn callable_values_survive_aggregate_projection_and_aliasing() {
         ValueType::Agg,
         ValueType::I64,
     ]);
-    a.const_func(1, target)
-        .tuple_new(2, &[1])
-        .tuple_get(1, 2, 0)
-        .call_indirect(0, call, 1, 0, &[], &[2])
-        .tuple_get(2, 2, 0)
-        .tuple_get(3, 2, 0)
-        .ret(0, &[3]);
+    a.const_func(Reg(1), target)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_get(Reg(1), Reg(2), 0)
+        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .tuple_get(Reg(2), Reg(2), 0)
+        .tuple_get(Reg(3), Reg(2), 0)
+        .ret(Reg(0), &[Reg(3)]);
     let entry = b
         .push_function_checked(a, sig(&[], &[ValueType::I64]))
         .unwrap();
@@ -174,7 +174,7 @@ fn callable_values_survive_aggregate_projection_and_aliasing() {
 }
 fn closure_body(b: &mut ProgramBuilder, environment: ContractId) -> FuncId {
     let mut a = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    a.tuple_get(2, 1, 0).ret(0, &[2]);
+    a.tuple_get(Reg(2), Reg(1), 0).ret(Reg(0), &[Reg(2)]);
     b.push_function_checked(
         a,
         FunctionAbi {
@@ -198,10 +198,10 @@ fn closure_construction_preserves_exposed_signature_and_checks_concrete_environm
         ValueType::Closure,
         ValueType::I64,
     ]);
-    a.const_func(2, target)
-        .closure_new(3, 2, 1)
-        .call_indirect(0, call, 3, 0, &[], &[4])
-        .ret(0, &[4]);
+    a.const_func(Reg(2), target)
+        .closure_new(Reg(3), Reg(2), Reg(1))
+        .call_indirect(Reg(0), call, Reg(3), Reg(0), &[], &[Reg(4)])
+        .ret(Reg(0), &[Reg(4)]);
     let entry = b
         .push_function_checked(a, sig(&[ValueType::Agg], &[ValueType::I64]))
         .unwrap();
@@ -236,7 +236,7 @@ fn rich_closure_boundaries_check_hidden_environments_and_do_not_reuse_another_ta
     let bools = b.contract(Contract::Tuple(&[Some(boolean)])).unwrap();
     let first = closure_body(&mut b, ints);
     let mut other = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    other.const_i64(2, 7).ret(0, &[2]);
+    other.const_i64(Reg(2), 7).ret(Reg(0), &[Reg(2)]);
     let second = b
         .push_function_checked(
             other,
@@ -253,7 +253,7 @@ fn rich_closure_boundaries_check_hidden_environments_and_do_not_reuse_another_ta
         })
         .unwrap();
     let mut a = body(&[ValueType::Unit, ValueType::Closure, ValueType::Closure]);
-    a.ret(0, &[]);
+    a.ret(Reg(0), &[]);
     let entry = b
         .push_function_checked(
             a,
@@ -316,7 +316,8 @@ fn exact_rich_identity_rejects_equal_kind_hashes_before_dispatch() {
         })
         .unwrap();
     let mut a = body(&[ValueType::Unit, ValueType::Func, ValueType::Agg]);
-    a.call_indirect(0, call, 1, 0, &[], &[2]).ret(0, &[]);
+    a.call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .ret(Reg(0), &[]);
     let entry = b
         .push_function_checked(a, sig(&[ValueType::Func], &[]))
         .unwrap();
@@ -334,9 +335,9 @@ fn statically_known_incompatible_indirect_targets_are_rejected() {
     let target = maker(&mut b, result);
     let call = b.call_sig(sig(&[], &[ValueType::Agg])).unwrap();
     let mut a = body(&[ValueType::Unit, ValueType::Func, ValueType::Agg]);
-    a.const_func(1, target)
-        .call_indirect(0, call, 1, 0, &[], &[2])
-        .ret(0, &[]);
+    a.const_func(Reg(1), target)
+        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .ret(Reg(0), &[]);
     b.push_function_checked(a, sig(&[], &[])).unwrap();
     assert!(matches!(
         b.build_verified(),
@@ -357,12 +358,12 @@ fn higher_order_returns_and_nested_callable_failures_keep_their_contracts() {
         .unwrap();
     let tuple = b.contract(Contract::Tuple(&[Some(callable)])).unwrap();
     let mut target = body(&[ValueType::Unit, ValueType::I64]);
-    target.const_i64(1, 42).ret(0, &[1]);
+    target.const_i64(Reg(1), 42).ret(Reg(0), &[Reg(1)]);
     let target = b
         .push_function_checked(target, sig(&[], &[ValueType::I64]))
         .unwrap();
     let mut get = body(&[ValueType::Unit, ValueType::Func]);
-    get.const_func(1, target).ret(0, &[1]);
+    get.const_func(Reg(1), target).ret(Reg(0), &[Reg(1)]);
     let get = b
         .push_function_checked(
             get,
@@ -374,14 +375,14 @@ fn higher_order_returns_and_nested_callable_failures_keep_their_contracts() {
         .unwrap();
     let call = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
     let mut main = body(&[ValueType::Unit, ValueType::Func, ValueType::I64]);
-    main.call(0, get, 0, &[], &[1])
-        .call_indirect(0, call, 1, 0, &[], &[2])
-        .ret(0, &[2]);
+    main.call(Reg(0), get, Reg(0), &[], &[Reg(1)])
+        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .ret(Reg(0), &[Reg(2)]);
     let entry = b
         .push_function_checked(main, sig(&[], &[ValueType::I64]))
         .unwrap();
     let mut take = body(&[ValueType::Unit, ValueType::Agg]);
-    take.ret(0, &[]);
+    take.ret(Reg(0), &[]);
     let take = b
         .push_function_checked(
             take,
@@ -428,12 +429,12 @@ fn callable_signature_positions_and_cached_visits_are_budgeted() {
         })
         .unwrap();
     let mut target = body(&[ValueType::Unit, ValueType::I64]);
-    target.ret(0, &[1]);
+    target.ret(Reg(0), &[Reg(1)]);
     let target = b
         .push_function_checked(target, sig(&[ValueType::I64], &[ValueType::I64]))
         .unwrap();
     let mut entry = body(&[ValueType::Unit, ValueType::Func, ValueType::Func]);
-    entry.ret(0, &[]);
+    entry.ret(Reg(0), &[]);
     let entry = b
         .push_function_checked(
             entry,
@@ -479,13 +480,15 @@ fn callable_signature_positions_and_cached_visits_are_budgeted() {
 fn opaque_closures_validate_even_an_unused_unrefined_environment_before_entry() {
     let mut b = ProgramBuilder::new();
     let mut target = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    target.const_i64(2, 42).ret(0, &[2]);
+    target.const_i64(Reg(2), 42).ret(Reg(0), &[Reg(2)]);
     let target = b
         .push_function_checked(target, sig(&[ValueType::Agg], &[ValueType::I64]))
         .unwrap();
     let call = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
     let mut entry = body(&[ValueType::Unit, ValueType::Closure, ValueType::I64]);
-    entry.call_indirect(0, call, 1, 0, &[], &[2]).ret(0, &[2]);
+    entry
+        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .ret(Reg(0), &[Reg(2)]);
     let entry = b
         .push_function_checked(entry, sig(&[ValueType::Closure], &[ValueType::I64]))
         .unwrap();
@@ -515,7 +518,7 @@ fn selects_and_nominal_arrays_keep_signatures_without_merging_function_identity(
     let mut targets = Vec::new();
     for number in [42, 7] {
         let mut target = body(&[ValueType::Unit, ValueType::I64]);
-        target.const_i64(1, number).ret(0, &[1]);
+        target.const_i64(Reg(1), number).ret(Reg(0), &[Reg(1)]);
         targets.push(
             b.push_function_checked(target, sig(&[], &[ValueType::I64]))
                 .unwrap(),
@@ -532,13 +535,13 @@ fn selects_and_nominal_arrays_keep_signatures_without_merging_function_identity(
         ValueType::I64,
     ]);
     entry
-        .const_func(2, targets[0])
-        .const_func(3, targets[1])
-        .select(2, 1, 2, 3)
-        .array_new(4, element, &[2, 3])
-        .array_get_imm(2, 4, 0)
-        .call_indirect(0, call, 2, 0, &[], &[5])
-        .ret(0, &[5]);
+        .const_func(Reg(2), targets[0])
+        .const_func(Reg(3), targets[1])
+        .select(Reg(2), Reg(1), Reg(2), Reg(3))
+        .array_new(Reg(4), element, &[Reg(2), Reg(3)])
+        .array_get_imm(Reg(2), Reg(4), 0)
+        .call_indirect(Reg(0), call, Reg(2), Reg(0), &[], &[Reg(5)])
+        .ret(Reg(0), &[Reg(5)]);
     let entry = b
         .push_function_checked(entry, sig(&[ValueType::Bool], &[ValueType::I64]))
         .unwrap();
@@ -578,12 +581,12 @@ fn an_opaque_host_write_erases_the_destinations_previous_callable_proof() {
     }
     let mut b = ProgramBuilder::new();
     let mut good = body(&[ValueType::Unit, ValueType::I64]);
-    good.const_i64(1, 42).ret(0, &[1]);
+    good.const_i64(Reg(1), 42).ret(Reg(0), &[Reg(1)]);
     let good = b
         .push_function_checked(good, sig(&[], &[ValueType::I64]))
         .unwrap();
     let mut bad = body(&[ValueType::Unit, ValueType::Bool]);
-    bad.const_bool(1, true).ret(0, &[1]);
+    bad.const_bool(Reg(1), true).ret(Reg(0), &[Reg(1)]);
     let bad = b
         .push_function_checked(bad, sig(&[], &[ValueType::Bool]))
         .unwrap();
@@ -597,10 +600,10 @@ fn an_opaque_host_write_erases_the_destinations_previous_callable_proof() {
     let call = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
     let mut entry = body(&[ValueType::Unit, ValueType::Func, ValueType::I64]);
     entry
-        .const_func(1, good)
-        .host_call(0, host, 0, &[], &[1])
-        .call_indirect(0, call, 1, 0, &[], &[2])
-        .ret(0, &[2]);
+        .const_func(Reg(1), good)
+        .host_call(Reg(0), host, Reg(0), &[], &[Reg(1)])
+        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .ret(Reg(0), &[Reg(2)]);
     let entry = b
         .push_function_checked(entry, sig(&[], &[ValueType::I64]))
         .unwrap();

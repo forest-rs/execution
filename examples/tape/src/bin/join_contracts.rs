@@ -3,7 +3,7 @@
 
 //! Compare different tuple members at one typed join, then browse its shared shape facts.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
@@ -52,15 +52,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         ValueType::Agg,
         ValueType::U64,
     ]);
-    let join = body.block(&[6]);
-    body.const_i64(2, 42)
-        .const_bool(3, true)
-        .tuple_new(4, &[2])
-        .tuple_new(5, &[3]);
-    body.br(1, join.with_args(&[4]), join.with_args(&[5]));
+    let join = body.block(&[Reg(6)]);
+    body.const_i64(Reg(2), 42)
+        .const_bool(Reg(3), true)
+        .tuple_new(Reg(4), &[Reg(2)])
+        .tuple_new(Reg(5), &[Reg(3)]);
+    body.br(Reg(1), join.with_args(&[Reg(4)]), join.with_args(&[Reg(5)]));
     let header = body.pc();
     body.place(join)?;
-    body.tuple_len(7, 6).ret(0, &[7]);
+    body.tuple_len(Reg(7), Reg(6)).ret(Reg(0), &[Reg(7)]);
     let entry = builder.push_function_checked(
         body,
         FunctionSig {

@@ -6,7 +6,7 @@
 use execution_tape::value::FuncRef;
 use execution_tape::value::{TagRef, UnitId};
 use execution_tape::{
-    asm::{Catch, FunctionSig, ProgramBuilder},
+    asm::{Catch, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{TagId, ValueType},
     recording::{RecordLimits, Recorder, ReplayOutcome},
@@ -90,19 +90,19 @@ fn fixture() -> Fixture {
     asm.begin_region(&[Catch::Tag(failed, handler)]);
     let [result] = b.emit_call(&mut asm, import, &[code]).unwrap();
     asm.end_region();
-    asm.ret(0, &[result]);
+    asm.ret(Reg(0), &[result]);
     asm.place(handler).unwrap();
     asm.tuple_get(field, caught, 0)
         .const_i64(hundred, 100)
         .i64_add(field, field, hundred)
-        .ret(0, &[field]);
+        .ret(Reg(0), &[field]);
     b.define_function(protected, asm).unwrap();
 
     let mut asm = b.function_asm(bare).unwrap();
     let code = b.argument(bare, 0).unwrap();
     let call_pc = asm.pc();
     let [result] = b.emit_call(&mut asm, import, &[code]).unwrap();
-    asm.ret(0, &[result]);
+    asm.ret(Reg(0), &[result]);
     b.define_function(bare, asm).unwrap();
 
     Fixture {

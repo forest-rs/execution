@@ -5,7 +5,7 @@ use super::*;
 use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{HostContext, HostError, HostSig, SigHash},
     program::ValueType,
     source::{SourceDocument, SourceId, SourceLimits, SourceMapping},
@@ -56,12 +56,12 @@ fn program(parent: bool) -> (VerifiedProgram, FuncId, SourceMap) {
     let result = a.alloc_register(ValueType::I64);
     let before = a.pc();
     if parent {
-        a.host_call_sig_id(0, send, 0, &[1], &[result]);
+        a.host_call_sig_id(Reg(0), send, Reg(0), &[Reg(1)], &[result]);
     } else {
         a.const_i64(result, 42);
     }
     let after = a.pc();
-    a.ret(0, &[result]);
+    a.ret(Reg(0), &[result]);
     b.define_function(entry, a).unwrap();
     b.set_function_name(entry, if parent { "real_caller" } else { "method_body" })
         .unwrap();

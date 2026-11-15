@@ -81,7 +81,7 @@ pub(super) fn context_lines(
 mod tests {
     use super::*;
     use execution_tape::{
-        asm::{FunctionSig, ProgramBuilder},
+        asm::{FunctionSig, ProgramBuilder, Reg},
         program::ValueType,
         source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
     };
@@ -97,7 +97,7 @@ mod tests {
             .unwrap();
         let mut body = builder.function_asm(function).unwrap();
         let value = body.alloc_register(ValueType::I64);
-        body.const_i64(value, 42).ret(0, &[value]);
+        body.const_i64(value, 42).ret(Reg(0), &[value]);
         builder.define_function(function, body).unwrap();
         let program = builder.build_verified().unwrap();
         let location = CodeLocation {

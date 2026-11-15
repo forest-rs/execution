@@ -3,7 +3,7 @@
 
 //! Shared workload for the recording tool and its benchmark.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::value::Value;
@@ -54,13 +54,17 @@ pub(super) fn program(calls: i64) -> Arc<VerifiedProgram> {
     ]);
     let head = body.label();
     let exit = body.label();
-    body.const_i64(3, 0).const_i64(4, calls).const_i64(5, 1);
+    body.const_i64(Reg(3), 0)
+        .const_i64(Reg(4), calls)
+        .const_i64(Reg(5), 1);
     body.jmp(head);
     body.place(head).unwrap();
-    body.host_call_sig_id(0, import, 0, &[1], &[2]);
-    body.i64_add(3, 3, 5).i64_lt(6, 3, 4).br(6, head, exit);
+    body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
+    body.i64_add(Reg(3), Reg(3), Reg(5))
+        .i64_lt(Reg(6), Reg(3), Reg(4))
+        .br(Reg(6), head, exit);
     body.place(exit).unwrap();
-    body.ret(0, &[2]);
+    body.ret(Reg(0), &[Reg(2)]);
     builder
         .push_function_checked(
             body,

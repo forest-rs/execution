@@ -7,7 +7,7 @@
 
 use std::error::Error;
 
-use execution_tape::program::Program;
+use execution_tape::program::{Program, Reg};
 use execution_tape::value::FuncId;
 use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig, verify_program_owned};
 
@@ -69,10 +69,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("{}\t{contract:?}", id.0);
             }
             println!("register\tstorage_kind\tbefore\tafter\torigin_before\torigin_after");
-            for register in 0..function.stats().virtual_registers {
+            for register in (0..function.stats().virtual_registers).map(Reg) {
                 let fact = facts.register(register).expect("declared register");
                 println!(
-                    "{register}\t{:?}\t{}\t{}\t{:?}\t{:?}",
+                    "{}\t{:?}\t{}\t{}\t{:?}\t{:?}",
+                    register.0,
                     fact.storage_kind,
                     value_fact(fact.before),
                     value_fact(fact.after),

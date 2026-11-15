@@ -3,7 +3,7 @@
 
 //! Overflow-reporting integer arithmetic (`i64.*_ovf`, `u64.*_ovf`) through the public API.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::program::{Program, ValueType};
@@ -48,17 +48,17 @@ fn program(kind: ValueType) -> VerifiedProgram {
         })
         .unwrap();
     let mut body = builder.function_asm(id).unwrap();
-    let regs: Vec<u32> = rets.iter().map(|&t| body.alloc_register(t)).collect();
+    let regs: Vec<Reg> = rets.iter().map(|&t| body.alloc_register(t)).collect();
     if kind == ValueType::I64 {
-        body.i64_add_ovf(regs[0], regs[1], 1, 2)
-            .i64_sub_ovf(regs[2], regs[3], 1, 2)
-            .i64_mul_ovf(regs[4], regs[5], 1, 2);
+        body.i64_add_ovf(regs[0], regs[1], Reg(1), Reg(2))
+            .i64_sub_ovf(regs[2], regs[3], Reg(1), Reg(2))
+            .i64_mul_ovf(regs[4], regs[5], Reg(1), Reg(2));
     } else {
-        body.u64_add_ovf(regs[0], regs[1], 1, 2)
-            .u64_sub_ovf(regs[2], regs[3], 1, 2)
-            .u64_mul_ovf(regs[4], regs[5], 1, 2);
+        body.u64_add_ovf(regs[0], regs[1], Reg(1), Reg(2))
+            .u64_sub_ovf(regs[2], regs[3], Reg(1), Reg(2))
+            .u64_mul_ovf(regs[4], regs[5], Reg(1), Reg(2));
     }
-    body.ret(0, &regs);
+    body.ret(Reg(0), &regs);
     builder.define_function(id, body).unwrap();
     let bytes = builder.build().encode();
     verify_program_owned(Program::decode(&bytes).unwrap(), &VerifyConfig::default()).unwrap()
@@ -231,7 +231,7 @@ fn overflow_opcode_bytes_and_disassembly_are_stable() {
         let lines: Vec<_> = disassembly
             .instrs()
             .map(|instruction| {
-                let writes: Vec<u32> = instruction.writes().collect();
+                let writes: Vec<Reg> = instruction.writes().collect();
                 (instruction.to_string(), instruction.dst(), writes)
             })
             .collect();
@@ -242,8 +242,8 @@ fn overflow_opcode_bytes_and_disassembly_are_stable() {
                 text.ends_with(&format!("{prefix}.{op}_ovf r{dst}, r{flag}, [r1, r2]")),
                 "{text}"
             );
-            assert_eq!(*primary, Some(dst));
-            assert_eq!(*writes, [dst, flag]);
+            assert_eq!(*primary, Some(Reg(dst)));
+            assert_eq!(*writes, [Reg(dst), Reg(flag)]);
         }
     }
 }
@@ -258,8 +258,8 @@ fn verifier_requires_a_bool_flag_and_matching_operands() {
     ] {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, operand, operand, result, flag]);
-        a.i64_add_ovf(3, 4, 1, 2);
-        a.ret(0, &[]);
+        a.i64_add_ovf(Reg(3), Reg(4), Reg(1), Reg(2));
+        a.ret(Reg(0), &[]);
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
             a,

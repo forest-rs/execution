@@ -6,7 +6,7 @@
 //! Run with:
 //! `cargo run -p execution_tape_examples --bin disasm`
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::disasm::disassemble_verified;
 use execution_tape::program::ValueType;
 
@@ -23,15 +23,15 @@ fn main() {
     let l_else = a.label_named("else");
 
     // if cond { a + b } else { a - b }
-    a.br(1, l_then, l_else);
+    a.br(Reg(1), l_then, l_else);
 
     a.place(l_then).unwrap();
-    a.i64_add(4, 2, 3);
-    a.ret(0, &[4]);
+    a.i64_add(Reg(4), Reg(2), Reg(3));
+    a.ret(Reg(0), &[Reg(4)]);
 
     a.place(l_else).unwrap();
-    a.i64_sub(4, 2, 3);
-    a.ret(0, &[4]);
+    a.i64_sub(Reg(4), Reg(2), Reg(3));
+    a.ret(Reg(0), &[Reg(4)]);
 
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("disasm_demo");

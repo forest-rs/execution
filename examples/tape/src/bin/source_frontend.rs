@@ -8,7 +8,7 @@ use execution_tape::source::{SourceDocument, SourceId, SourceLimits, SourceMap, 
 use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{Asm, FunctionSig, ProgramBuilder},
+    asm::{Asm, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{Program, ValueType},
     trace::{TraceMask, TraceSink},
@@ -146,15 +146,15 @@ fn compile(name: String, source: String) -> Result<(Program, SourceMap), Box<dyn
         body: &mut Asm,
         kinds: &mut Vec<ValueType>,
         ranges: &mut Vec<(u32, Range<usize>)>,
-    ) -> u32 {
+    ) -> Reg {
         let (left, right) = match &expression.kind {
-            ExprKind::Number(_) => (0, 0),
+            ExprKind::Number(_) => (Reg(0), Reg(0)),
             ExprKind::Binary(_, left, right) => (
                 emit(left, body, kinds, ranges),
                 emit(right, body, kinds, ranges),
             ),
         };
-        let reg = u32::try_from(kinds.len()).expect("bounded input registers");
+        let reg = Reg(u32::try_from(kinds.len()).expect("bounded input registers"));
         kinds.push(ValueType::I64);
         ranges.push((body.pc(), expression.range.clone()));
         match expression.kind {
@@ -176,7 +176,7 @@ fn compile(name: String, source: String) -> Result<(Program, SourceMap), Box<dyn
     }
     let result = emit(&expression, &mut body, &mut kinds, &mut ranges);
     ranges.push((body.pc(), expression.range.clone()));
-    body.ret(0, &[result]);
+    body.ret(Reg(0), &[result]);
     body.set_register_types(kinds);
     let mut builder = ProgramBuilder::new();
     builder.set_program_name("Arithmetic source frontend");
@@ -354,7 +354,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 );
                 for (label, observations) in [("before", step.inputs), ("after", step.outputs)] {
                     for (reg, value) in observations.iter() {
-                        println!("  {label} r{reg} = {value:?}");
+                        println!("  {label} {reg} = {value:?}");
                     }
                 }
             }

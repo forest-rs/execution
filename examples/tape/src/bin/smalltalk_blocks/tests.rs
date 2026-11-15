@@ -287,7 +287,7 @@ fn changing_block_return_semantics_invalidates_the_old_source_sidecar() {
 #[test]
 fn requiring_a_block_checks_a_dynamic_payload_before_typed_invocation() {
     use execution_tape::{
-        asm::{FunctionSig, ProgramBuilder},
+        asm::{FunctionSig, ProgramBuilder, Reg},
         host::HostSig,
         program::ValueType,
         trace::TraceMask,
@@ -313,7 +313,7 @@ fn requiring_a_block_checks_a_dynamic_payload_before_typed_invocation() {
     let [block] = program
         .emit_call(&mut body, require_block, &[boxed])
         .unwrap();
-    body.ret(0, &[block]);
+    body.ret(Reg(0), &[block]);
     program.define_function(entry, body).unwrap();
     let program = program.build_verified().unwrap();
     let failure = {

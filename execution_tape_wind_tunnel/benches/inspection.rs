@@ -5,7 +5,7 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::disasm::disassemble_function;
-use execution_tape::program::Program;
+use execution_tape::program::{Program, Reg};
 use execution_tape::value::FuncId;
 use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig};
 use std::{hint::black_box, time::Duration};
@@ -41,7 +41,7 @@ fn inspect(c: &mut Criterion) {
             analysis
                 .instruction(last)
                 .unwrap()
-                .register(2)
+                .register(Reg(2))
                 .unwrap()
                 .before,
             ValueFact::Contract(_)
@@ -55,7 +55,7 @@ fn inspect(c: &mut Criterion) {
                     analysis
                         .instruction(black_box(last))
                         .unwrap()
-                        .register(black_box(2))
+                        .register(black_box(Reg(2)))
                         .unwrap(),
                 )
             });
@@ -64,7 +64,7 @@ fn inspect(c: &mut Criterion) {
             b.iter(|| {
                 for &pc in &pcs {
                     let view = analysis.instruction(pc).unwrap();
-                    black_box(view.register(2));
+                    black_box(view.register(Reg(2)));
                 }
             });
         });

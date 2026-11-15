@@ -163,9 +163,9 @@ struct Site {
 /// );
 /// let entry = pb.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
 /// let mut body = pb.function_asm(entry)?;
-/// let value = Reg(pb.argument(entry, 0)?);
+/// let value = pb.argument(entry, 0)?;
 /// let [] = pb.emit_call_with(&mut body, set, ("rustiness", value))?;
-/// body.ret(0, &[]);
+/// body.ret(Reg(0), &[]);
 /// pb.define_function(entry, body)?;
 /// let program = pb.build_verified()?;
 ///
@@ -451,7 +451,7 @@ fn solve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use crate::host::HostSig;
     use crate::program::{Const, ValueType};
     use alloc::vec;
@@ -474,7 +474,7 @@ mod tests {
             .unwrap();
         let mut a = pb.function_asm(f).unwrap();
         emit(&mut pb, &mut a, h);
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
         pb.define_function(f, a).unwrap();
         pb.build_verified().unwrap()
     }
@@ -485,7 +485,7 @@ mod tests {
         sites.iter().map(|site| site.args().collect()).collect()
     }
 
-    fn text(pb: &mut ProgramBuilder, a: &mut Asm, s: &str) -> u32 {
+    fn text(pb: &mut ProgramBuilder, a: &mut Asm, s: &str) -> Reg {
         let r = a.alloc_register(ValueType::Str);
         a.const_pool(r, pb.const_str(s));
         r
@@ -500,7 +500,7 @@ mod tests {
             let copy = a.alloc_register(ValueType::Str);
             a.mov(copy, name);
             let [] = pb.emit_call(a, h, &[copy, n]).unwrap();
-            let [] = pb.emit_call(a, h, &[name, 2]).unwrap();
+            let [] = pb.emit_call(a, h, &[name, Reg(2)]).unwrap();
         });
         assert_eq!(
             args(&p),
@@ -529,7 +529,7 @@ mod tests {
             a.const_pool(name, pb.const_str("same"));
             a.const_pool(other, pb.const_str("before"));
             let (yes, no, join) = (a.label(), a.label(), a.label());
-            a.br(1, yes, no);
+            a.br(Reg(1), yes, no);
             a.place(yes).unwrap();
             a.const_pool(name, pb.const_str("same"));
             a.const_i64(n, 5);
@@ -565,12 +565,12 @@ mod tests {
             a.const_pool(y, pb.const_str("y"));
             let (yes, no) = (a.label(), a.label());
             let join = a.block(&[name, n]);
-            a.br(1, yes, no);
+            a.br(Reg(1), yes, no);
             a.place(yes).unwrap();
             a.const_i64(n, 1);
             a.jmp(join.with_args(&[x, n]));
             a.place(no).unwrap();
-            a.jmp(join.with_args(&[y, 2]));
+            a.jmp(join.with_args(&[y, Reg(2)]));
             a.place(join).unwrap();
             let [] = pb.emit_call(a, h, &[name, n]).unwrap();
         });
@@ -584,13 +584,13 @@ mod tests {
             a.const_pool(x, pb.const_str("x"));
             let (yes, no) = (a.label(), a.label());
             let join = a.block(&[name]);
-            a.br(1, yes, no);
+            a.br(Reg(1), yes, no);
             a.place(yes).unwrap();
             a.jmp(join.with_args(&[x]));
             a.place(no).unwrap();
             a.jmp(join.with_args(&[x]));
             a.place(join).unwrap();
-            let [] = pb.emit_call(a, h, &[name, 2]).unwrap();
+            let [] = pb.emit_call(a, h, &[name, Reg(2)]).unwrap();
         });
         assert_eq!(args(&p), [vec![Some(ValueRef::Str("x")), None]]);
     }
@@ -611,7 +611,7 @@ mod tests {
             // `n` is 0 on entry and `n + 1` around the back edge.
             let [] = pb.emit_call(a, h, &[name, n]).unwrap();
             a.i64_add(n, n, one);
-            a.br(1, head, exit);
+            a.br(Reg(1), head, exit);
             a.place(exit).unwrap();
             let [] = pb.emit_call(a, h, &[name, one]).unwrap();
         });
@@ -668,7 +668,7 @@ mod tests {
             a.jmp(live);
             a.place(dead).unwrap();
             let name = text(pb, a, "dead");
-            let [] = pb.emit_call(a, h, &[name, 2]).unwrap();
+            let [] = pb.emit_call(a, h, &[name, Reg(2)]).unwrap();
             a.jmp(live);
             a.place(live).unwrap();
         });

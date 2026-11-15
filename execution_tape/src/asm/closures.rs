@@ -40,7 +40,7 @@ pub enum ClosureBuildError {
         actual: ValueType,
     },
     /// A capture register has no declaration.
-    Register(u32),
+    Register(Reg),
     /// Loading captures requires the hidden aggregate argument at r1.
     Environment,
     /// New registers would exceed the u32 address space.
@@ -51,7 +51,7 @@ impl fmt::Display for ClosureBuildError {
         match self {
             Self::CaptureCount { expected, actual } => write!(f, "closure declares {expected} captures, got {actual}"),
             Self::CaptureKind { index, expected, actual } => write!(f, "closure capture {index} requires {expected:?}, register declares {actual:?}"),
-            Self::Register(register) => write!(f, "closure uses undeclared capture register r{register}"),
+            Self::Register(register) => write!(f, "closure uses undeclared capture register {register}"),
             Self::Environment => f.write_str("closure body requires its hidden aggregate environment at r1; start with function_asm(layout.function())"),
             Self::RegisterSpace => f.write_str("closure emission exceeds the u32 register address space"),
         }
@@ -73,7 +73,7 @@ impl ClosureLayout {
     }
 
     /// Source register of a caller-visible body argument, excluding the hidden environment.
-    pub fn argument(&self, index: u32) -> Result<u32, BuildError> {
+    pub fn argument(&self, index: u32) -> Result<Reg, BuildError> {
         if index as usize >= self.arguments {
             return Err(BuildError::BadArgIndex {
                 func: self.function.0,
@@ -81,9 +81,9 @@ impl ClosureLayout {
                 arg_count: u32::try_from(self.arguments).unwrap_or(u32::MAX),
             });
         }
-        Ok(index
+        Ok(Reg(index
             .checked_add(2)
-            .expect("closure argument register fits declared body"))
+            .expect("closure argument register fits declared body")))
     }
 
     /// Loads captures into newly allocated registers, in declaration order.
@@ -94,7 +94,7 @@ impl ClosureLayout {
     pub fn load_captures<const N: usize>(
         &self,
         body: &mut Asm,
-    ) -> Result<[u32; N], ClosureBuildError> {
+    ) -> Result<[Reg; N], ClosureBuildError> {
         self.check_count(N)?;
         if body.register_types.get(1) != Some(&ValueType::Agg) {
             return Err(ClosureBuildError::Environment);
@@ -104,7 +104,7 @@ impl ClosureLayout {
             let register = body.alloc_register(self.captures[index]);
             body.tuple_get(
                 register,
-                1,
+                Reg(1),
                 u32::try_from(index).expect("capture index fits environment"),
             );
             register
@@ -117,12 +117,12 @@ impl ClosureLayout {
     /// Execution-time allocations use the ordinary VM aggregate storage and resource budgets.
     /// Captures must be in declaration order. Use the resulting register with this layout's
     /// [`Self::call_signature`] or pass it to a declared closure argument.
-    pub fn instantiate(&self, body: &mut Asm, captures: &[u32]) -> Result<u32, ClosureBuildError> {
+    pub fn instantiate(&self, body: &mut Asm, captures: &[Reg]) -> Result<Reg, ClosureBuildError> {
         self.check_count(captures.len())?;
         for (index, register) in captures.iter().enumerate() {
             let actual = *body
                 .register_types
-                .get(*register as usize)
+                .get(register.0 as usize)
                 .ok_or(ClosureBuildError::Register(*register))?;
             let expected = self.captures[index];
             if actual != expected {
@@ -174,7 +174,7 @@ impl ProgramBuilder {
     /// values. Keep it alongside the frontend's lexical names; no layout is retained by the VM.
     ///
     /// ```
-    /// use execution_tape::{asm::{FunctionSig, ProgramBuilder}, program::ValueType};
+    /// use execution_tape::{asm::{FunctionSig, ProgramBuilder, Reg}, program::ValueType};
     /// let mut program = ProgramBuilder::new();
     /// let increment = program.declare_closure(&[ValueType::I64.into()], FunctionSig {
     ///     arg_types: vec![ValueType::I64], ret_types: vec![ValueType::I64],
@@ -183,7 +183,7 @@ impl ProgramBuilder {
     /// let [captured] = increment.load_captures(&mut body)?;
     /// let argument = increment.argument(0)?;
     /// let answer = body.alloc_register(ValueType::I64);
-    /// body.i64_add(answer, captured, argument).ret(0, &[answer]);
+    /// body.i64_add(answer, captured, argument).ret(Reg(0), &[answer]);
     /// program.define_function(increment.function(), body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -271,7 +271,7 @@ mod tests {
         let answer = body.alloc_register(ValueType::I64);
         body.tuple_get(captured, captured_tuple, 0)
             .i64_add(answer, captured, increment.argument(0).unwrap())
-            .ret(0, &[answer]);
+            .ret(Reg(0), &[answer]);
         program.define_function(increment.function(), body).unwrap();
         let entry = program
             .declare_function(FunctionSig {
@@ -297,7 +297,7 @@ mod tests {
                 &[two],
             )
             .unwrap();
-        body.ret(0, &[answer]);
+        body.ret(Reg(0), &[answer]);
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         assert_eq!(
@@ -323,7 +323,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(block.argument(0).unwrap(), 2);
+        assert_eq!(block.argument(0).unwrap(), Reg(2));
         assert!(matches!(
             block.argument(1),
             Err(BuildError::BadArgIndex { arg_count: 1, .. })
@@ -335,20 +335,20 @@ mod tests {
             Err(ClosureBuildError::CaptureCount { .. })
         ));
         assert!(matches!(
-            block.instantiate(&mut body, &[2]),
+            block.instantiate(&mut body, &[Reg(2)]),
             Err(ClosureBuildError::CaptureKind { index: 0, .. })
         ));
         assert!(matches!(
-            block.instantiate(&mut body, &[99]),
-            Err(ClosureBuildError::Register(99))
+            block.instantiate(&mut body, &[Reg(99)]),
+            Err(ClosureBuildError::Register(Reg(99)))
         ));
-        let wrong_count: Result<[u32; 2], _> = block.load_captures(&mut body);
+        let wrong_count: Result<[Reg; 2], _> = block.load_captures(&mut body);
         assert!(wrong_count.is_err());
         let after = body.finish_parts().unwrap();
         assert_eq!(before.bytecode, after.bytecode);
         assert_eq!(before.register_types, after.register_types);
         let mut not_a_closure = Asm::new();
-        let attempt: Result<[u32; 1], _> = block.load_captures(&mut not_a_closure);
+        let attempt: Result<[Reg; 1], _> = block.load_captures(&mut not_a_closure);
         assert!(matches!(attempt, Err(ClosureBuildError::Environment)));
         assert!(not_a_closure.register_types.is_empty());
     }
@@ -368,7 +368,7 @@ mod tests {
             )
             .unwrap();
         let mut body = program.function_asm(block.function()).unwrap();
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         program.define_function(block.function(), body).unwrap();
         let entry = program
             .declare_function(FunctionSig {
@@ -392,7 +392,7 @@ mod tests {
                 &[],
             )
             .unwrap();
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         let failure = {

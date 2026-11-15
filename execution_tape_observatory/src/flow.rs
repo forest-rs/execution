@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(row(&f, 25_000, 0, 30_000), "│ │ │ │ ");
     }
 
-    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use execution_tape::disasm::disassemble_function;
     use execution_tape::program::ValueType;
 
@@ -233,7 +233,7 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
         let head = a.label();
         a.place(head).unwrap();
-        a.br(1, head, head);
+        a.br(Reg(1), head, head);
         let mut b = ProgramBuilder::new();
         let f = b
             .push_function_checked(
@@ -258,11 +258,11 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        let join = a.block(&[3]);
-        a.const_i64(2, 7)
-            .br(1, join.with_args(&[2]), join.with_args(&[2]));
+        let join = a.block(&[Reg(3)]);
+        a.const_i64(Reg(2), 7)
+            .br(Reg(1), join.with_args(&[Reg(2)]), join.with_args(&[Reg(2)]));
         a.place(join).unwrap();
-        a.ret(0, &[3]);
+        a.ret(Reg(0), &[Reg(3)]);
         let mut b = ProgramBuilder::new();
         let f = b
             .push_function_checked(

@@ -5,9 +5,9 @@
 
 use std::borrow::Cow;
 
-use execution_tape::disasm::{CallTarget, ConstValue, InstrView, Operands};
+use execution_tape::disasm::{CallTarget, ConstValue, InstrView, Operands, RegList};
 use execution_tape::host::HostError;
-use execution_tape::program::{HostSigId, Program, TagId, ValueType};
+use execution_tape::program::{HostSigId, Program, Reg, TagId, ValueType};
 use execution_tape::recording::{AggregateId, RecordedValue, Recording};
 use execution_tape::value::{AggType, FuncId, FuncRef, TagRef, UnitId};
 
@@ -515,11 +515,11 @@ pub(super) fn values(record: &Recording, values: &[RecordedValue]) -> String {
     }
 }
 
-fn registers(mut values: impl Iterator<Item = u32>) -> String {
+fn registers(mut values: impl Iterator<Item = Reg>) -> String {
     let visible = values
         .by_ref()
         .take(8)
-        .map(|reg| format!("r{reg}"))
+        .map(|reg| reg.to_string())
         .collect::<Vec<_>>()
         .join(", ");
     let omitted = values.count();
@@ -530,14 +530,11 @@ fn registers(mut values: impl Iterator<Item = u32>) -> String {
     }
 }
 
-fn assignment(registers: &[u32], expression: String) -> String {
+fn assignment(registers: RegList<'_>, expression: String) -> String {
     if registers.is_empty() {
         expression
     } else {
-        format!(
-            "{} = {expression}",
-            self::registers(registers.iter().copied())
-        )
+        format!("{} = {expression}", self::registers(registers.iter()))
     }
 }
 
@@ -548,30 +545,30 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
                 CallTarget::HostSig(id, _) => format!("host {}", host(program, id)),
                 CallTarget::Func(id) => format!("call {}", function(program, id)),
                 CallTarget::Indirect { callee, call_sig } => {
-                    format!("call r{callee} [signature #{}]", call_sig.0)
+                    format!("call {callee} [signature #{}]", call_sig.0)
                 }
             };
             assignment(
                 call.rets,
-                format!("{callee}({})", registers(call.args.iter().copied())),
+                format!("{callee}({})", registers(call.args.iter())),
             )
         }
-        Operands::Ret { rets, .. } => format!("return {}", registers(rets.iter().copied())),
-        Operands::ThrowRef { exn, .. } => format!("rethrow r{exn}"),
+        Operands::Ret { rets, .. } => format!("return {}", registers(rets.iter())),
+        Operands::ThrowRef { exn, .. } => format!("rethrow {exn}"),
         Operands::Throw { tag, payload, .. } => format!(
             "throw {}({})",
             exception_tag(program, tag),
-            registers(payload.iter().copied())
+            registers(payload.iter())
         ),
         Operands::Jmp { pc_target } => format!("goto {pc_target:06}"),
         Operands::Br {
             cond,
             pc_true,
             pc_false,
-        } => format!("if r{cond} goto {pc_true:06} else {pc_false:06}"),
-        Operands::Block { params } => format!("join ({})", registers(params.iter().copied())),
+        } => format!("if {cond} goto {pc_true:06} else {pc_false:06}"),
+        Operands::Block { params } => format!("join ({})", registers(params.iter())),
         Operands::JmpArgs { pc_target, args } => {
-            format!("goto {pc_target:06} ({})", registers(args.iter().copied()))
+            format!("goto {pc_target:06} ({})", registers(args.iter()))
         }
         Operands::BrArgs {
             cond,
@@ -579,18 +576,18 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
             pc_false,
             ..
         } => format!(
-            "if r{cond} goto {pc_true:06} ({}) else {pc_false:06} ({})",
+            "if {cond} goto {pc_true:06} ({}) else {pc_false:06} ({})",
             registers(
                 instruction
                     .edge(0)
                     .into_iter()
-                    .flat_map(|edge| edge.args.iter().copied())
+                    .flat_map(|edge| edge.args.iter())
             ),
             registers(
                 instruction
                     .edge(1)
                     .into_iter()
-                    .flat_map(|edge| edge.args.iter().copied())
+                    .flat_map(|edge| edge.args.iter())
             )
         ),
         Operands::Simple => {
@@ -628,7 +625,7 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
             let first = writes.next();
             match (first, writes.next()) {
                 (None, _) => expression,
-                (Some(reg), None) => format!("r{reg} = {expression}"),
+                (Some(reg), None) => format!("{reg} = {expression}"),
                 _ => format!("{} = {expression}", registers(instruction.writes())),
             }
         }

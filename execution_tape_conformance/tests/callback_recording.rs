@@ -6,7 +6,7 @@
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::ValueType,
     recording::{
@@ -39,7 +39,7 @@ struct Fixture {
     nested: FuncId,
     closure: FuncId,
     root_host: TraceLocation,
-    host_result: u32,
+    host_result: Reg,
 }
 fn fixture() -> Fixture {
     let mut b = ProgramBuilder::new();
@@ -80,20 +80,21 @@ fn fixture() -> Fixture {
         func: root,
         pc: a.pc(),
     };
-    a.host_call_sig_id(0, outer, 0, &[1], &[host_result])
+    a.host_call_sig_id(Reg(0), outer, Reg(0), &[Reg(1)], &[host_result])
         .tuple_new(result, &[host_result])
-        .ret(0, &[result]);
+        .ret(Reg(0), &[result]);
     b.define_function(root, a).unwrap();
     let mut a = b.function_asm(nested).unwrap();
     let wrapped = a.alloc_register(ValueType::Agg);
     let result = a.alloc_register(ValueType::Agg);
-    a.tuple_new(wrapped, &[1])
-        .host_call_sig_id(0, inner, 0, &[wrapped], &[result])
-        .ret(0, &[result]);
+    a.tuple_new(wrapped, &[Reg(1)])
+        .host_call_sig_id(Reg(0), inner, Reg(0), &[wrapped], &[result])
+        .ret(Reg(0), &[result]);
     b.define_function(nested, a).unwrap();
     let mut a = b.function_asm(closure).unwrap();
     let result = a.alloc_register(ValueType::Agg);
-    a.tuple_new(result, &[1, 2]).ret(0, &[result]);
+    a.tuple_new(result, &[Reg(1), Reg(2)])
+        .ret(Reg(0), &[result]);
     b.define_function(closure, a).unwrap();
     Fixture {
         program: Arc::new(b.build_verified().unwrap()),
@@ -136,7 +137,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
             max_steps,
             watches: vec![RegisterWatch {
                 location: f.root_host.into(),
-                registers: vec![1, f.host_result],
+                registers: vec![Reg(1), f.host_result],
             }],
         });
     }

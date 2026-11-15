@@ -4,7 +4,7 @@
 //! VM exception tags: defined and imported tags, per-install tags and cross-unit catches.
 
 use execution_tape::{
-    asm::{CallTarget, Catch, FunctionSig, ProgramBuilder},
+    asm::{CallTarget, Catch, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{Program, TagId, ValueType},
     recording::{RecordLimits, RecordedTag, Recorder, ReplayOutcome, StoreRecord},
@@ -117,10 +117,10 @@ fn module(import: bool) -> Module {
         a.place(handler).unwrap();
         match binds {
             ValueType::Exn => {
-                a.throw_ref(0, caught);
+                a.throw_ref(Reg(0), caught);
             }
             _ => {
-                a.ret(0, &[caught]);
+                a.ret(Reg(0), &[caught]);
             }
         }
         a.place(start).unwrap();
@@ -141,7 +141,7 @@ fn module(import: bool) -> Module {
             .unwrap()
         };
         a.end_region();
-        a.ret(0, &[result]);
+        a.ret(Reg(0), &[result]);
         b.define_function(f, a).unwrap();
         f
     };
@@ -165,7 +165,7 @@ fn module(import: bool) -> Module {
         a.place(handler).unwrap();
         let minus = a.alloc_register(ValueType::I64);
         a.const_i64(minus, -1);
-        a.ret(0, &[minus]);
+        a.ret(Reg(0), &[minus]);
         a.place(start).unwrap();
         a.begin_region(&[Catch::All(handler)]);
         let [result] = if host {
@@ -184,7 +184,7 @@ fn module(import: bool) -> Module {
             .unwrap()
         };
         a.end_region();
-        a.ret(0, &[result]);
+        a.ret(Reg(0), &[result]);
         b.define_function(f, a).unwrap();
         f
     };

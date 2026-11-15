@@ -3,7 +3,7 @@
 
 use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
-use execution_tape::program::Program;
+use execution_tape::program::{Program, Reg};
 use execution_tape::recording::{
     AggregateId, CallStack, ControlAction, ControlCommand, GuestReturn, HostCall, HostOutcome,
     Outcome, RecordedValue, Recording, ReplayOutcome,
@@ -45,7 +45,7 @@ pub(super) struct View<'a> {
     pub(super) flow: Flow,
     pub(super) fact_lines: Vec<String>,
     pub(super) source_lines: Vec<String>,
-    pub(super) step_condition: Option<u32>,
+    pub(super) step_condition: Option<Reg>,
     pub(super) step_successors: Option<[Option<TraceLocation>; 2]>,
     step_location: Option<TraceLocation>,
     sources: Option<execution_tape::source::BoundSources<'a>>,
@@ -332,13 +332,13 @@ impl<'a> View<'a> {
             .writes()
             .take(64)
             .chain(instruction.reads().take(64))
-            .filter(|&r| r != 0)
+            .filter(|&r| r != Reg(0))
             .filter(|r| seen.insert(*r))
             .take(2)
         {
             if let Some(fact) = facts.register(reg) {
                 self.fact_lines.push(format!(
-                    "r{reg}: {} → {}",
+                    "{reg}: {} → {}",
                     summary(fact.before),
                     summary(fact.after)
                 ));
@@ -416,11 +416,11 @@ impl<'a> View<'a> {
             .chain(step.into_iter().flat_map(|step| {
                 step.inputs
                     .iter()
-                    .map(|(reg, value)| ("before", reg as usize, value))
+                    .map(|(reg, value)| ("before", reg.0 as usize, value))
                     .chain(
                         step.outputs
                             .iter()
-                            .map(|(reg, value)| ("after", reg as usize, value)),
+                            .map(|(reg, value)| ("after", reg.0 as usize, value)),
                     )
             }))
     }

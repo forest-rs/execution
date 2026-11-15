@@ -30,13 +30,13 @@ pub enum TagBuildError {
         actual: usize,
     },
     /// A payload register is not declared.
-    Register(u32),
+    Register(Reg),
     /// A payload register's declared kind disagrees with the tag.
     PayloadKind {
         /// Thrown tag.
         tag: TagId,
         /// Offending source register.
-        register: u32,
+        register: Reg,
         /// Zero-based payload position.
         index: usize,
         /// Kind declared by the tag.
@@ -69,7 +69,7 @@ impl fmt::Display for TagBuildError {
                 "throw tag#{} expects {expected} payload values, got {actual}",
                 tag.0
             ),
-            Self::Register(register) => write!(f, "throw uses undeclared register r{register}"),
+            Self::Register(register) => write!(f, "throw uses undeclared register {register}"),
             Self::PayloadKind {
                 tag,
                 register,
@@ -78,7 +78,7 @@ impl fmt::Display for TagBuildError {
                 actual,
             } => write!(
                 f,
-                "throw tag#{}, payload {index} at r{register} requires {expected:?}, register declares {actual:?}",
+                "throw tag#{}, payload {index} at {register} requires {expected:?}, register declares {actual:?}",
                 tag.0
             ),
             Self::EffectRegister => f.write_str(
@@ -107,7 +107,7 @@ impl ProgramBuilder {
     /// contracts use their IDs.
     ///
     /// ```
-    /// use execution_tape::{asm::ProgramBuilder, program::ValueType};
+    /// use execution_tape::{asm::{ProgramBuilder, Reg}, program::ValueType};
     /// let mut program = ProgramBuilder::new();
     /// let failed = program.declare_tag("division-by-zero", &[ValueType::I64.into()])?;
     /// let aborted = program.declare_tag("abort", &[])?;
@@ -204,7 +204,7 @@ impl ProgramBuilder {
     /// be proven statically are checked when the exception is raised.
     ///
     /// ```
-    /// use execution_tape::{asm::{FunctionSig, ProgramBuilder}, program::ValueType};
+    /// use execution_tape::{asm::{FunctionSig, ProgramBuilder, Reg}, program::ValueType};
     /// let mut program = ProgramBuilder::new();
     /// let failed = program.declare_tag("failed", &[ValueType::I64.into()])?;
     /// let signature = FunctionSig { arg_types: vec![ValueType::I64], ret_types: vec![] };
@@ -220,7 +220,7 @@ impl ProgramBuilder {
         &self,
         body: &mut Asm,
         tag: TagId,
-        payload: &[u32],
+        payload: &[Reg],
     ) -> Result<(), TagBuildError> {
         let declaration = self
             .tags
@@ -240,7 +240,7 @@ impl ProgramBuilder {
         {
             let actual = *body
                 .register_types
-                .get(register as usize)
+                .get(register.0 as usize)
                 .ok_or(TagBuildError::Register(register))?;
             let expected = self
                 .contracts
@@ -257,7 +257,7 @@ impl ProgramBuilder {
                 });
             }
         }
-        body.throw(0, tag, payload);
+        body.throw(Reg(0), tag, payload);
         Ok(())
     }
 }

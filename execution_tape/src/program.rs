@@ -139,6 +139,47 @@ pub struct TagId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegionId(pub u32);
 
+/// A function-local register: an index into the function's register declarations.
+///
+/// Every API that names a register takes or returns a `Reg`: [`crate::asm::Asm`] operands,
+/// verifier errors, disassembly, recordings and frame inspection. A register count stays an
+/// integer. The newtype keeps registers apart from the immediates, indices and constants they
+/// sit beside, so a swapped `const_i32(7, dst)` does not compile. Write `Reg(1)` for r1 and read
+/// the index with `.0`; no integer converts to a `Reg` implicitly.
+///
+/// ```compile_fail
+/// # use execution_tape::asm::{Asm, Reg};
+/// let mut asm = Asm::new();
+/// asm.const_i32(7, Reg(1)); // Swapped operands no longer compile.
+/// ```
+///
+/// ```compile_fail
+/// # use execution_tape::asm::Asm;
+/// let mut asm = Asm::new();
+/// asm.mov(2, 1); // A register is a `Reg`, never a bare integer.
+/// ```
+///
+/// ```
+/// # use execution_tape::asm::{Asm, Reg};
+/// let mut asm = Asm::new();
+/// asm.const_i32(Reg(1), 7).mov(Reg(2), Reg(1));
+/// assert_eq!(Reg(2).to_string(), "r2");
+/// ```
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Reg(pub u32);
+
+impl From<Reg> for u32 {
+    fn from(register: Reg) -> Self {
+        register.0
+    }
+}
+
+impl core::fmt::Display for Reg {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "r{}", self.0)
+    }
+}
+
 /// One handler clause of a protected region. Clauses are tried in order.
 ///
 /// Targets are byte offsets of block headers in the same function. A tag clause's target
@@ -327,7 +368,8 @@ impl Function {
     }
 
     /// Returns one declared register kind without expanding or scanning the ledger.
-    pub fn register_type(&self, program: &Program, reg: u32) -> Result<ValueType, DecodeError> {
+    pub fn register_type(&self, program: &Program, reg: Reg) -> Result<ValueType, DecodeError> {
+        let Reg(reg) = reg;
         if reg >= self.reg_count || self.register_types.len != self.reg_count {
             return Err(DecodeError::OutOfBounds);
         }
@@ -446,9 +488,9 @@ impl<'a> RegisterTypes<'a> {
 
     /// Returns the declared kind of a register, or `None` when it is out of range.
     #[must_use]
-    pub fn get(self, reg: u32) -> Option<ValueType> {
+    pub fn get(self, reg: Reg) -> Option<ValueType> {
         self.ids
-            .get(reg as usize)
+            .get(reg.0 as usize)
             .map(|&id| self.types[id as usize])
     }
 
@@ -3412,7 +3454,7 @@ mod tests {
 
     #[test]
     fn program_roundtrips_compositional_guest_contracts() {
-        use crate::asm::{Asm, FunctionAbi, ProgramBuilder};
+        use crate::asm::{Asm, FunctionAbi, ProgramBuilder, Reg};
         let mut builder = ProgramBuilder::new();
         let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
         let tuple = builder
@@ -3420,7 +3462,7 @@ mod tests {
             .unwrap();
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-        asm.ret(0, &[1]);
+        asm.ret(Reg(0), &[Reg(1)]);
         builder
             .push_function_checked(
                 asm,

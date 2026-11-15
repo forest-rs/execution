@@ -8,7 +8,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{StructTypeDef, ValueType},
     trace::TraceMask,
@@ -49,7 +49,7 @@ fn construction(c: &mut Criterion) {
             let mut body = builder.function_asm(entry).unwrap();
             let aggregate = body.alloc_register(ValueType::Agg);
             let len = body.alloc_register(ValueType::U64);
-            let fields = vec![1; width];
+            let fields = vec![Reg(1); width];
             for _ in 0..128 {
                 match kind {
                     "tuple" => body.tuple_new(aggregate, &fields),
@@ -64,7 +64,7 @@ fn construction(c: &mut Criterion) {
                 "array" => body.array_len(len, aggregate),
                 _ => unreachable!(),
             };
-            body.ret(0, &[len]);
+            body.ret(Reg(0), &[len]);
             builder.define_function(entry, body).unwrap();
             let program = builder.build_verified().unwrap();
             let mut vm = Vm::new(NoHost, Limits::default());

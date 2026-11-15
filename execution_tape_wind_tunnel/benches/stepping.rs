@@ -6,7 +6,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     callable::Callable,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{HostTypeId, ValueType},
@@ -44,7 +44,7 @@ fn stepping(c: &mut Criterion) {
     for _ in 0..1000 {
         a.i64_add(value, value, one);
     }
-    a.ret(0, &[value]);
+    a.ret(Reg(0), &[value]);
     b.define_function(entry, a).unwrap();
     let p = b.build_verified().unwrap();
     let object = Value::Obj(Obj {
@@ -202,12 +202,12 @@ fn callback_free_calls(c: &mut Criterion) {
     let value = a.alloc_register(ValueType::I64);
     a.const_i64(value, 42);
     for _ in 0..1000 {
-        a.call(0, callee, 0, &[value], &[value]);
+        a.call(Reg(0), callee, Reg(0), &[value], &[value]);
     }
-    a.ret(0, &[value]);
+    a.ret(Reg(0), &[value]);
     b.define_function(caller, a).unwrap();
     let mut a = b.function_asm(callee).unwrap();
-    a.ret(0, &[1]);
+    a.ret(Reg(0), &[Reg(1)]);
     b.define_function(callee, a).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
@@ -260,7 +260,7 @@ fn call_chain(depth: u32, padding: usize) -> execution_tape::verifier::VerifiedP
     let text = b.const_str("frame");
     for (index, &function) in functions.iter().enumerate() {
         let mut a = b.function_asm(function).unwrap();
-        let x = 1;
+        let x = Reg(1);
         let k = a.alloc_register(ValueType::I64);
         let y = a.alloc_register(ValueType::I64);
         let flag = a.alloc_register(ValueType::Bool);
@@ -268,7 +268,7 @@ fn call_chain(depth: u32, padding: usize) -> execution_tape::verifier::VerifiedP
         let name = a.alloc_register(ValueType::Str);
         let result = a.alloc_register(ValueType::I64);
         let after = a.alloc_register(ValueType::I64);
-        let pad: Vec<u32> = (0..padding)
+        let pad: Vec<Reg> = (0..padding)
             .map(|_| a.alloc_register(ValueType::I64))
             .collect();
         let (left, right, join) = (a.label(), a.label(), a.label());
@@ -286,10 +286,10 @@ fn call_chain(depth: u32, padding: usize) -> execution_tape::verifier::VerifiedP
         a.i64_add(y, y, x).jmp(join);
         a.place(join).unwrap();
         match functions.get(index + 1) {
-            Some(&next) => a.call(0, next, 0, &[y], &[result]),
-            None => a.host_call(0, probe, 0, &[y], &[result]),
+            Some(&next) => a.call(Reg(0), next, Reg(0), &[y], &[result]),
+            None => a.host_call(Reg(0), probe, Reg(0), &[y], &[result]),
         };
-        a.i64_add(after, result, k).ret(0, &[after]);
+        a.i64_add(after, result, k).ret(Reg(0), &[after]);
         b.define_function(function, a).unwrap();
     }
     b.build_verified().unwrap()

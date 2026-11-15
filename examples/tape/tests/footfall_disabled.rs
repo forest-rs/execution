@@ -3,7 +3,7 @@
 
 //! No backend is installed in this separate integration test process.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::{TraceMask, TraceSink};
@@ -31,8 +31,8 @@ fn runs_and_reuses_sink_without_backend() {
     let mut builder = ProgramBuilder::new();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    body.const_i64(1, 42);
-    body.ret(0, &[1]);
+    body.const_i64(Reg(1), 42);
+    body.ret(Reg(0), &[Reg(1)]);
     builder
         .push_function_checked(
             body,

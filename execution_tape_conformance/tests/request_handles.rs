@@ -4,7 +4,7 @@
 //! Handles read from a yielded request stay valid until the invocation commits or rolls back.
 
 use execution_tape::{
-    asm::{FunctionAbi, FunctionSig, ProgramBuilder},
+    asm::{FunctionAbi, FunctionSig, ProgramBuilder, Reg},
     contract::Contract,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::ValueType,
@@ -80,13 +80,13 @@ fn fixture() -> Fixture {
     let mut a = b.function_asm(add).unwrap();
     let (env, x) = (b.argument(add, 0).unwrap(), b.argument(add, 1).unwrap());
     let k = a.alloc_register(ValueType::I64);
-    a.tuple_get(k, env, 0).i64_add(x, x, k).ret(0, &[x]);
+    a.tuple_get(k, env, 0).i64_add(x, x, k).ret(Reg(0), &[x]);
     b.define_function(add, a).unwrap();
 
     let mut a = b.function_asm(wrap).unwrap();
     let boxed = a.alloc_register(ValueType::Agg);
     a.tuple_new(boxed, &[b.argument(wrap, 0).unwrap()])
-        .ret(0, &[boxed]);
+        .ret(Reg(0), &[boxed]);
     b.define_function(wrap, a).unwrap();
 
     let mut a = b.function_asm(make).unwrap();
@@ -98,13 +98,19 @@ fn fixture() -> Fixture {
     a.const_func(function, add)
         .tuple_new(env, &[b.argument(make, 0).unwrap()])
         .closure_new(closure, function, env)
-        .ret(0, &[closure]);
+        .ret(Reg(0), &[closure]);
     b.define_function(make, a).unwrap();
 
     let mut a = b.function_asm(nested).unwrap();
     let answer = a.alloc_register(ValueType::Agg);
-    a.host_call_sig_id(0, inner, 0, &[b.argument(nested, 0).unwrap()], &[answer])
-        .ret(0, &[answer]);
+    a.host_call_sig_id(
+        Reg(0),
+        inner,
+        Reg(0),
+        &[b.argument(nested, 0).unwrap()],
+        &[answer],
+    )
+    .ret(Reg(0), &[answer]);
     b.define_function(nested, a).unwrap();
 
     let mut a = b.function_asm(entry).unwrap();
@@ -117,8 +123,8 @@ fn fixture() -> Fixture {
     a.const_i64(seven, 7)
         .tuple_new(data, &[seven])
         .const_func(function, wrap)
-        .host_call_sig_id(0, ask, 0, &[data, function], &[answer])
-        .ret(0, &[answer]);
+        .host_call_sig_id(Reg(0), ask, Reg(0), &[data, function], &[answer])
+        .ret(Reg(0), &[answer]);
     b.define_function(entry, a).unwrap();
 
     Fixture {

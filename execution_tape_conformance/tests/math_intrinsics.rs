@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::disasm::disassemble_function;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::math;
@@ -61,13 +61,13 @@ impl Op {
 
     fn emit(self, asm: &mut Asm) {
         match self {
-            RoundHalfAway => asm.f32_round_half_away(4, 1),
-            Exp => asm.f32_exp(4, 1),
-            Ln => asm.f32_ln(4, 1),
-            Sin => asm.f32_sin(4, 1),
-            Cos => asm.f32_cos(4, 1),
-            Pow => asm.f32_pow(4, 1, 2),
-            Atan2 => asm.f32_atan2(4, 1, 2),
+            RoundHalfAway => asm.f32_round_half_away(Reg(4), Reg(1)),
+            Exp => asm.f32_exp(Reg(4), Reg(1)),
+            Ln => asm.f32_ln(Reg(4), Reg(1)),
+            Sin => asm.f32_sin(Reg(4), Reg(1)),
+            Cos => asm.f32_cos(Reg(4), Reg(1)),
+            Pow => asm.f32_pow(Reg(4), Reg(1), Reg(2)),
+            Atan2 => asm.f32_atan2(Reg(4), Reg(1), Reg(2)),
         };
     }
 
@@ -103,7 +103,7 @@ fn program(emit: impl FnOnce(&mut Asm), arg: ValueType, ret: ValueType) -> Arc<V
     let mut asm = Asm::new();
     asm.set_register_types(vec![Unit, arg, arg, arg, ret]);
     emit(&mut asm);
-    asm.ret(0, &[4]);
+    asm.ret(Reg(0), &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -334,7 +334,11 @@ fn golden_vectors_hold_on_every_platform() {
 
 #[test]
 fn round_half_away_f64_is_exact_and_matches_libm() {
-    let mut runner = Runner::new(program(|asm| _ = asm.f64_round_half_away(4, 1), F64, F64));
+    let mut runner = Runner::new(program(
+        |asm| _ = asm.f64_round_half_away(Reg(4), Reg(1)),
+        F64,
+        F64,
+    ));
     for (x, want) in [
         (0x3FE0_0000_0000_0000_u64, 0x3FF0_0000_0000_0000_u64), // 0.5 -> 1
         (0xBFE0_0000_0000_0000, 0xBFF0_0000_0000_0000),         // -0.5 -> -1
@@ -370,7 +374,11 @@ fn round_half_away_f64_is_exact_and_matches_libm() {
 }
 
 fn clamp_runner() -> Runner {
-    Runner::new(program(|asm| _ = asm.f32_clamp(4, 1, 2, 3), F32, F32))
+    Runner::new(program(
+        |asm| _ = asm.f32_clamp(Reg(4), Reg(1), Reg(2), Reg(3)),
+        F32,
+        F32,
+    ))
 }
 
 #[test]
@@ -428,7 +436,11 @@ fn clamp_matches_rust_and_traps_on_unordered_bounds() {
 
 #[test]
 fn clamp_traps_replay_from_a_recording() {
-    let program = program(|asm| _ = asm.f32_clamp(4, 1, 2, 3), F32, F32);
+    let program = program(
+        |asm| _ = asm.f32_clamp(Reg(4), Reg(1), Reg(2), Reg(3)),
+        F32,
+        F32,
+    );
     for (args, trapped) in [([0.5, 0.0, 1.0], false), ([0.5, 1.0, 0.0], true)] {
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
         let mut vm = Vm::new(NoHost, Limits::default());
@@ -457,11 +469,11 @@ fn clamp_traps_replay_from_a_recording() {
 fn intrinsics_disassemble_with_their_operands() {
     let mut asm = Asm::new();
     asm.set_register_types(vec![Unit, F32, F32, F32, F32]);
-    asm.f32_pow(4, 1, 2)
-        .f32_atan2(4, 1, 2)
-        .f32_clamp(4, 1, 2, 3)
-        .f32_round_half_away(4, 4)
-        .ret(0, &[4]);
+    asm.f32_pow(Reg(4), Reg(1), Reg(2))
+        .f32_atan2(Reg(4), Reg(1), Reg(2))
+        .f32_clamp(Reg(4), Reg(1), Reg(2), Reg(3))
+        .f32_round_half_away(Reg(4), Reg(4))
+        .ret(Reg(0), &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -493,7 +505,7 @@ fn intrinsics_disassemble_with_their_operands() {
 fn verifier_rejects_f64_operands_to_f32_intrinsics() {
     let mut asm = Asm::new();
     asm.set_register_types(vec![Unit, F32, F64, F32]);
-    asm.f32_pow(3, 1, 2).ret(0, &[3]);
+    asm.f32_pow(Reg(3), Reg(1), Reg(2)).ret(Reg(0), &[Reg(3)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -534,12 +546,12 @@ impl Op64 {
 
     fn emit(self, asm: &mut Asm) {
         match self {
-            Self::Exp => asm.f64_exp(4, 1),
-            Self::Ln => asm.f64_ln(4, 1),
-            Self::Sin => asm.f64_sin(4, 1),
-            Self::Cos => asm.f64_cos(4, 1),
-            Self::Pow => asm.f64_pow(4, 1, 2),
-            Self::Atan2 => asm.f64_atan2(4, 1, 2),
+            Self::Exp => asm.f64_exp(Reg(4), Reg(1)),
+            Self::Ln => asm.f64_ln(Reg(4), Reg(1)),
+            Self::Sin => asm.f64_sin(Reg(4), Reg(1)),
+            Self::Cos => asm.f64_cos(Reg(4), Reg(1)),
+            Self::Pow => asm.f64_pow(Reg(4), Reg(1), Reg(2)),
+            Self::Atan2 => asm.f64_atan2(Reg(4), Reg(1), Reg(2)),
         };
     }
 
@@ -840,7 +852,11 @@ fn f64_golden_vectors_hold_on_every_platform() {
 
 #[test]
 fn f64_clamp_matches_rust_and_traps_on_unordered_bounds() {
-    let mut runner = Runner::new(program(|asm| _ = asm.f64_clamp(4, 1, 2, 3), F64, F64));
+    let mut runner = Runner::new(program(
+        |asm| _ = asm.f64_clamp(Reg(4), Reg(1), Reg(2), Reg(3)),
+        F64,
+        F64,
+    ));
     let mut clamp =
         |x: f64, lo: f64, hi: f64| runner.run([Value::F64(x), Value::F64(lo), Value::F64(hi)]);
     let xs = [
@@ -897,14 +913,14 @@ fn f64_clamp_matches_rust_and_traps_on_unordered_bounds() {
 fn f64_intrinsics_and_clamp_traps_replay_from_a_recording() {
     let mut asm = Asm::new();
     asm.set_register_types(vec![Unit, F64, F64, F64, F64]);
-    asm.f64_sin(4, 1)
-        .f64_exp(4, 4)
-        .f64_ln(4, 4)
-        .f64_pow(4, 4, 2)
-        .f64_atan2(4, 4, 2)
-        .f64_cos(4, 4)
-        .f64_clamp(4, 4, 2, 3)
-        .ret(0, &[4]);
+    asm.f64_sin(Reg(4), Reg(1))
+        .f64_exp(Reg(4), Reg(4))
+        .f64_ln(Reg(4), Reg(4))
+        .f64_pow(Reg(4), Reg(4), Reg(2))
+        .f64_atan2(Reg(4), Reg(4), Reg(2))
+        .f64_cos(Reg(4), Reg(4))
+        .f64_clamp(Reg(4), Reg(4), Reg(2), Reg(3))
+        .ret(Reg(0), &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -960,11 +976,11 @@ fn f64_intrinsics_have_their_opcodes_and_disassemble() {
     }
     let mut asm = Asm::new();
     asm.set_register_types(vec![Unit, F64, F64, F64, F64]);
-    asm.f64_pow(4, 1, 2)
-        .f64_atan2(4, 1, 2)
-        .f64_clamp(4, 1, 2, 3)
-        .f64_ln(4, 4)
-        .ret(0, &[4]);
+    asm.f64_pow(Reg(4), Reg(1), Reg(2))
+        .f64_atan2(Reg(4), Reg(1), Reg(2))
+        .f64_clamp(Reg(4), Reg(1), Reg(2), Reg(3))
+        .f64_ln(Reg(4), Reg(4))
+        .ret(Reg(0), &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -993,19 +1009,19 @@ fn f64_intrinsics_have_their_opcodes_and_disassemble() {
 #[test]
 fn verifier_rejects_f32_operands_to_f64_intrinsics() {
     let emitters: [fn(&mut Asm); 7] = [
-        |asm| _ = asm.f64_pow(3, 1, 2),
-        |asm| _ = asm.f64_exp(3, 2),
-        |asm| _ = asm.f64_ln(3, 2),
-        |asm| _ = asm.f64_sin(3, 2),
-        |asm| _ = asm.f64_cos(3, 2),
-        |asm| _ = asm.f64_atan2(3, 2, 1),
-        |asm| _ = asm.f64_clamp(3, 1, 2, 1),
+        |asm| _ = asm.f64_pow(Reg(3), Reg(1), Reg(2)),
+        |asm| _ = asm.f64_exp(Reg(3), Reg(2)),
+        |asm| _ = asm.f64_ln(Reg(3), Reg(2)),
+        |asm| _ = asm.f64_sin(Reg(3), Reg(2)),
+        |asm| _ = asm.f64_cos(Reg(3), Reg(2)),
+        |asm| _ = asm.f64_atan2(Reg(3), Reg(2), Reg(1)),
+        |asm| _ = asm.f64_clamp(Reg(3), Reg(1), Reg(2), Reg(1)),
     ];
     for emit in emitters {
         let mut asm = Asm::new();
         asm.set_register_types(vec![Unit, F64, F32, F64]);
         emit(&mut asm);
-        asm.ret(0, &[3]);
+        asm.ret(Reg(0), &[Reg(3)]);
         let mut builder = ProgramBuilder::new();
         builder
             .push_function_checked(

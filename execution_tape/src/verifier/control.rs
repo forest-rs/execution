@@ -12,7 +12,7 @@
 use super::{VerifyError, check_expected, tags};
 use crate::bytecode::Instr;
 use crate::contract::ContractKinds;
-use crate::program::{CallSigId, Program, RegisterTypes, TagId, ValueType};
+use crate::program::{CallSigId, Program, Reg, RegisterTypes, TagId, ValueType};
 
 fn call_sig_in_bounds(program: &Program, func: u32, pc: u32, id: u32) -> Result<(), VerifyError> {
     if program.call_sig(CallSigId(id)).is_none() {
@@ -165,7 +165,7 @@ pub(super) fn check_types(
     instr: &Instr,
     types: RegisterTypes<'_>,
 ) -> Result<(), VerifyError> {
-    let t = |reg: u32| types.get(reg);
+    let t = |reg: u32| types.get(Reg(reg));
     let expect = |reg: u32, kind: ValueType| check_expected(func, pc, reg, t(reg), kind);
     let expect_all = |regs: &[u32], kinds: ContractKinds<'_>| {
         regs.iter()

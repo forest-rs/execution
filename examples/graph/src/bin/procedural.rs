@@ -14,7 +14,7 @@ use execution_tape::recording::{
 };
 use execution_tape::trace::CodeLocation;
 use execution_tape::{
-    asm::{Asm, FunctionAbi, ProgramBuilder},
+    asm::{Asm, FunctionAbi, ProgramBuilder, Reg},
     contract::Contract,
     host::{Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
     program::ValueType,
@@ -76,15 +76,15 @@ fn compile() -> Result<Compiled, Box<dyn Error>> {
     ]);
     let mut ranges = Vec::new();
     ranges.push((body.pc(), source_range("density * levels")));
-    body.i64_mul(4, 1, 2);
+    body.i64_mul(Reg(4), Reg(1), Reg(2));
     ranges.push((body.pc(), source_range("quality()")));
-    body.host_call_sig_id(0, quality, 0, &[], &[5]);
+    body.host_call_sig_id(Reg(0), quality, Reg(0), &[], &[Reg(5)]);
     ranges.push((body.pc(), source_range("density * levels + quality()")));
-    body.i64_add(6, 4, 5);
+    body.i64_add(Reg(6), Reg(4), Reg(5));
     ranges.push((body.pc(), source_range("(amplitude,)")));
-    body.tuple_new(7, &[3]);
+    body.tuple_new(Reg(7), &[Reg(3)]);
     ranges.push((body.pc(), source_range("return segments, deformation")));
-    body.ret(0, &[6, 7]);
+    body.ret(Reg(0), &[Reg(6), Reg(7)]);
     let floating = builder.contract(Contract::Kind(ValueType::F64))?;
     let deformation = builder.contract(Contract::Tuple(&[Some(floating)]))?;
     let entry = builder.push_function_checked(
@@ -749,11 +749,11 @@ fn explanation(compiled: &Compiled, capture: &Captured) -> Result<String, Box<dy
                 if let execution_tape::recording::RecordedValue::F64(bits) = value {
                     writeln!(
                         text,
-                        "    {label} r{register} = f64 {:?} (bits 0x{bits:016x})",
+                        "    {label} {register} = f64 {:?} (bits 0x{bits:016x})",
                         f64::from_bits(*bits)
                     )?;
                 } else {
-                    writeln!(text, "    {label} r{register} = {value:?}")?;
+                    writeln!(text, "    {label} {register} = {value:?}")?;
                 }
             }
         }

@@ -4,7 +4,7 @@
 //! A first-class function returning a nested tuple through an exact indirect signature.
 //! Pass an optional output filename to save the program for browsing.
 
-use execution_tape::asm::{CallTarget, FunctionAbi, ProgramBuilder};
+use execution_tape::asm::{CallTarget, FunctionAbi, ProgramBuilder, Reg};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .const_i64(value, 42)
         .tuple_new(inner_tuple, &[value])
         .tuple_new(outer_tuple, &[inner_tuple])
-        .ret(0, &[outer_tuple]);
+        .ret(Reg(0), &[outer_tuple]);
     builder.define_function(target, producer)?;
     builder.set_function_name(target, "produce_nested")?;
     let callable = builder.contract(Contract::Function {
@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     caller
         .tuple_get(inner_tuple, outer_tuple, 0)
         .tuple_get(answer, inner_tuple, 0)
-        .ret(0, &[answer]);
+        .ret(Reg(0), &[answer]);
     builder.define_function(entry, caller)?;
     builder.set_function_name(entry, "invoke_nested")?;
     let program = builder.build_verified()?;

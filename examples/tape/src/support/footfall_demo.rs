@@ -3,7 +3,7 @@
 
 //! A branch, typed join and nested host call shared by the capture tool and its boundary tests.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{SpanId, ValueType};
 use execution_tape::value::{FuncId, Value};
@@ -73,8 +73,8 @@ pub fn program() -> VerifiedProgram {
     );
     let mut callee = Asm::new();
     callee.set_register_types(vec![Unit, I64, I64]);
-    callee.host_call_sig_id(0, import, 0, &[1], &[2]);
-    callee.ret(0, &[2]);
+    callee.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
+    callee.ret(Reg(0), &[Reg(2)]);
     let callee = builder
         .push_function_checked(
             callee,
@@ -93,16 +93,16 @@ pub fn program() -> VerifiedProgram {
     body.span(SpanId::try_from(100).expect("nonzero source span"));
     let yes = body.label_named("yes");
     let no = body.label_named("no");
-    let join = body.block(&[5]);
-    body.br(1, yes, no);
+    let join = body.block(&[Reg(5)]);
+    body.br(Reg(1), yes, no);
     body.place(yes).expect("fresh label");
-    body.call(0, callee, 0, &[2], &[3]);
-    body.jmp(join.with_args(&[3]));
+    body.call(Reg(0), callee, Reg(0), &[Reg(2)], &[Reg(3)]);
+    body.jmp(join.with_args(&[Reg(3)]));
     body.place(no).expect("fresh label");
-    body.const_i64(4, 0);
-    body.jmp(join.with_args(&[4]));
+    body.const_i64(Reg(4), 0);
+    body.jmp(join.with_args(&[Reg(4)]));
     body.place(join).expect("fresh join");
-    body.ret(0, &[5]);
+    body.ret(Reg(0), &[Reg(5)]);
     assert_eq!(
         builder
             .push_function_checked(
@@ -121,10 +121,10 @@ pub fn program() -> VerifiedProgram {
 
     let mut trap = Asm::new();
     trap.set_register_types(vec![Unit, I64, I64, I64]);
-    trap.const_i64(1, 1);
-    trap.const_i64(2, 0);
-    trap.i64_div(3, 1, 2);
-    trap.ret(0, &[3]);
+    trap.const_i64(Reg(1), 1);
+    trap.const_i64(Reg(2), 0);
+    trap.i64_div(Reg(3), Reg(1), Reg(2));
+    trap.ret(Reg(0), &[Reg(3)]);
     assert_eq!(
         builder
             .push_function_checked(

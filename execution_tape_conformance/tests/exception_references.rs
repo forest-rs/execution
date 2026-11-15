@@ -6,7 +6,7 @@
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
-    asm::{Asm, Catch, FunctionSig, ProgramBuilder},
+    asm::{Asm, Catch, FunctionSig, ProgramBuilder, Reg},
     disasm::disassemble,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{FunctionDef, Program, TagId, TypeTableDef, ValueType},
@@ -87,7 +87,7 @@ fn fixture() -> Fixture {
     let (raise, done) = (asm.label(), asm.label());
     asm.br(fail, raise, done);
     asm.place(done).unwrap();
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     asm.place(raise).unwrap();
     let nine = asm.alloc_register(ValueType::I64);
     asm.const_i64(nine, 9);
@@ -98,7 +98,7 @@ fn fixture() -> Fixture {
     let mut asm = b.function_asm(rethrow).unwrap();
     let exn = b.argument(rethrow, 0).unwrap();
     let rethrow_pc = asm.pc();
-    asm.throw_ref(0, exn);
+    asm.throw_ref(Reg(0), exn);
     b.define_function(rethrow, asm).unwrap();
 
     let mut asm = b.function_asm(protected).unwrap();
@@ -111,11 +111,11 @@ fn fixture() -> Fixture {
     asm.begin_region(&[Catch::AllRef(handler)]);
     let [result] = b.emit_call(&mut asm, body, &[code]).unwrap();
     asm.end_region();
-    asm.ret(0, &[result]);
+    asm.ret(Reg(0), &[result]);
     asm.place(handler).unwrap();
     let [] = b.emit_call(&mut asm, cleanup, &[fail]).unwrap();
     let [never] = b.emit_call(&mut asm, rethrow, &[caught]).unwrap();
-    asm.ret(0, &[never]);
+    asm.ret(Reg(0), &[never]);
     b.define_function(protected, asm).unwrap();
 
     let mut asm = b.function_asm(outer).unwrap();
@@ -126,11 +126,11 @@ fn fixture() -> Fixture {
     asm.begin_region(&[Catch::Tag(failed, handler)]);
     let [result] = b.emit_call(&mut asm, protected, &[code, fail]).unwrap();
     asm.end_region();
-    asm.ret(0, &[result]);
+    asm.ret(Reg(0), &[result]);
     asm.place(handler).unwrap();
     asm.const_i64(hundred, 100)
         .i64_add(payload, payload, hundred)
-        .ret(0, &[payload]);
+        .ret(Reg(0), &[payload]);
     b.define_function(outer, asm).unwrap();
 
     Fixture {
@@ -237,9 +237,9 @@ fn catch_ref_binds_the_payload_and_the_reference() {
         .i64_gt(positive, payload, zero)
         .br(positive, again, keep);
     asm.place(keep).unwrap();
-    asm.ret(0, &[payload]);
+    asm.ret(Reg(0), &[payload]);
     asm.place(again).unwrap();
-    asm.throw_ref(0, copy);
+    asm.throw_ref(Reg(0), copy);
     b.define_function(function, asm).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
@@ -367,7 +367,7 @@ fn verifier_keeps_exception_references_inside_guest_registers() {
         let function = b.declare_function(sig(&[ValueType::Exn], &[])).unwrap();
         let mut asm = b.function_asm(function).unwrap();
         let tuple = asm.alloc_register(ValueType::Agg);
-        asm.tuple_new(tuple, &[1]).ret(0, &[]);
+        asm.tuple_new(tuple, &[Reg(1)]).ret(Reg(0), &[]);
         b.define_function(function, asm).unwrap();
         function
     });
@@ -377,7 +377,7 @@ fn verifier_keeps_exception_references_inside_guest_registers() {
             VerifyError::ExceptionReference {
                 place: ExceptionPlace::Aggregate {
                     func: 0,
-                    reg: 1,
+                    reg: Reg(1),
                     ..
                 }
             }
@@ -402,7 +402,7 @@ fn verifier_keeps_exception_references_inside_guest_registers() {
             register_types: vec![ValueType::Unit],
             bytecode: {
                 let mut asm = Asm::new();
-                asm.ret(0, &[]);
+                asm.ret(Reg(0), &[]);
                 asm.finish().unwrap()
             },
             spans: vec![],
@@ -431,7 +431,7 @@ fn reference_clauses_need_a_final_exn_parameter_and_throw_ref_an_exn_register() 
         b.emit_throw(&mut asm, failed, &[]).unwrap();
         asm.end_region();
         asm.place(handler).unwrap();
-        asm.ret(0, &[]);
+        asm.ret(Reg(0), &[]);
         b.define_function(function, asm).unwrap();
         function
     });
@@ -449,7 +449,7 @@ fn reference_clauses_need_a_final_exn_parameter_and_throw_ref_an_exn_register() 
     let error = rejected(|b| {
         let function = b.declare_function(sig(&[ValueType::I64], &[])).unwrap();
         let mut asm = b.function_asm(function).unwrap();
-        asm.throw_ref(0, 1);
+        asm.throw_ref(Reg(0), Reg(1));
         b.define_function(function, asm).unwrap();
         function
     });
@@ -457,7 +457,7 @@ fn reference_clauses_need_a_final_exn_parameter_and_throw_ref_an_exn_register() 
         matches!(
             error,
             VerifyError::RegisterTypeMismatch {
-                reg: 1,
+                reg: Reg(1),
                 required: ValueType::Exn,
                 ..
             }
