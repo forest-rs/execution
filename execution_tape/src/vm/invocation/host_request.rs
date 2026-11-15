@@ -186,6 +186,36 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ) -> Result<UnitId, InstallError> {
         install_observed(self.running.vm, self.running.continuation, program.into())
     }
+    /// Points `link` of `unit` at `target` while the request waits, returning the previous
+    /// target.
+    ///
+    /// This is [`Vm::relink`] during an invocation. The waiting frames keep the functions they
+    /// entered; their unit's later `call.link` through `link` calls `target`.
+    ///
+    /// An invocation repoints links only while a host request or suspension waits, the points a
+    /// recording replays at. There is no relink between scheduling quanta, where a replay that
+    /// runs to completion could not repeat it at the same instruction:
+    ///
+    /// ```compile_fail,E0599
+    /// # use execution_tape::{host::Host, program::LinkId, value::{FuncRef, UnitId}, vm::Invocation};
+    /// fn between_quanta<H: Host>(run: &mut Invocation<'_, H>, unit: UnitId, target: FuncRef) {
+    ///     run.relink(unit, LinkId(0), target);
+    /// }
+    /// ```
+    pub fn relink(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        target: FuncRef,
+    ) -> Result<FuncRef, RelinkError> {
+        relink_observed(
+            self.running.vm,
+            self.running.continuation,
+            unit,
+            link,
+            target,
+        )
+    }
     /// Inspects the units installed in this request's VM.
     #[must_use]
     pub fn units(&self) -> Units<'_> {

@@ -594,8 +594,10 @@ unit's link names at that moment: its own `target` until [`Vm::relink`](vm::Vm::
 points it at a function of any unit with exactly the link's signature. A language that has
 selected a method statically calls it directly, at about the cost of `call`, and repoints the
 link when new code replaces the method; callers are not verified again, and activations that
-already entered the old method keep it. [`Units::links`](vm::Units::links) shows every unit's
-current targets.
+already entered the old method keep it. While an invocation waits at a host request or a
+suspension, `relink` on the pending request does the same, so code installed mid-run takes
+over the links of older units, including ones whose frames are suspended.
+[`Units::links`](vm::Units::links) shows every unit's current targets.
 
 ```rust
 use execution_tape::{host::Host, program::LinkId, value::{FuncId, FuncRef, UnitId},

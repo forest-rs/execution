@@ -8,13 +8,13 @@ use execution_tape::{
     contract::{Contract, ContractPosition},
     disasm::disassemble,
     format::DecodeError,
-    host::{Host, HostContext, HostError, SigHash, ValueRef},
+    host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{CallSigId, LinkId, Program, StructTypeDef, TypeId, ValueType},
-    recording::{RecordLimits, Recorder, ReplayOutcome},
+    recording::{RecordLimits, Recorder, ReplayOutcome, StoreRecord},
     trace::{TraceMask, TraceSink},
     value::{FuncId, FuncRef, UnitId, Value},
     verifier::{MetadataTable, VerifiedProgram, VerifyConfig, VerifyError, verify_program},
-    vm::{Limits, LinkMismatch, RelinkError, StoreEvent, Vm},
+    vm::{InvocationOptions, Limits, LinkMismatch, RelinkError, RunStatus, StoreEvent, Vm},
 };
 use std::sync::Arc;
 
@@ -814,4 +814,238 @@ fn decoded_links_must_name_existing_signatures_and_functions() {
         ),
         "{error:?}"
     );
+}
+
+/// Declares `scale(x) = { wait(); x * factor }`, which pauses on a host request.
+fn pausing_scale(b: &mut ProgramBuilder, factor: i64) -> FuncId {
+    let wait = b.host_sig_for(
+        "wait",
+        HostSig {
+            args: vec![],
+            rets: vec![],
+        },
+    );
+    let scale = b.declare_function(i64_to_i64()).unwrap();
+    let mut body = b.function_asm(scale).unwrap();
+    let x = b.argument(scale, 0).unwrap();
+    let k = body.alloc_register(ValueType::I64);
+    let y = body.alloc_register(ValueType::I64);
+    body.host_call(Reg(0), wait, Reg(0), &[], &[])
+        .const_i64(k, factor)
+        .i64_mul(y, x, k)
+        .ret(Reg(0), &[y]);
+    b.define_function(scale, body).unwrap();
+    scale
+}
+
+/// `CALLER(x)` returns `(scale(x), scale(x))`, both through link `"scale"`.
+fn twice(factor: i64) -> Arc<VerifiedProgram> {
+    let mut b = ProgramBuilder::new();
+    let target = pausing_scale(&mut b, factor);
+    let link = b.declare_link("scale", target).unwrap();
+    let caller = b
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64, ValueType::I64],
+        })
+        .unwrap();
+    assert_eq!(caller, CALLER, "the caller follows scale");
+    let mut body = b.function_asm(caller).unwrap();
+    let x = b.argument(caller, 0).unwrap();
+    let [first] = b.emit_call(&mut body, link, &[x]).unwrap();
+    let [second] = b.emit_call(&mut body, link, &[x]).unwrap();
+    body.ret(Reg(0), &[first, second]);
+    b.define_function(caller, body).unwrap();
+    Arc::new(b.build_verified().unwrap())
+}
+
+fn pausing_scaler(factor: i64) -> Arc<VerifiedProgram> {
+    let mut b = ProgramBuilder::new();
+    pausing_scale(&mut b, factor);
+    Arc::new(b.build_verified().unwrap())
+}
+
+/// Runs `CALLER(4)` of `program`, a `twice(2)`, relinking to `pausing_scaler(3)` while the first call waits.
+fn relink_mid_call(
+    program: Arc<VerifiedProgram>,
+    recorder: Option<&mut Recorder>,
+) -> (Vec<Value>, UnitId, UnitId) {
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let caller = vm.install(program).unwrap();
+    let mut options = InvocationOptions::default().yield_host_calls();
+    if let Some(recorder) = recorder {
+        options = options.trace(recorder.mask(), recorder);
+    }
+    let mut run = vm
+        .start(FuncRef::new(caller, CALLER), &[Value::I64(4)], options)
+        .unwrap();
+    assert_eq!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost,
+        "the first call waits"
+    );
+    let mut request = run.pending_host_call().unwrap();
+    assert_eq!(
+        request.unit(),
+        caller,
+        "the first call entered the old method"
+    );
+    let newer = request.install(pausing_scaler(3)).unwrap();
+    let previous = request
+        .relink(caller, LINK, FuncRef::new(newer, FuncId(0)))
+        .unwrap();
+    assert_eq!(previous, FuncRef::new(caller, SCALE), "the declared target");
+    request.complete(&mut [], Ok(0)).unwrap();
+    assert_eq!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost,
+        "the second call waits"
+    );
+    let request = run.pending_host_call().unwrap();
+    assert_eq!(
+        request.unit(),
+        newer,
+        "the second call reaches the new method"
+    );
+    request.complete(&mut [], Ok(0)).unwrap();
+    assert_eq!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::Complete,
+        "the caller returns"
+    );
+    (run.take_outputs().unwrap(), caller, newer)
+}
+
+#[test]
+fn a_relink_while_a_call_waits_leaves_that_activation_on_its_old_target() {
+    let (outputs, _, _) = relink_mid_call(twice(2), None);
+    // The waiting activation finishes the old method; the next call runs the new one.
+    assert_eq!(outputs, [Value::I64(8), Value::I64(12)]);
+}
+
+#[test]
+fn recordings_replay_relinks_made_while_the_invocation_waits() {
+    let program = twice(2);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let (outputs, caller, newer) = relink_mid_call(program, Some(&mut recorder));
+    let recording = recorder.finish();
+    recording.status().unwrap();
+    let relinks: Vec<_> = recording
+        .store()
+        .filter_map(|record| match record {
+            StoreRecord::Relinked(relink) => Some(relink),
+            _ => None,
+        })
+        .collect();
+    let [relink] = relinks[..] else {
+        panic!("one relink, got {relinks:?}");
+    };
+    assert_eq!(
+        (relink.unit, relink.link, relink.target),
+        (caller, LINK, FuncRef::new(newer, FuncId(0)))
+    );
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay returns like the recorded run");
+    };
+    assert_eq!(values.values(), &outputs[..]);
+}
+
+/// `CALLER(x)` suspends on `ask(x)`, then calls `SCALE` (`answer * factor`) through `"scale"`.
+fn asking(factor: i64) -> Arc<VerifiedProgram> {
+    let mut b = ProgramBuilder::new();
+    let ask = b
+        .declare_tag_with_results("ask", &[ValueType::I64.into()], &[ValueType::I64.into()])
+        .unwrap();
+    let target = scale(&mut b, factor);
+    let link = b.declare_link("scale", target).unwrap();
+    let caller = b.declare_function(i64_to_i64()).unwrap();
+    assert_eq!(
+        (target, link, caller),
+        (SCALE, LINK, CALLER),
+        "fixture layout"
+    );
+    let mut body = b.function_asm(caller).unwrap();
+    let x = b.argument(caller, 0).unwrap();
+    let answer = body.alloc_register(ValueType::I64);
+    body.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
+    let [y] = b.emit_call(&mut body, link, &[answer]).unwrap();
+    body.ret(Reg(0), &[y]);
+    b.define_function(caller, body).unwrap();
+    Arc::new(b.build_verified().unwrap())
+}
+
+/// Runs `CALLER(4)` of `program`, an `asking(2)`, answering its suspension with 5 after
+/// relinking to a `scaler(3)` installed while it waits.
+fn relink_at_suspension(
+    program: Arc<VerifiedProgram>,
+    recorder: Option<&mut Recorder>,
+) -> (Vec<Value>, UnitId, UnitId) {
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let caller = vm.install(program).unwrap();
+    let mut options = InvocationOptions::default().yield_suspensions();
+    if let Some(recorder) = recorder {
+        options = options.trace(recorder.mask(), recorder);
+    }
+    let mut run = vm
+        .start(FuncRef::new(caller, CALLER), &[Value::I64(4)], options)
+        .unwrap();
+    assert_eq!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHandler,
+        "the caller suspends before the linked call"
+    );
+    let mut pending = run.pending_suspension().unwrap();
+    let newer = pending.install(scaler(3)).unwrap();
+    pending
+        .relink(caller, LINK, FuncRef::new(newer, FuncId(0)))
+        .unwrap();
+    assert_eq!(
+        pending.units().links(caller),
+        Some(&[FuncRef::new(newer, FuncId(0))][..]),
+        "the suspension sees the new target"
+    );
+    pending.resume(vec![Value::I64(5)]).unwrap();
+    assert_eq!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::Complete,
+        "the caller returns"
+    );
+    (run.take_outputs().unwrap(), caller, newer)
+}
+
+#[test]
+fn a_relink_while_a_suspension_waits_reaches_the_resumed_frame() {
+    let (outputs, _, _) = relink_at_suspension(asking(2), None);
+    assert_eq!(
+        outputs,
+        [Value::I64(15)],
+        "the resumed caller calls the new target"
+    );
+}
+
+#[test]
+fn recordings_replay_relinks_made_while_a_suspension_waits() {
+    let program = asking(2);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let (outputs, caller, newer) = relink_at_suspension(program, Some(&mut recorder));
+    let recording = recorder.finish();
+    recording.status().unwrap();
+    let relinks: Vec<_> = recording
+        .store()
+        .filter_map(|record| match record {
+            StoreRecord::Relinked(relink) => Some(relink),
+            _ => None,
+        })
+        .collect();
+    let [relink] = relinks[..] else {
+        panic!("one relink, got {relinks:?}");
+    };
+    assert_eq!(
+        (relink.unit, relink.link, relink.target),
+        (caller, LINK, FuncRef::new(newer, FuncId(0)))
+    );
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay returns like the recorded run");
+    };
+    assert_eq!(values.values(), &outputs[..]);
 }

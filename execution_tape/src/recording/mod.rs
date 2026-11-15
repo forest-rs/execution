@@ -9,10 +9,11 @@
 //!
 //! Share a prepared program in `Arc`, construct [`Recorder::new`], and pass [`TraceSink::mask`]
 //! and `Some(&mut recorder)` to ordinary VM execution. Execution may enter any installed unit:
-//! the recording snapshots the VM's units, tags and link targets at entry, records installs made
-//! while the invocation is suspended, and keeps the VM's unit and tag identities in every
-//! location and value. Replay repeats those installs and tag definitions in order, points each
-//! link where it pointed at entry, and checks the identities. Consume it with [`Recorder::finish`]
+//! the recording snapshots the VM's units, tags and link targets at entry, records installs and
+//! relinks made while the invocation waits at a host request or suspension, and keeps the VM's
+//! unit and tag identities in every location and value. Replay points each link where it
+//! pointed at entry, repeats those installs, tag definitions and relinks in order, and checks
+//! the identities. Consume it with [`Recorder::finish`]
 //! and inspect [`Recording::status`]. [`Recording::replay`] executes the guest
 //! again in a fresh VM, checks host arguments and the final values/trap, and returns the actual
 //! replay result. It invokes no live host or resource-access sink.
@@ -141,7 +142,7 @@ mod replay;
 mod values;
 
 use crate::host::HostError;
-use crate::program::{HostSigId, RegionId, ValueType};
+use crate::program::{HostSigId, LinkId, RegionId, ValueType};
 use crate::trace::TraceLocation;
 use crate::value::{AggHandle, FuncRef, TagRef, UnitId};
 use crate::verifier::VerifiedProgram;
@@ -291,7 +292,25 @@ pub struct RecordedTag<'a> {
     pub results: &'a [ValueType],
 }
 
-/// One install or tag definition of the recorded VM, in the order it happened.
+/// A link the embedding repointed while the recorded invocation waited at a host request or
+/// suspension.
+///
+/// Relinks before the invocation are not listed: [`RecordedUnit::links`] holds where every link
+/// pointed at entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RecordedRelink {
+    /// The unit whose link changed.
+    pub unit: UnitId,
+    /// The link of that unit's program.
+    pub link: LinkId,
+    /// The function the link named from then on.
+    pub target: FuncRef,
+    /// The observation sequence before which the link was repointed.
+    pub relinked: usize,
+}
+
+/// One install, tag definition or relink of the recorded VM, in the order it happened.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum StoreRecord<'a> {
@@ -299,6 +318,8 @@ pub enum StoreRecord<'a> {
     Installed(RecordedUnit<'a>),
     /// The embedding defined a tag.
     DefinedTag(RecordedTag<'a>),
+    /// The embedding repointed a link while the invocation waited.
+    Relinked(RecordedRelink),
 }
 
 #[derive(Debug)]
@@ -321,6 +342,7 @@ enum Store {
     /// Index into [`Recording::units`]; units are recorded in [`UnitId`] order.
     Unit(usize),
     Tag(TagRecord),
+    Relink(RecordedRelink),
 }
 
 impl Store {
@@ -330,6 +352,7 @@ impl Store {
         match self {
             Self::Unit(index) => units[*index].installed,
             Self::Tag(_) => None,
+            Self::Relink(relink) => Some(relink.relinked),
         }
     }
 }
@@ -660,7 +683,8 @@ impl Recording {
             })
     }
 
-    /// Iterates the recorded VM's installs and tag definitions in the order they happened.
+    /// Iterates the recorded VM's installs, tag definitions and relinks during the invocation,
+    /// in the order they happened.
     ///
     /// Replay repeats them in a fresh VM and checks that every unit and tag gets its recorded
     /// identity.
@@ -673,6 +697,7 @@ impl Recording {
                 payload: &tag.payload,
                 results: &tag.results,
             }),
+            Store::Relink(relink) => StoreRecord::Relinked(*relink),
         })
     }
 

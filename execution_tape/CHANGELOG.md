@@ -34,6 +34,14 @@ This release has an [MSRV][] of 1.88.
   `links` field and `RecordedUnit` a `links` field; handle `asm::CallTarget::Link`,
   `disasm::CallTarget::Link` and `disasm::InputIndex::Link` in exhaustive matches.
 
+- Repoint links while an invocation waits: `PendingHostCall::relink` and
+  `PendingSuspension::relink`, beside their `install`, let code installed mid-run take over the
+  links of older units. The waiting activations keep their targets; the next `call.link` through
+  the link, including one by a frame that was suspended, calls the new one. Each change is
+  reported as `ValueEvent::Relinked`, and recordings replay it at the same point
+  (`StoreRecord::Relinked`). There is deliberately no relink between scheduling quanta, which
+  replay could not repeat at the same instruction.
+
 - Add deterministic `f32` math intrinsics under the `0xFD` prefix, in an `f32` sub-block from
   `0xA0`: `f32.pow` (`0xA0`), `f32.exp`, `f32.ln`, `f32.sin`, `f32.cos` and `f32.atan2`
   (`0xA5`). Their results are defined as those of the `libm` crate at exactly version 0.2.16,

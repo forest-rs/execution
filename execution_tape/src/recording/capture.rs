@@ -6,7 +6,7 @@ use crate::program::{Pc, Program, SpanId};
 use crate::recording::{
     Answer, Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry,
     InstructionCapture, InstructionOutcome, InstructionStatus, Propagation, RecordLimits,
-    Recording, Store, TagRecord, Thrown, UnitRecord, Yielded,
+    RecordedRelink, Recording, Store, TagRecord, Thrown, UnitRecord, Yielded,
     control::{Action, Command, Returned},
     frames::{ActivationExit, ActivationOutcome, Frame, FrameId},
     instructions::History,
@@ -262,7 +262,7 @@ impl Recorder {
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
         match event {
             // The unit table is recorded before capture; see `values`.
-            ValueEvent::Installed { .. } => {}
+            ValueEvent::Installed { .. } | ValueEvent::Relinked { .. } => {}
             ValueEvent::CallbackEnter {
                 location,
                 callee,
@@ -767,6 +767,25 @@ impl TraceSink for Recorder {
                 self.check_at(program, unit);
                 return;
             }
+            ValueEvent::Relinked {
+                unit, link, target, ..
+            } => {
+                if self.entry.is_none() || self.end.is_some() {
+                    self.fail(CaptureFault::InvalidSequence);
+                }
+                // Both units were installed, and so recorded, before the relink.
+                if self.check_at(program, unit) && (target.unit.0 as usize) < self.units.len() {
+                    self.store.push(Store::Relink(RecordedRelink {
+                        unit,
+                        link,
+                        target,
+                        relinked: self.sequence,
+                    }));
+                } else {
+                    self.fail(CaptureFault::ForeignUnit);
+                }
+                return;
+            }
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
@@ -778,7 +797,9 @@ impl TraceSink for Recorder {
             | ValueEvent::SuspensionAnswered { location, .. } => location.unit,
         };
         let location = match event {
-            ValueEvent::Entry { .. } | ValueEvent::Installed { .. } => None,
+            ValueEvent::Entry { .. }
+            | ValueEvent::Installed { .. }
+            | ValueEvent::Relinked { .. } => None,
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }

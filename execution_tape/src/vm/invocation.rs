@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::callable::{Callable, CallableError};
+use crate::program::LinkId;
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
@@ -757,6 +758,32 @@ impl Callable {
         args.insert(0, Value::Agg(closure.env));
         Ok((checkpoint, args, work))
     }
+}
+
+/// Repoints a link while an invocation is suspended and reports the change to its trace.
+///
+/// A relink to the current target changes nothing and reports nothing.
+pub(super) fn relink_observed<H: Host>(
+    vm: &mut Vm<H>,
+    continuation: &mut continuation::Continuation<'_>,
+    unit: UnitId,
+    link: LinkId,
+    target: FuncRef,
+) -> Result<FuncRef, RelinkError> {
+    let previous = vm.relink(unit, link, target)?;
+    if previous != target {
+        let units = vm.units();
+        let program = units.program(unit).expect("relinked unit");
+        continuation
+            .trace
+            .values(program.program(), || ValueEvent::Relinked {
+                unit,
+                link,
+                target,
+                units,
+            });
+    }
+    Ok(previous)
 }
 
 /// Installs `program` while an invocation is suspended and reports it to the invocation's trace.
