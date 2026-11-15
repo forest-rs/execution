@@ -10,7 +10,6 @@ use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
-use execution_tape::trace::TraceMask;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use execution_tape::vm::{Limits, Vm};
@@ -86,9 +85,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source = builder.build_checked()?;
     let bytes = source.encode();
     let program = verify_program_owned(Program::decode(&bytes)?, &VerifyConfig::default())?;
-    let values =
-        Vm::new(NoHost, Limits::default()).run(&program, entry, &[], TraceMask::NONE, None)?;
-    assert_eq!(values, vec![Value::I64(42)]);
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let function = vm.function(&program, entry)?;
+    let roots = vm
+        .run(function, [], execution_tape::vm::TurnOptions::default())?
+        .into_returned()
+        .expect("nested projection completes without an external request");
+    let values = vm.resolve(&roots)?.values();
+    assert_eq!(values, &[Value::I64(42)]);
     println!("make_nested() returns ((42), true); main projects the nested integer: {values:?}");
     println!(
         "{} shared contracts, {} encoded bytes",

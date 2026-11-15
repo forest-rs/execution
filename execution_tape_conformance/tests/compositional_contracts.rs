@@ -3,6 +3,10 @@
 
 //! Public consumer checks for compositional guest contracts.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
 use execution_tape::contract::{Contract, ContractId, ContractMismatch, ContractPosition};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
@@ -89,7 +93,7 @@ fn nested_result_survives_codec_call_and_aliased_projections() {
     );
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     assert_eq!(
-        vm.run(&prepared, entry, &[], TraceMask::NONE, None)
+        vm.run_values(&prepared, entry, &[], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(42)]
     );
@@ -123,7 +127,7 @@ fn local_nested_values_need_no_extra_annotations() {
     let prepared = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     assert_eq!(
-        vm.run(&prepared, entry, &[], TraceMask::NONE, None)
+        vm.run_values(&prepared, entry, &[], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(42)]
     );
@@ -299,7 +303,7 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
         );
     }
     assert_eq!(
-        vm.run(&prepared, entry, &[value.clone()], TraceMask::NONE, None)
+        vm.run_values(&prepared, entry, &[value.clone()], TraceMask::NONE, None)
             .unwrap(),
         Vec::<Value>::new()
     );
@@ -320,7 +324,7 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
         .unwrap()
         .remove(0);
     let error = bounded
-        .run(&prepared, entry, &[value], TraceMask::NONE, None)
+        .run_values(&prepared, entry, &[value], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ContractWorkExceeded { .. }));
 }
@@ -412,7 +416,7 @@ fn branches_and_aliased_selects_keep_common_nested_structure() {
         let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
         for flag in [true, false] {
             assert_eq!(
-                vm.run(
+                vm.run_values(
                     &prepared,
                     entry,
                     &[Value::Bool(flag)],
@@ -451,7 +455,7 @@ fn one_handle_must_satisfy_each_distinct_contract() {
         .tuple_new(vec![Value::I64(42)])
         .unwrap();
     let error = vm
-        .run(
+        .run_values(
             &program,
             entry,
             &[Value::Agg(shared), Value::Agg(shared)],
@@ -601,7 +605,7 @@ fn rejected_root_candidate_is_retained_and_checked_during_replay() {
     vm.host_mut().0 = Value::Agg(bad);
     let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
     let error = vm
-        .run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+        .run_values(&program, entry, &[], recorder.mask(), Some(&mut recorder))
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ContractMismatch { .. }));
     let record = recorder.finish();
@@ -735,7 +739,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
         vm.host_mut().0 = Value::Agg(bad);
         let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
         let error = vm
-            .run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+            .run_values(&program, entry, &[], recorder.mask(), Some(&mut recorder))
             .unwrap_err();
         assert_eq!((error.func, error.pc), (target, return_pc));
         let record = recorder.finish();
@@ -764,7 +768,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             success: false,
             frames: vec![],
         };
-        vm.run(
+        vm.run_values(
             &program,
             entry,
             &[],
@@ -809,7 +813,7 @@ fn contract_work_limit_has_exact_accounting_and_boundary_context() {
             .aggregate_builder()
             .tuple_new(vec![Value::I64(42)])
             .unwrap();
-        let result = vm.run(
+        let result = vm.run_values(
             &program,
             entry,
             &[Value::Agg(value), Value::Agg(value)],
@@ -951,7 +955,8 @@ fn nested_struct_and_array_results_propagate_without_retaining_temporaries() {
     .unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     assert_eq!(
-        vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+        vm.run_values(&program, entry, &[], TraceMask::NONE, None)
+            .unwrap(),
         vec![Value::I64(42)]
     );
     assert_eq!(vm.aggregates().len_u32(), 0);
@@ -991,7 +996,7 @@ fn recursive_functions_use_declared_finite_result_contracts() {
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     let out = vm
-        .run(&program, entry, &[Value::U64(4)], TraceMask::NONE, None)
+        .run_values(&program, entry, &[Value::U64(4)], TraceMask::NONE, None)
         .unwrap();
     let [Value::Agg(root)] = out[..] else {
         panic!("expected tuple");
@@ -1048,7 +1053,7 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
     let program = verify_program_owned(source, &VerifyConfig::default()).unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     let empty = vm.aggregate_builder().array_new(elem, vec![]).unwrap();
-    vm.run(
+    vm.run_values(
         &program,
         check_array,
         &[Value::Agg(empty)],
@@ -1065,7 +1070,7 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
         .struct_new(TypeId(1), vec![Value::Agg(child)])
         .unwrap();
     let error = vm
-        .run(
+        .run_values(
             &program,
             check_struct,
             &[Value::Agg(wrong)],
@@ -1085,7 +1090,7 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
         .array_new(ElemTypeId(1), vec![])
         .unwrap();
     assert!(matches!(
-        vm.run(
+        vm.run_values(
             &program,
             check_array,
             &[Value::Agg(wrong)],

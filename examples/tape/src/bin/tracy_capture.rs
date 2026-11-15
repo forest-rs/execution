@@ -157,7 +157,15 @@ fn main() {
         .expect("matching source map");
     let mask = sink.mask();
     let out = vm
-        .run(&program, entry, &[], mask, Some(&mut sink))
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                entry,
+            )
+            .expect("verified entry"),
+            &[],
+            execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+        )
         .expect("vm run failed");
 
     println!("result: {:?}", out);
@@ -227,7 +235,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use execution_tape::trace::{TraceLocation, TraceMask};
+    use execution_tape::trace::TraceLocation;
 
     #[test]
     fn demo_executes_and_maps_every_instruction_without_a_tracy_client() {
@@ -250,9 +258,19 @@ mod tests {
             }
         }
         let mut vm = Vm::new(EchoHost { expected_sig }, Limits::default());
-        assert_eq!(
-            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
-            [Value::I64(42)]
-        );
+        let roots = vm
+            .run(
+                execution_tape::callable::Callable::function(
+                    std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                    entry,
+                )
+                .expect("verified entry"),
+                &[],
+                execution_tape::vm::TurnOptions::default(),
+            )
+            .unwrap()
+            .into_returned()
+            .unwrap();
+        assert_eq!(vm.resolve(&roots).unwrap().values(), &[Value::I64(42)]);
     }
 }

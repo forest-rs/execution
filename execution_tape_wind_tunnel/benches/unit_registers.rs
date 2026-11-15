@@ -106,11 +106,15 @@ fn units(c: &mut Criterion) {
                 let mut vm = Vm::new(UnitHost, Limits::default());
                 black_box(
                     vm.run(
-                        black_box(&program),
-                        entry,
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                black_box(&program),
+                            )),
+                            entry,
+                        )
+                        .expect("verified entry"),
                         black_box(&args),
-                        TraceMask::NONE,
-                        None,
+                        execution_tape::vm::TurnOptions::default(),
                     )
                     .unwrap(),
                 );

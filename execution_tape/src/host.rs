@@ -7,7 +7,9 @@
 //! Host calls are identified by a stable symbol string plus a signature hash.
 
 mod results;
+mod values;
 pub(crate) use results::HostResults;
+pub use values::ValueContext;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -298,6 +300,12 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
             budget,
             access,
         }
+    }
+
+    /// Borrows the same budgeted value construction/read surface used by native effects.
+    /// Handles and payloads remain borrowed from this host operation's store.
+    pub fn values(&mut self) -> ValueContext<'_, '_> {
+        ValueContext::new(self.instance, self.aggregates, self.results, self.budget)
     }
 
     /// Retains borrowed values in an owned snapshot for use after this host call.

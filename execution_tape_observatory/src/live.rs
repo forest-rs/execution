@@ -73,11 +73,11 @@ enum ValueTarget {
 ///
 /// ```no_run
 /// # use execution_tape::{host::Host, source::SourceMap, value::FuncId,
-/// #     verifier::VerifiedProgram, vm::{Vm, InvocationOptions}};
+/// #     verifier::VerifiedProgram, vm::{Vm, TurnOptions}};
 /// # use execution_tape_observatory::LiveExplorer;
 /// # fn debug<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId,
 /// #     sources: &SourceMap) -> Result<(), Box<dyn std::error::Error>> {
-/// let invocation = vm.start(program, entry, &[], InvocationOptions::default())?;
+/// let invocation = vm.start(program, entry, &[], TurnOptions::default())?;
 /// let mut debugger = LiveExplorer::new(invocation).sources(sources)?;
 /// debugger.run()?;
 /// if let Some(result) = debugger.result() {
@@ -444,6 +444,12 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                             activation,
                             register,
                         } => format!("frame #{} r{register}", activation.ordinal()),
+                        ObjectRootOrigin::RetainedValue { group, index } => {
+                            format!("retained[{group}][{index}]")
+                        }
+                        ObjectRootOrigin::EffectRequest { index } => {
+                            format!("effect request[{index}]")
+                        }
                         ObjectRootOrigin::Argument { index } => format!("argument[{index}]"),
                         ObjectRootOrigin::Output { index } => format!("output[{index}]"),
                         ObjectRootOrigin::CallbackResult { index } => {

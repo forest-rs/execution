@@ -12,7 +12,7 @@ use execution_tape::recording::{
 use execution_tape::{
     disasm::disassemble_function,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
-    trace::{TraceLocation, TraceMask, TraceSink},
+    trace::{TraceLocation, TraceSink},
     value::{FuncId, Value},
     verifier::{VerifyConfig, verify_program_owned},
     vm::{Limits, Vm},
@@ -42,8 +42,17 @@ fn observations(c: &mut Criterion) {
         let program = Arc::new(verify_program_owned(program, &VerifyConfig::default()).unwrap());
         let mut vm = Vm::new(NoHost, Limits::default());
         let expected = vm
-            .run(&program, FuncId(0), &[], TraceMask::NONE, None)
+            .run(
+                execution_tape::callable::Callable::function(
+                    std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                    FuncId(0),
+                )
+                .expect("verified entry"),
+                &[],
+                execution_tape::vm::TurnOptions::default(),
+            )
             .unwrap();
+        let expected = expected.into_returned().unwrap();
         let source = disassemble_function(program.program(), FuncId(0)).unwrap();
         let watches = source
             .instrs()
@@ -64,24 +73,34 @@ fn observations(c: &mut Criterion) {
                     vec![]
                 },
             });
-            let mut capture = || {
+            let capture = |vm: &mut Vm<NoHost>| {
                 let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
                 if let Some(config) = &config {
                     recorder = recorder.with_instructions(config.clone());
                 }
                 let result = vm
                     .run(
-                        &program,
-                        FuncId(0),
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                &program,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
                         &[],
-                        recorder.mask(),
-                        Some(&mut recorder),
+                        execution_tape::vm::TurnOptions::default()
+                            .trace(recorder.mask(), &mut recorder),
                     )
                     .unwrap();
                 (result, recorder.finish())
             };
-            let (result, record) = capture();
-            assert_eq!(result, expected);
+            let (result, record) = capture(&mut vm);
+            assert_eq!(
+                vm.resolve(&result.into_returned().unwrap())
+                    .unwrap()
+                    .values(),
+                vm.resolve(&expected).unwrap().values()
+            );
             record.status().unwrap();
             assert_eq!(
                 record.instruction_status(),
@@ -93,14 +112,24 @@ fn observations(c: &mut Criterion) {
             );
             record.replay().unwrap();
             group.bench_function(BenchmarkId::new(mode, name), |b| {
-                b.iter(|| black_box(capture())); // Includes config cloning, capture/freeze and drop.
+                b.iter(|| black_box(capture(&mut vm))); // Includes config cloning, capture/freeze and drop.
             });
         }
         group.bench_function(BenchmarkId::new("live", name), |b| {
             b.iter(|| {
                 black_box(
-                    vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
-                        .unwrap(),
+                    vm.run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                &program,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap(),
                 )
             });
         });

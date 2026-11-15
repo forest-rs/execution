@@ -114,7 +114,7 @@ mod tests {
         source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
         trace::{TraceLocation, TraceSink},
         value::Value,
-        vm::{InvocationOptions, Limits, Vm},
+        vm::{Limits, TurnOptions, Vm},
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::sync::Arc;
@@ -209,7 +209,7 @@ mod tests {
                     &parent,
                     entry,
                     &[],
-                    InvocationOptions::default()
+                    TurnOptions::default()
                         .yield_host_calls()
                         .trace(mask, &mut recorder),
                 )

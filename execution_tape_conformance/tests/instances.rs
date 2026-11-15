@@ -3,6 +3,10 @@
 
 //! Code definitions, host namespaces and VM stores have distinct identities.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -12,7 +16,7 @@ use execution_tape::{
     trace::{TraceMask, TraceSink},
     value::{FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -64,7 +68,7 @@ fn program(name: &str) -> (VerifiedProgram, FuncId) {
 
 fn run(vm: &mut Vm<Counters>, instance: &Instance, entry: FuncId) -> u64 {
     let mut call = instance
-        .start(vm, entry, &[], InvocationOptions::default())
+        .start(vm, entry, &[], TurnOptions::default())
         .unwrap();
     assert_eq!(
         call.instance(),
@@ -104,16 +108,17 @@ fn default_namespaces_survive_switching_between_shared_definitions() {
     let (second, other_entry) = program("second");
     let mut vm = Vm::new(Counters::default(), Limits::default());
     assert_eq!(
-        vm.run(&first, entry, &[], TraceMask::NONE, None).unwrap(),
-        [Value::U64(1)]
-    );
-    assert_eq!(
-        vm.run(&second, other_entry, &[], TraceMask::NONE, None)
+        vm.run_values(&first, entry, &[], TraceMask::NONE, None)
             .unwrap(),
         [Value::U64(1)]
     );
     assert_eq!(
-        vm.run(&first.clone(), entry, &[], TraceMask::NONE, None)
+        vm.run_values(&second, other_entry, &[], TraceMask::NONE, None)
+            .unwrap(),
+        [Value::U64(1)]
+    );
+    assert_eq!(
+        vm.run_values(&first.clone(), entry, &[], TraceMask::NONE, None)
             .unwrap(),
         [Value::U64(2)]
     );
@@ -146,7 +151,7 @@ fn foreign_store_denial_precedes_entry_observation_and_host_effects() {
             &mut target,
             entry,
             &[],
-            InvocationOptions::default().trace(TraceMask::RUN, &mut NoEntry)
+            TurnOptions::default().trace(TraceMask::RUN, &mut NoEntry)
         ),
         Err(InstanceError::ForeignStore)
     ));
@@ -166,14 +171,17 @@ fn paused_entry_and_pending_request_keep_the_selected_instance() {
             &mut vm,
             entry,
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(recording.mask(), &mut recording),
         )
         .unwrap();
     drop(selected);
     drop(program);
-    assert_eq!(call.resume(1).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(1).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let request = call.pending_host_call().unwrap();
     assert_eq!(request.instance(), &expected);
     request.dispatch().unwrap();

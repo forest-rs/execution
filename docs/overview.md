@@ -334,7 +334,7 @@ are shared. Raw aggregate/function/closure IDs still need their original ownersh
 retention or snapshots are explicit. Observatory borrows local sources separately from the
 invocation, then returns the same owned handle to its scheduler after inspection.
 
-`InvocationOptions::yield_host_calls()` admits a host instruction and returns `AwaitingHost`.
+`TurnOptions::yield_host_calls()` admits a host instruction and returns `AwaitingHost`.
 The pending request exposes exact code/import/source identity and borrowed arguments, while
 inspection shows the call awaiting a return and excludes uninitialized destinations. Request
 completion uses the ordinary return ABI, fuel debit and payload checks, recording the raw outcome

@@ -3,6 +3,10 @@
 
 //! Borrowed register observations are explicit and never expose unwritten destinations.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
@@ -82,7 +86,7 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut sink = Observe::default();
     let result = vm
-        .run(
+        .run_values(
             &p,
             FuncId(0),
             &[Value::Str("hello".into())],
@@ -112,7 +116,7 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     );
     sink.events.clear();
     sink.selected = Some(sink_selected_pc(&p));
-    vm.run(
+    vm.run_values(
         &p,
         FuncId(0),
         &[Value::Str("x".into())],
@@ -122,7 +126,7 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     .unwrap();
     assert!(sink.events.is_empty());
     assert_eq!(sink.masks.len(), 1);
-    vm.run(
+    vm.run_values(
         &p,
         FuncId(0),
         &[Value::Str("x".into())],

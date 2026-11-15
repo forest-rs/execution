@@ -3,7 +3,7 @@
 
 //! One exclusive observer lease belongs to the drive, never to a saved guest stack.
 
-use super::{BorrowedOrOwned, InvocationOptions};
+use super::{BorrowedOrOwned, TurnOptions};
 use crate::{host::AccessSink, trace::TraceSink};
 
 #[derive(Default)]
@@ -12,7 +12,7 @@ pub(super) struct Observers<'a> {
     pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
 }
 impl<'a> Observers<'a> {
-    pub(super) fn take(options: &mut InvocationOptions<'a>) -> Self {
+    pub(super) fn take(options: &mut TurnOptions<'a>) -> Self {
         Self {
             trace: options.trace.take(),
             access: options.access.take(),

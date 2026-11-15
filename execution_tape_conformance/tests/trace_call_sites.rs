@@ -3,6 +3,10 @@
 
 //! Actual guest call-site provenance survives ordinary returns and trap unwinding.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
@@ -140,7 +144,7 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
                 .unwrap()
                 .pc();
             let mut sink = Calls::default();
-            let result = Vm::new(NeverHost, Limits::default()).run(
+            let result = Vm::new(NeverHost, Limits::default()).run_values(
                 &program,
                 caller,
                 &[],

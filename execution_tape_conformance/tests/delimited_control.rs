@@ -3,6 +3,10 @@
 
 //! Public control authoring: a captured computation resumes under a new handler context.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -204,7 +208,7 @@ fn independent_code_resumes_under_replacement_handlers() {
         let mut vm = Vm::new(NoHost, Limits::default());
         let callable = vm.function(&worker, compute).unwrap();
         let outputs = vm
-            .run(
+            .run_values(
                 &driver,
                 entry,
                 &[Value::Func(callable)],
@@ -259,7 +263,7 @@ fn aliases_cannot_resume_a_consumed_computation() {
     program.define_function(root, body).unwrap();
     let program = program.build_verified().unwrap();
     let error = Vm::new(NoHost, Limits::default())
-        .run(
+        .run_values(
             &program,
             root,
             &[],
@@ -280,13 +284,13 @@ fn captured_frames_still_count_against_the_execution_limit() {
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 3,
+            max_frames: 3,
             ..Limits::default()
         },
     );
     let callable = vm.function(&worker, compute).unwrap();
     let error = vm
-        .run(
+        .run_values(
             &driver,
             entry,
             &[Value::Func(callable)],
@@ -296,13 +300,13 @@ fn captured_frames_still_count_against_the_execution_limit() {
         .unwrap_err();
     assert!(matches!(
         error.trap,
-        execution_tape::vm::Trap::CallDepthExceeded
+        execution_tape::vm::Trap::FrameLimitExceeded { .. }
     ));
     // A rejected handler entry cancels all parked frames, without poisoning the next run.
     let mut vm = Vm::new(NoHost, Limits::default());
     let callable = vm.function(&worker, compute).unwrap();
     let outputs = vm
-        .run(
+        .run_values(
             &driver,
             entry,
             &[Value::Func(callable)],
@@ -416,7 +420,7 @@ fn parked_frames_are_inspectable_and_contribute_object_roots() {
     use execution_tape::{
         program::HostTypeId,
         value::{Obj, ObjHandle},
-        vm::{InvocationOptions, ObjectRootOrigin, RunStatus},
+        vm::{ObjectRootOrigin, RunStatus, TurnOptions},
     };
     let (program, root, worker, object_register, response) = paused_worker();
     let object = Obj {
@@ -430,10 +434,10 @@ fn parked_frames_are_inspectable_and_contribute_object_roots() {
             &program,
             root,
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
     let mut view = run.inspect();
     let saved = view.saved_continuations().next().unwrap();
     let worker_frame = saved
@@ -487,7 +491,7 @@ fn returning_from_the_root_retires_every_parked_computation_before_publication()
     use execution_tape::{
         program::HostTypeId,
         value::{Obj, ObjHandle},
-        vm::{InvocationOptions, RunStatus},
+        vm::{RunStatus, TurnOptions},
     };
     let (program, entry, _, _, _) = paused_worker();
     let arguments = [Value::Obj(Obj {
@@ -500,10 +504,10 @@ fn returning_from_the_root_retires_every_parked_computation_before_publication()
             &program,
             entry,
             &arguments,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
     assert_eq!(run.inspect().saved_continuations().len(), 1);
     let root = run.inspect().frames().last().unwrap().activation;
     run.pending_host_call()
@@ -546,7 +550,7 @@ fn host_paused_driver() -> (VerifiedProgram, FuncId, FuncId) {
 fn native_resumption_denies_foreign_and_stale_aliases_without_consuming_the_host_request() {
     use execution_tape::{
         control::ResumeError,
-        vm::{ControlError, InvocationOptions, RunStatus},
+        vm::{ControlError, RunStatus, TurnOptions},
     };
     let (program, root, entry) = host_paused_driver();
     let mut original_vm = Vm::new(NoHost, Limits::default());
@@ -556,10 +560,13 @@ fn native_resumption_denies_foreign_and_stale_aliases_without_consuming_the_host
             &program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(original.resume(10).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        original.resume(10).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let continuation = original
         .pending_host_call()
         .unwrap()
@@ -581,10 +588,13 @@ fn native_resumption_denies_foreign_and_stale_aliases_without_consuming_the_host
             &program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(other.resume(10).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        other.resume(10).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     assert!(matches!(
         other
             .pending_host_call()
@@ -604,7 +614,7 @@ fn native_resumption_denies_foreign_and_stale_aliases_without_consuming_the_host
         .unwrap()
         .resume_continuation(&continuation, vec![], &[])
         .unwrap();
-    while original.resume(10).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(original.resume(10).unwrap(), RunStatus::AwaitingHost(_)) {}
     let mut request = original.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results().unwrap(), [Value::I64(42)]);
     assert!(matches!(
@@ -627,7 +637,7 @@ fn native_control_accepts_aggregates_staged_by_its_pending_request() {
         contract::Contract,
         host::HostSig,
         value::Closure,
-        vm::{InvocationOptions, RunStatus},
+        vm::{RunStatus, TurnOptions},
     };
     let mut builder = ProgramBuilder::new();
     let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
@@ -668,10 +678,13 @@ fn native_control_accepts_aggregates_staged_by_its_pending_request() {
             &program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(100).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
 
     // A closure environment need not exist in the committed heap before control admission.
     let mut request = run.pending_host_call().unwrap();
@@ -686,7 +699,7 @@ fn native_control_accepts_aggregates_staged_by_its_pending_request() {
         .unwrap()
         .resume_continuation(&closure, vec![], &[])
         .unwrap();
-    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
     assert_eq!(
         run.pending_host_call().unwrap().take_callback_results(),
         Some(vec![Value::I64(41)])
@@ -703,7 +716,7 @@ fn native_control_accepts_aggregates_staged_by_its_pending_request() {
     request
         .resume_continuation(&continuation, vec![Value::Agg(argument)], &[])
         .unwrap();
-    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
     let mut request = run.pending_host_call().unwrap();
     let mut outputs = request.take_callback_results().unwrap();
     assert_eq!(outputs, [Value::I64(42)]);
@@ -806,7 +819,7 @@ fn suspension_requests_follow_the_same_code_ownership_rules_as_ordinary_calls() 
         let consumer = consumer.build_verified().unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
         let callable = vm.function(&producer, worker).unwrap();
-        let result = vm.run(
+        let result = vm.run_values(
             &consumer,
             root,
             &[Value::Func(callable)],
@@ -831,7 +844,7 @@ fn suspension_requests_follow_the_same_code_ownership_rules_as_ordinary_calls() 
 fn panicking_return_observers_preserve_the_root_and_poison_the_transfer() {
     use execution_tape::{
         trace::{TraceContext, TraceLocation, TraceMask, TraceOutcome, TraceSink},
-        vm::{InvocationOptions, Trap},
+        vm::{Trap, TurnOptions},
     };
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -870,7 +883,7 @@ fn panicking_return_observers_preserve_the_root_and_poison_the_transfer() {
             &driver,
             entry,
             &args,
-            InvocationOptions::default().trace(TraceMask::INSTR, &mut observer),
+            TurnOptions::default().trace(TraceMask::INSTR, &mut observer),
         )
         .unwrap();
     assert!(
@@ -903,7 +916,7 @@ fn panicking_return_observers_preserve_the_root_and_poison_the_transfer() {
 fn panicking_entry_observers_cannot_retry_entry_or_execute_the_admitted_child() {
     use execution_tape::{
         trace::{ScopeKind, TraceContext, TraceMask, TraceSink},
-        vm::{InvocationOptions, Trap},
+        vm::{Trap, TurnOptions},
     };
     use std::panic::{AssertUnwindSafe, catch_unwind};
     struct PanicAtEntry {
@@ -952,7 +965,7 @@ fn panicking_entry_observers_cannot_retry_entry_or_execute_the_admitted_child() 
                 &driver,
                 entry,
                 &args,
-                InvocationOptions::default().trace(TraceMask::RUN | TraceMask::CALL, &mut observer),
+                TurnOptions::default().trace(TraceMask::RUN | TraceMask::CALL, &mut observer),
             )
             .unwrap();
         assert!(
@@ -984,7 +997,7 @@ fn cancellation_observer_panics_cannot_skip_storage_rollback_or_frame_retirement
         program::HostTypeId,
         trace::{TraceContext, TraceMask, TraceOutcome, TraceSink},
         value::{Obj, ObjHandle},
-        vm::{InvocationOptions, RunStatus, Trap},
+        vm::{RunStatus, Trap, TurnOptions},
     };
     use std::panic::{AssertUnwindSafe, catch_unwind};
     struct PanicOnCancellation(bool);
@@ -1009,12 +1022,12 @@ fn cancellation_observer_panics_cannot_skip_storage_rollback_or_frame_retirement
             &program,
             entry,
             &arguments,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(TraceMask::RUN, &mut observer),
         )
         .unwrap();
-    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
     let mut request = run.pending_host_call().unwrap();
     request.context().tuple_new(vec![Value::I64(1)]).unwrap();
     request.create_continuation(callable).unwrap();
@@ -1051,7 +1064,7 @@ fn native_resume_installs_handlers_used_by_guest_suspensions() {
     use execution_tape::{
         control::Handler,
         program::ControlTagId,
-        vm::{InvocationOptions, RunStatus},
+        vm::{RunStatus, TurnOptions},
     };
     let (program, root, _) = host_paused_driver();
     let (worker, compute) = worker(true);
@@ -1066,10 +1079,13 @@ fn native_resume_installs_handlers_used_by_guest_suspensions() {
             &program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(10).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(10).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let computation = run
         .pending_host_call()
         .unwrap()
@@ -1079,7 +1095,7 @@ fn native_resume_installs_handlers_used_by_guest_suspensions() {
         .unwrap()
         .resume_continuation(&computation, vec![Value::Tag(tag)], &[handler])
         .unwrap();
-    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
     let mut request = run.pending_host_call().unwrap();
     let mut answer = request.take_callback_results().unwrap();
     assert_eq!(answer, [Value::I64(30)]);
@@ -1093,7 +1109,7 @@ fn handler_installation_checks_its_declared_continuation_protocol() {
         asm::FunctionAbi,
         contract::{Contract, ContractPosition},
         control::{ControlBoundary, Handler},
-        vm::{ControlError, InvocationOptions, RunStatus, Trap},
+        vm::{ControlError, RunStatus, Trap, TurnOptions},
     };
     for response_kind in [ValueType::I64, ValueType::Bool] {
         let mut clauses = ProgramBuilder::new();
@@ -1138,10 +1154,13 @@ fn handler_installation_checks_its_declared_continuation_protocol() {
                 &program,
                 root,
                 &[],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         let computation = run
             .pending_host_call()
             .unwrap()
@@ -1165,7 +1184,7 @@ fn handler_installation_checks_its_declared_continuation_protocol() {
             assert!(run.pending_host_call().is_none());
         } else {
             result.unwrap();
-            while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+            while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
             let mut request = run.pending_host_call().unwrap();
             let mut result = request.take_callback_results().unwrap();
             assert_eq!(result, [Value::I64(42)]);
@@ -1215,7 +1234,7 @@ fn trace_context_identifies_a_resumed_stack_without_restarting_its_logical_run()
     let callable = vm.function(&worker, compute).unwrap();
     let mut observed = Observed::default();
     let outputs = vm
-        .run(
+        .run_values(
             &driver,
             entry,
             &[Value::Func(callable)],
@@ -1231,7 +1250,7 @@ fn trace_context_identifies_a_resumed_stack_without_restarting_its_logical_run()
 
 #[test]
 fn fatal_native_control_admission_retires_the_pending_request() {
-    use execution_tape::vm::{ControlError, InvocationOptions, RunStatus, Trap};
+    use execution_tape::vm::{ControlError, RunStatus, Trap, TurnOptions};
     let (program, root, entry) = host_paused_driver();
     let mut vm = Vm::new(
         NoHost,
@@ -1246,10 +1265,13 @@ fn fatal_native_control_admission_retires_the_pending_request() {
             &program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(10).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(10).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     assert!(
         matches!(run.pending_host_call().unwrap().create_continuation(callable), Err(ControlError::Trapped(error)) if matches!(error.trap, Trap::FuelExceeded))
     );
@@ -1265,7 +1287,7 @@ fn durable_publication_rejects_control_capabilities_without_consuming_them() {
     use execution_graph::{ExecutionGraph, GraphError, TapeError, TapeExecutor};
     use execution_tape::{
         aggregates::{AggError, AggHeap},
-        vm::{InvocationOptions, RunStatus},
+        vm::{RunStatus, TurnOptions},
     };
     use std::sync::Arc;
     let (program, root, entry) = host_paused_driver();
@@ -1276,10 +1298,13 @@ fn durable_publication_rejects_control_capabilities_without_consuming_them() {
             &program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(10).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(10).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let continuation = run
         .pending_host_call()
         .unwrap()
@@ -1336,7 +1361,7 @@ fn durable_publication_rejects_control_capabilities_without_consuming_them() {
         .unwrap()
         .resume_continuation(&continuation, vec![], &[])
         .unwrap();
-    while run.resume(10).unwrap() != RunStatus::AwaitingHost {}
+    while !matches!(run.resume(10).unwrap(), RunStatus::AwaitingHost(_)) {}
     let mut request = run.pending_host_call().unwrap();
     let mut values = request.take_callback_results().unwrap();
     assert_eq!(values, [Value::I64(42)]);
@@ -1385,7 +1410,7 @@ fn rejected_control_signatures_keep_both_definitions_and_explain_the_difference(
         let offered = offered.build_verified().unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
         let function = vm.function(&offered, function).unwrap();
-        vm.run(
+        vm.run_values(
             &wanted,
             root,
             &[Value::Func(function)],
@@ -1419,7 +1444,7 @@ fn rejected_native_resume_values_identify_the_input_and_its_contract_owner() {
     use execution_tape::{
         contract::ContractPosition,
         control::ControlBoundary,
-        vm::{ControlError, InvocationOptions, RunStatus, Trap},
+        vm::{ControlError, RunStatus, Trap, TurnOptions},
     };
     let (root_program, root, _) = host_paused_driver();
     let mut target = ProgramBuilder::new();
@@ -1441,10 +1466,13 @@ fn rejected_native_resume_values_identify_the_input_and_its_contract_owner() {
             &root_program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(10).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(10).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let continuation = run
         .pending_host_call()
         .unwrap()

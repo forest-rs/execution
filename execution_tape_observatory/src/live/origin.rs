@@ -6,7 +6,7 @@
 use super::*;
 use execution_tape::{
     verifier::VerifiedProgram,
-    vm::{InvocationInspection, PendingHostCall},
+    vm::{ExecutionInspection, PendingHostCall},
 };
 
 pub(super) struct RequestOrigin<'a> {
@@ -14,7 +14,7 @@ pub(super) struct RequestOrigin<'a> {
     pub(super) location: TraceLocation,
     pub(super) symbol: String,
     pub(super) arguments: Vec<String>,
-    inspection: InvocationInspection<'a>,
+    inspection: ExecutionInspection<'a>,
     pub(super) sources: Option<BoundSources<'a>>,
 }
 impl<'a> RequestOrigin<'a> {

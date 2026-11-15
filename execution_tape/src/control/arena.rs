@@ -23,6 +23,7 @@ pub(crate) enum StorageError {
 
 struct Slot<T> {
     revision: u64,
+    born: u64,
     saved: Option<T>,
     next_free: Option<u32>,
 }
@@ -67,12 +68,17 @@ impl<T> Resumptions<T> {
         })
     }
 
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.slots.iter_mut().filter_map(|slot| slot.saved.as_mut())
+    }
+
     /// Rejected admission returns its storage to the execution owner, without dropping frames.
     pub(crate) fn insert(
         &mut self,
         owner: &Arc<()>,
         saved: T,
         limit: usize,
+        epoch: u64,
     ) -> Result<ContinuationId, (StorageError, T)> {
         let error = if self.closed {
             Some(StorageError::Closed)
@@ -98,6 +104,7 @@ impl<T> Resumptions<T> {
             };
             self.slots.push(Slot {
                 revision: 0,
+                born: epoch,
                 saved: None,
                 next_free: None,
             });
@@ -105,6 +112,7 @@ impl<T> Resumptions<T> {
         };
         let entry = &mut self.slots[slot as usize];
         self.free = entry.next_free.take();
+        entry.born = epoch;
         entry.saved = Some(saved);
         self.live += 1;
         self.owner.get_or_insert_with(|| Arc::clone(owner));
@@ -159,6 +167,20 @@ impl<T> Resumptions<T> {
         Ok(saved)
     }
 
+    /// Retires this turn's descendants without restoring consumed predecessors or touching
+    /// older saved entries. Every key is invalidated before the caller observes cancellation.
+    pub(crate) fn retire_epoch(&mut self, epoch: u64) -> impl Iterator<Item = T> + use<T> {
+        let keys: Vec<_> = self
+            .iter()
+            .filter_map(|(key, _)| (self.slots[key.slot as usize].born == epoch).then_some(key))
+            .collect();
+        let retired: Vec<_> = keys
+            .iter()
+            .map(|key| self.take(key).expect("selected live entry"))
+            .collect();
+        retired.into_iter()
+    }
+
     /// Invalidates every key before the owner starts cancelling individual retained stacks.
     pub(crate) fn close(&mut self) -> impl Iterator<Item = T> + use<T> {
         self.closed = true;
@@ -180,12 +202,12 @@ mod tests {
     fn aliases_cannot_resume_twice_or_retarget_reused_storage() {
         let owner = Arc::new(());
         let mut saved = Resumptions::default();
-        let first = saved.insert(&owner, "first", 1).unwrap();
+        let first = saved.insert(&owner, "first", 1, 0).unwrap();
         let alias = first.clone();
         assert_eq!(saved.get(&alias), Ok(&"first"));
         assert_eq!(saved.take(&first), Ok("first"));
         assert_eq!(saved.take(&alias), Err(LookupError::Consumed));
-        let next = saved.insert(&owner, "next", 1).unwrap();
+        let next = saved.insert(&owner, "next", 1, 0).unwrap();
         assert_eq!(
             first.slot, next.slot,
             "reuse capacity without reusing authority"
@@ -201,8 +223,8 @@ mod tests {
     fn a_foreign_denial_leaves_both_executions_usable() {
         let mut first = Resumptions::default();
         let mut second = Resumptions::default();
-        let a = first.insert(&Arc::new(()), 11, 1).unwrap();
-        let b = second.insert(&Arc::new(()), 99, 1).unwrap();
+        let a = first.insert(&Arc::new(()), 11, 1, 0).unwrap();
+        let b = second.insert(&Arc::new(()), 99, 1, 0).unwrap();
         assert_eq!(first.take(&b), Err(LookupError::ForeignExecution));
         assert_eq!(second.take(&a), Err(LookupError::ForeignExecution));
         assert_eq!(first.take(&a), Ok(11));
@@ -213,10 +235,13 @@ mod tests {
     fn admission_denial_returns_storage_without_changing_existing_authority() {
         let owner = Arc::new(());
         let mut saved = Resumptions::default();
-        let first = saved.insert(&owner, 11, 1).unwrap();
-        assert_eq!(saved.insert(&owner, 22, 1), Err((StorageError::Limit, 22)));
+        let first = saved.insert(&owner, 11, 1, 0).unwrap();
         assert_eq!(
-            saved.insert(&Arc::new(()), 33, 2),
+            saved.insert(&owner, 22, 1, 0),
+            Err((StorageError::Limit, 22))
+        );
+        assert_eq!(
+            saved.insert(&Arc::new(()), 33, 2, 0),
             Err((StorageError::ForeignExecution, 33))
         );
         assert_eq!(saved.get(&first), Ok(&11));
@@ -227,11 +252,11 @@ mod tests {
     fn generation_exhaustion_retires_a_slot_and_never_resurrects_an_alias() {
         let owner = Arc::new(());
         let mut saved = Resumptions::default();
-        let mut last = saved.insert(&owner, 11, 1).unwrap();
+        let mut last = saved.insert(&owner, 11, 1, 0).unwrap();
         saved.slots[0].revision = u64::MAX;
         last.revision = u64::MAX;
         assert_eq!(saved.take(&last), Ok(11));
-        let next = saved.insert(&owner, 22, 1).unwrap();
+        let next = saved.insert(&owner, 22, 1, 0).unwrap();
         assert_ne!(last.slot, next.slot);
         assert_eq!(saved.get(&last), Err(LookupError::Consumed));
         assert_eq!(saved.take(&next), Ok(22));
@@ -249,11 +274,11 @@ mod tests {
         let drops = Rc::new(Cell::new(0));
         let mut saved = Resumptions::default();
         let a = saved
-            .insert(&owner, Retained(drops.clone()), 2)
+            .insert(&owner, Retained(drops.clone()), 2, 0)
             .ok()
             .unwrap();
         let b = saved
-            .insert(&owner, Retained(drops.clone()), 2)
+            .insert(&owner, Retained(drops.clone()), 2, 0)
             .ok()
             .unwrap();
         let mut closing = saved.close();
@@ -265,7 +290,7 @@ mod tests {
         drop(closing);
         assert_eq!(drops.get(), 2);
         assert!(matches!(
-            saved.insert(&owner, Retained(drops.clone()), 2),
+            saved.insert(&owner, Retained(drops.clone()), 2, 0),
             Err((StorageError::Closed, _))
         ));
     }
@@ -275,5 +300,27 @@ mod tests {
         let saved = Resumptions::<()>::default();
         assert!(saved.owner.is_none());
         assert_eq!(saved.slots.capacity(), 0);
+    }
+
+    #[test]
+    fn abort_retires_descendants_without_restoring_consumed_predecessors() {
+        let owner = Arc::new(());
+        let mut saved = Resumptions::default();
+        let predecessor = saved.insert(&owner, "predecessor", 4, 1).unwrap();
+        let untouched = saved.insert(&owner, "untouched", 4, 1).unwrap();
+        assert_eq!(saved.take(&predecessor), Ok("predecessor"));
+        let descendant = saved.insert(&owner, "descendant", 4, 2).unwrap();
+        let alias = descendant.clone();
+        let mut retired = saved.retire_epoch(2);
+        assert_eq!(saved.get(&predecessor), Err(LookupError::Consumed));
+        assert_eq!(saved.get(&alias), Err(LookupError::Consumed));
+        assert_eq!(saved.get(&untouched), Ok(&"untouched"));
+        assert_eq!(retired.next(), Some("descendant"));
+        assert_eq!(retired.next(), None);
+        let replacement = saved.insert(&owner, "replacement", 4, 3).unwrap();
+        assert_eq!(replacement.slot, descendant.slot);
+        assert_eq!(saved.get(&alias), Err(LookupError::Consumed));
+        assert_eq!(saved.take(&untouched), Ok("untouched"));
+        assert_eq!(saved.take(&replacement), Ok("replacement"));
     }
 }

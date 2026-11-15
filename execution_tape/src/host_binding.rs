@@ -439,12 +439,12 @@ mod tests {
         let mut a = Vm::new(bindings.with_state(0), Limits::default());
         let mut b = Vm::new(bindings.with_state(100), Limits::default());
         assert_eq!(
-            a.run(&p, FuncId(0), &[Value::I64(40)], TraceMask::NONE, None)
+            a.run_values(&p, FuncId(0), &[Value::I64(40)], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(41)]
         );
         assert_eq!(
-            b.run(&p, FuncId(0), &[Value::I64(40)], TraceMask::NONE, None)
+            b.run_values(&p, FuncId(0), &[Value::I64(40)], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(141)]
         );
@@ -487,7 +487,7 @@ mod tests {
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
         for wrong in [&independent, &other] {
             let error = vm
-                .run(wrong, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+                .run_values(wrong, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap_err();
             assert!(matches!(
                 error.trap,
@@ -499,12 +499,12 @@ mod tests {
             assert_eq!(*vm.host().state(), 0);
         }
         assert_eq!(
-            vm.run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+            vm.run_values(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(2)]
         );
         assert_eq!(
-            vm.run(&clone, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+            vm.run_values(&clone, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(3)]
         );
@@ -562,7 +562,7 @@ mod tests {
         let bindings = functions.bind(&p).unwrap();
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
         assert_eq!(
-            vm.run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+            vm.run_values(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(2)]
         );
@@ -596,7 +596,7 @@ mod tests {
                 .unwrap();
             let bindings = functions.bind(&p).unwrap();
             let error = Vm::new(bindings.with_state(()), Limits::default())
-                .run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+                .run_values(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap_err();
             if fuel_trap {
                 assert!(matches!(error.trap, Trap::FuelExceeded));

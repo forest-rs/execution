@@ -15,7 +15,7 @@ use execution_tape::{
     recording::{RecordLimits, Recorder, Recording, ReplayOutcome},
     trace::{TraceLocation, TraceSink},
     value::Value,
-    vm::{Invocation, InvocationOptions, Limits, PendingHostCall, RunStatus, TrapInfo, Vm},
+    vm::{Invocation, Limits, PendingHostCall, RunStatus, TrapInfo, TurnOptions, Vm},
 };
 use execution_tape_observatory::{LiveExplorer, ObjectView, RecordingExplorer};
 use model::{Compiled, Failure, Result, receiver};
@@ -155,6 +155,7 @@ fn execute_method(
         call = view.into_invocation();
     }
     match call.resume(u64::MAX)? {
+        RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
         RunStatus::Complete => {}
         _ => return Err(Box::new(DispatchError::UnexpectedReply)),
     }
@@ -190,7 +191,7 @@ fn run_method(
     let result = match publication.callable().start(
         &mut vm,
         vec![Value::Obj(receiver())],
-        InvocationOptions::default()
+        TurnOptions::default()
             .trace(recorder.mask(), &mut recorder)
             .access(&mut ledger),
     ) {
@@ -269,7 +270,7 @@ fn run(options: &Options) -> Result<Report> {
             .start(
                 &mut vm,
                 vec![Value::Obj(receiver())],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(recorder.mask(), &mut recorder)
                     .access(&mut caller_access),
@@ -278,6 +279,7 @@ fn run(options: &Options) -> Result<Report> {
         match call.resume(64) {
             Ok(RunStatus::Suspended) => {}
             Err(error) => break Err(error),
+            Ok(RunStatus::AwaitingEffect) => panic!("fixture has no escaping native effect"),
             Ok(RunStatus::Complete) => {
                 let [Value::Agg(tuple)] = call
                     .result()
@@ -294,7 +296,7 @@ fn run(options: &Options) -> Result<Report> {
                 };
                 break Ok([first, second]);
             }
-            Ok(RunStatus::AwaitingHost) => {
+            Ok(RunStatus::AwaitingHost(_)) => {
                 let fuel = call.remaining_fuel();
                 let mut request = call.pending_host_call().expect("yielded caller request");
                 let index = links.len();

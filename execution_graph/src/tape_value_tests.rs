@@ -8,7 +8,7 @@ use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{StructTypeDef, ValueType};
 use execution_tape::value::{Closure, FuncId};
-use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
+use execution_tape::vm::{Limits, RunStatus, TurnOptions, Vm};
 
 #[test]
 fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
@@ -66,7 +66,7 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
     );
     let mut vm = Vm::new(HostProbe::default(), Limits::default());
     let mut call = callable
-        .start(&mut vm, vec![Value::I64(2)], InvocationOptions::default())
+        .start(&mut vm, vec![Value::I64(2)], TurnOptions::default())
         .unwrap();
     drop(callable);
     while call.resume(1).unwrap() == RunStatus::Suspended {}
@@ -94,7 +94,7 @@ fn exported_function_uses_original_program_and_raw_values_explain_missing_owners
     drop(graph);
     let mut vm = Vm::new(HostProbe::default(), Limits::default());
     let mut call = callable
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, vec![], TurnOptions::default())
         .unwrap();
     call.resume(u64::MAX).unwrap();
     assert_eq!(call.take_outputs(), Some(vec![Value::I64(11)]));

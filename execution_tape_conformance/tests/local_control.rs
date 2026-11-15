@@ -3,6 +3,10 @@
 
 //! Local clauses keep iterative handling in the resumer's own lexical frame.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -110,13 +114,14 @@ fn repeated_effects_use_constant_handler_depth() {
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 2,
+            max_frames: 2,
             fuel: 1_000_000,
             ..Limits::default()
         },
     );
     assert_eq!(
-        vm.run(&program, root, &[], TraceMask::NONE, None).unwrap(),
+        vm.run_values(&program, root, &[], TraceMask::NONE, None)
+            .unwrap(),
         [Value::I64(42)]
     );
 }
@@ -290,7 +295,7 @@ fn suspension_bindings_preserve_rich_contracts_and_report_only_the_selected_outp
                 &program,
                 root,
                 &[],
-                execution_tape::vm::InvocationOptions::default()
+                execution_tape::vm::TurnOptions::default()
                     .trace(TraceMask::REGISTERS, &mut outputs),
             )
             .unwrap();
@@ -521,13 +526,13 @@ fn an_inner_nonmatching_table_survives_capture_and_matching_tables_are_outside_c
         let mut vm = Vm::new(
             NoHost,
             Limits {
-                max_call_depth: 3,
+                max_frames: 3,
                 ..Limits::default()
             },
         );
         let mut lifecycle = Lifecycle::default();
         assert_eq!(
-            vm.run(&program, root, &[], TraceMask::RUN, Some(&mut lifecycle))
+            vm.run_values(&program, root, &[], TraceMask::RUN, Some(&mut lifecycle))
                 .unwrap(),
             [Value::I64(30)]
         );
@@ -645,7 +650,7 @@ fn handler_protocols_are_checked_statically_when_known_and_before_entry_when_opa
         asm::BuildError,
         control::ControlBoundary,
         verifier::VerifyError,
-        vm::{InvocationOptions, Trap},
+        vm::{Trap, TurnOptions},
     };
     for known in [true, false] {
         let mut builder = ProgramBuilder::new();
@@ -715,7 +720,7 @@ fn handler_protocols_are_checked_statically_when_known_and_before_entry_when_opa
             let instance = vm.instantiate(&program).unwrap();
             let args = [Value::Tag(instance.control_tag(wrong_operation).unwrap())];
             let mut turn = instance
-                .start(&mut vm, root, &args, InvocationOptions::default())
+                .start(&mut vm, root, &args, TurnOptions::default())
                 .unwrap();
             let error = loop {
                 match turn.resume(u64::MAX) {

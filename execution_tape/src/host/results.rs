@@ -153,58 +153,25 @@ fn adopt_delta(
 }
 
 impl HostContext<'_, '_> {
-    /// Constructs a new immutable tuple, moving its fields into staged VM storage.
-    ///
-    /// Borrowed inputs remain unchanged. Handles in fields must belong to this call's heap or
-    /// its earlier staged results. Successful completion adopts only reachable results; failure
-    /// or cancellation discards staging. Guest reentry through a yielded request first promotes
-    /// all staging with unchanged handles; unused promoted nodes live until root commit/rollback.
-    /// One node plus each field and immediate payload bytes are charged immediately against
-    /// the execution's aggregate/payload allowance, including while results remain staged.
-    /// Native allocations before this call
-    /// are outside those limits. A denial allocates no node and can be handled by the host.
-    /// Errors preserve an `AggError` or VM `Trap` as the typed `HostError` source.
+    /// Constructs a tuple through the shared budgeted value context.
     pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, HostError> {
-        self.results.allocate(
-            self.aggregates,
-            self.instance.program().program(),
-            AggType::Tuple {
-                arity: u32::try_from(values.len()).unwrap_or(u32::MAX),
-            },
-            values,
-            self.budget,
-        )
+        self.values().tuple_new(values)
     }
-    /// Constructs a struct using a nominal type from this call's program.
-    /// Field arity and declared storage kinds are checked before allocation; nested contracts
-    /// are checked at normal guest boundaries. Other semantics and budgets match `tuple_new`.
+    /// Constructs a nominal struct through the shared budgeted value context.
     pub fn struct_new(
         &mut self,
         type_id: crate::program::TypeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, HostError> {
-        self.results.allocate(
-            self.aggregates,
-            self.instance.program().program(),
-            AggType::Struct { type_id },
-            values,
-            self.budget,
-        )
+        self.values().struct_new(type_id, values)
     }
-    /// Constructs an array using an element type from this call's program.
-    /// Element storage kinds are checked before allocation; other semantics match `tuple_new`.
+    /// Constructs a nominal array through the shared budgeted value context.
     pub fn array_new(
         &mut self,
         elem_type_id: crate::program::ElemTypeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, HostError> {
-        self.results.allocate(
-            self.aggregates,
-            self.instance.program().program(),
-            AggType::Array { elem_type_id },
-            values,
-            self.budget,
-        )
+        self.values().array_new(elem_type_id, values)
     }
     pub(super) fn resolve(&self, handle: AggHandle) -> (&AggHeap, AggHandle) {
         self.results.resolve(self.aggregates, handle)

@@ -7,7 +7,7 @@
 mod workload;
 
 use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
-use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::trace::TraceSink;
 use execution_tape::value::FuncId;
 use std::sync::Arc;
 
@@ -23,17 +23,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let program = workload::program(calls);
     let (mut vm, args) = workload::fixture(depth, payload);
-    let expected = vm.run(&program, FuncId(0), &args, TraceMask::NONE, None)?;
+    let function = vm.function(&program, FuncId(0))?;
+    let expected = vm
+        .run(
+            function.clone(),
+            &args,
+            execution_tape::vm::TurnOptions::default(),
+        )?
+        .into_returned()
+        .expect("workload has only synchronous host effects");
     let before = vm.host().calls;
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-    let actual = vm.run(
-        &program,
-        FuncId(0),
-        &args,
-        recorder.mask(),
-        Some(&mut recorder),
-    )?;
-    assert_eq!(actual, expected, "capture preserves the live result");
+    let actual = vm
+        .run(
+            function,
+            &args,
+            execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
+        )?
+        .into_returned()
+        .expect("capture does not change the execution boundary");
+    assert_eq!(
+        vm.resolve(&actual)?.values(),
+        vm.resolve(&expected)?.values(),
+        "capture preserves the live result"
+    );
     let record = recorder.finish();
     record.status().map_err(Clone::clone)?;
     assert_eq!(vm.host().calls - before, usize::try_from(calls)?);

@@ -3,6 +3,10 @@
 
 //! Owned guest stack observations through the ordinary interpreter and recorder.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
@@ -90,7 +94,7 @@ fn record(
     } else {
         TraceMask::RUN | TraceMask::VALUES
     };
-    let _ = vm.run(p, FuncId(0), &[Value::I64(3)], mask, Some(&mut recorder));
+    let _ = vm.run_values(p, FuncId(0), &[Value::I64(3)], mask, Some(&mut recorder));
     (recorder.finish(), vm.host().calls)
 }
 
@@ -146,7 +150,7 @@ fn call_depth_denial_does_not_invent_an_entered_callee() {
     let (record, effects) = record(
         &p,
         Limits {
-            max_call_depth: 2,
+            max_frames: 2,
             ..Limits::default()
         },
         RecordLimits::default(),
@@ -173,7 +177,7 @@ fn rejected_entry_and_fuel_exhaustion_have_different_observed_stacks() {
     for (limits, expected) in [
         (
             Limits {
-                max_call_depth: 0,
+                max_frames: 0,
                 ..Limits::default()
             },
             None,

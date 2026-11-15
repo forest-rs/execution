@@ -9,7 +9,6 @@ use execution_tape::asm::{FunctionSig, ProgramBuilder};
 use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
 use execution_tape::host_binding::HostFunctions;
 use execution_tape::program::ValueType;
-use execution_tape::trace::TraceMask;
 use execution_tape::value::Value;
 use execution_tape::vm::Trap;
 use execution_tape::vm::{Limits, Vm};
@@ -72,19 +71,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut first = Vm::new(bindings.with_state(0), Limits::default());
     let mut second = Vm::new(bindings.with_state(100), Limits::default());
     for vm in [&mut first, &mut second] {
-        let result = vm.run(&program, entry, &[Value::I64(5)], TraceMask::NONE, None)?;
+        let result = vm.run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                entry,
+            )
+            .expect("verified entry"),
+            &[Value::I64(5)],
+            execution_tape::vm::TurnOptions::default(),
+        )?;
         println!("outputs={result:?} state={}", vm.host().state());
     }
     assert_eq!(*first.host().state(), 5);
     assert_eq!(*second.host().state(), 105);
     *first.host_mut().state_mut() = i64::MAX;
     let failure = first
-        .run(&program, entry, &[Value::I64(1)], TraceMask::NONE, None)
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                entry,
+            )
+            .expect("verified entry"),
+            &[Value::I64(1)],
+            execution_tape::vm::TurnOptions::default(),
+        )
         .unwrap_err();
-    let Trap::HostCallFailed {
-        error: HostError::Custom(source),
+    let execution_tape::vm::ControlError::Trapped(execution_tape::vm::TrapInfo {
+        trap:
+            Trap::HostCallFailed {
+                error: HostError::Custom(source),
+                ..
+            },
         ..
-    } = &failure.trap
+    }) = &failure
     else {
         return Err(Box::new(failure));
     };

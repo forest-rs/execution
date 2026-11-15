@@ -306,7 +306,7 @@ fn slices_charge_output_bytes_after_index_and_character_validation() {
         };
         exact_work(&p, &[value.clone(), Value::U64(2), Value::U64(4)], 2);
         for (start, end) in [(4, 2), (0, 5), (1, 2)] {
-            let result = vm(0).run(
+            let result = vm(0).run_values(
                 &p,
                 FuncId(0),
                 &[value.clone(), Value::U64(start), Value::U64(end)],
@@ -367,14 +367,14 @@ fn conversions_charge_copy_and_utf8_work_before_it_occurs() {
             let bad = [Value::Bytes(vec![255; 4])];
             assert!(matches!(
                 vm(7)
-                    .run(&p, FuncId(0), &bad, TraceMask::NONE, None)
+                    .run_values(&p, FuncId(0), &bad, TraceMask::NONE, None)
                     .unwrap_err()
                     .trap,
                 Trap::PayloadWorkExceeded { requested: 8, .. }
             ));
             assert!(matches!(
                 vm(8)
-                    .run(&p, FuncId(0), &bad, TraceMask::NONE, None)
+                    .run_values(&p, FuncId(0), &bad, TraceMask::NONE, None)
                     .unwrap_err()
                     .trap,
                 Trap::InvalidUtf8
@@ -551,7 +551,8 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
         },
     );
     assert_eq!(
-        vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap(),
+        vm.run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap(),
         [Value::U64(4)]
     );
 }
@@ -640,7 +641,7 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         .unwrap();
     vm.host_mut().0 = root;
     assert_eq!(
-        vm.run(
+        vm.run_values(
             &projected(false),
             FuncId(0),
             &[Value::Agg(root)],
@@ -651,7 +652,7 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         [Value::U64(4)]
     );
     assert!(matches!(
-        vm.run(
+        vm.run_values(
             &projected(true),
             FuncId(0),
             &[Value::Agg(root)],
@@ -682,7 +683,7 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         },
     );
     assert_eq!(
-        vm.run(&returned, FuncId(0), &[], TraceMask::NONE, None)
+        vm.run_values(&returned, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap(),
         [Value::Agg(root)]
     );

@@ -310,16 +310,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         None
     };
     let mut vm = Vm::new(NoHost, Limits::default());
-    let result = vm.run(
-        &prepared,
-        execution_tape::value::FuncId(0),
-        &[],
-        recorder.as_ref().map_or(TraceMask::NONE, TraceSink::mask),
-        recorder
-            .as_mut()
-            .map(|recorder| recorder as &mut dyn TraceSink),
-    )?;
-    eprintln!("Result: {result:?}");
+    let function = vm.function(&prepared, execution_tape::value::FuncId(0))?;
+    let mask = recorder.as_ref().map_or(TraceMask::NONE, TraceSink::mask);
+    let mut options = execution_tape::vm::TurnOptions::default();
+    if let Some(recorder) = &mut recorder {
+        options = options.trace(mask, recorder);
+    }
+    let roots = vm
+        .run(function, [], options)?
+        .into_returned()
+        .expect("source program returns directly");
+    eprintln!("Result: {:?}", vm.resolve(&roots)?.values());
     if let Some(prefix) = write {
         let tape = prefix.with_extension("tape");
         let sidecar = prefix.with_extension("sources");
@@ -389,17 +390,15 @@ mod tests {
         let (program, sources) = compile("example.expr".into(), EXAMPLE.into()).unwrap();
         let prepared = verify_program_owned(program.clone(), &Default::default()).unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
-        assert_eq!(
-            vm.run(
-                &prepared,
-                execution_tape::value::FuncId(0),
-                &[],
-                TraceMask::NONE,
-                None
-            )
-            .unwrap(),
-            vec![Value::I64(24)]
-        );
+        let function = vm
+            .function(&prepared, execution_tape::value::FuncId(0))
+            .unwrap();
+        let roots = vm
+            .run(function, [], execution_tape::vm::TurnOptions::default())
+            .unwrap()
+            .into_returned()
+            .unwrap();
+        assert_eq!(vm.resolve(&roots).unwrap().values(), &[Value::I64(24)]);
         let bound = sources.bind(&program).unwrap();
         let code = execution_tape::disasm::disassemble_function(
             &program,

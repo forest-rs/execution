@@ -22,6 +22,12 @@ pub(super) struct Instances {
 }
 
 impl Instances {
+    pub(super) fn owns_control(&self, id: &crate::control::ContinuationId) -> bool {
+        self.store
+            .as_ref()
+            .is_some_and(|owner| id.belongs_to(owner))
+    }
+
     fn insert(
         &mut self,
         program: &VerifiedProgram,
@@ -210,7 +216,7 @@ impl Instance {
         vm: &'a mut Vm<H>,
         entry: FuncId,
         args: &'a [Value],
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
     ) -> Result<Invocation<'a, H>, InstanceError> {
         self.start_prepaid(vm, entry, args, options, DataWork::default())
     }
@@ -220,7 +226,7 @@ impl Instance {
         vm: &'a mut Vm<H>,
         entry: FuncId,
         args: &'a [Value],
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
         work: DataWork,
     ) -> Result<Invocation<'a, H>, InstanceError> {
         if !vm.owns_instance(self) {
@@ -284,32 +290,40 @@ mod tests {
     }
 
     #[test]
-    fn scalar_execution_does_not_allocate_instance_metadata() {
+    fn repeated_scalar_runs_reuse_the_default_instance() {
         let program = scalar();
         let mut vm = Vm::new(NoHost, Limits::default());
-        assert_eq!(
-            vm.run(
-                &program,
-                FuncId(0),
-                &[Value::I64(42)],
-                TraceMask::NONE,
-                None
-            )
-            .unwrap(),
-            [Value::I64(42)]
-        );
-        {
-            let args = [Value::I64(42)];
-            let mut call = vm
-                .start(&program, FuncId(0), &args, InvocationOptions::default())
-                .unwrap();
-            assert!(call.instance().is_none());
-            call.resume(1).unwrap();
-            assert!(call.instance().is_none());
+        for _ in 0..100 {
+            assert_eq!(
+                vm.run_values(
+                    &program,
+                    FuncId(0),
+                    &[Value::I64(42)],
+                    TraceMask::NONE,
+                    None
+                )
+                .unwrap(),
+                [Value::I64(42)]
+            );
+            assert_eq!(
+                vm.roots.live(),
+                0,
+                "test result registration drops after resolution"
+            );
+            assert_eq!(
+                vm.instances.slots.len(),
+                1,
+                "repeated entry reuses its exact namespace"
+            );
         }
-        assert!(vm.instances.store.is_none());
-        assert_eq!(vm.instances.slots.capacity(), 0);
-        assert!(vm.instances.last_default.is_none());
+        assert!(
+            vm.instances
+                .last_default
+                .as_ref()
+                .unwrap()
+                .program()
+                .shares_definition_with(&program)
+        );
     }
 
     #[test]

@@ -147,6 +147,7 @@ impl Waiting {
 #[derive(Default)]
 pub(super) struct ExecutionControl {
     pub(super) remaining: u64,
+    host_requests: u64,
     pub(super) yield_host_calls: bool,
     pub(super) waiting: Waiting,
     pub(super) callback_results: Option<Vec<Value>>,
@@ -156,6 +157,10 @@ pub(super) struct ExecutionControl {
     pub(super) segment: u64,
 }
 impl ExecutionControl {
+    pub(super) fn caller(ctx: &Registers, index: usize) -> Option<TraceLocation> {
+        ctx.frames[index].activation.caller
+    }
+
     pub(super) fn execution_owner(&self) -> &Arc<()> {
         self.execution.as_ref().expect("execution identity")
     }
@@ -168,6 +173,7 @@ impl ExecutionControl {
         let owner = Arc::new(());
         Self {
             remaining: 0,
+            host_requests: 0,
             yield_host_calls,
             waiting: Waiting::Ready,
             callback_results: None,
@@ -195,6 +201,10 @@ impl ExecutionControl {
         }
     }
 
+    pub(super) fn in_store(&mut self, instance: &Instance) {
+        self.execution = Some(Arc::clone(&instance.0.store));
+    }
+
     pub(super) fn inherit_execution(&mut self, parent: &Self) {
         self.execution = parent.execution.clone();
     }
@@ -203,6 +213,20 @@ impl ExecutionControl {
         self.execution
             .as_ref()
             .is_some_and(|owner| Arc::ptr_eq(owner, &id.execution))
+    }
+
+    pub(super) fn next_host_request(&mut self) -> Result<u64, Trap> {
+        let ordinal = self.host_requests;
+        self.host_requests = ordinal
+            .checked_add(1)
+            .ok_or(Trap::ControlIdentityExhausted)?;
+        Ok(ordinal)
+    }
+    pub(super) fn host_request_id(&self, pending: host_call::PendingHost) -> HostRequestId {
+        HostRequestId {
+            owner: Arc::clone(self.owner()),
+            ordinal: pending.request,
+        }
     }
 
     pub(super) fn paused_location(&self, ctx: &Registers, index: usize) -> TraceLocation {
@@ -242,12 +266,16 @@ impl ExecutionControl {
             .position(|frame| frame.activation.ordinal == id.ordinal)
             .ok_or(ControlError::ExpiredActivation)
     }
-    pub(super) fn enter(&mut self, ctx: &mut Registers, caller: TraceLocation) {
-        self.last += 1;
+    pub(super) fn enter(&mut self, ctx: &mut Registers, caller: TraceLocation) -> Result<(), Trap> {
+        self.last = self
+            .last
+            .checked_add(1)
+            .ok_or(Trap::ControlIdentityExhausted)?;
         ctx.frames.last_mut().expect("entered frame").activation = Activation {
             ordinal: self.last,
             caller: Some(caller),
         };
+        Ok(())
     }
     pub(super) fn enable_identity(&mut self) {
         if self.owner.is_none() {
@@ -312,6 +340,19 @@ pub struct RegisterValue<'a> {
 /// Where a conservatively retained host-object reference occurs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObjectRootOrigin {
+    /// Immediate object in a live registered group. Slot numbers are scoped to this view;
+    /// they are not durable registration identities.
+    RetainedValue {
+        /// Registry slot in this view.
+        group: usize,
+        /// Position within that group's values.
+        index: usize,
+    },
+    /// Immediate object in the current native effect request.
+    EffectRequest {
+        /// Request argument position.
+        index: usize,
+    },
     /// An initialized paused register.
     Register {
         /// Activation containing the register.
@@ -356,7 +397,7 @@ pub struct ObjectRoot {
 /// Query its exact frames before diagnosing retained values or collecting host objects.
 pub struct SavedContinuation<'a> {
     id: crate::control::ContinuationId,
-    stacks: Vec<InvocationInspection<'a>>,
+    stacks: Vec<StackInspection<'a>>,
 }
 impl SavedContinuation<'_> {
     /// One-use authority identity; this inspection view cannot resume it.
@@ -418,7 +459,7 @@ struct FunctionInspection<'a> {
 /// or mutation of the host. Reuse it for multiple queries at one suspension; discard it before
 /// resuming. Terminal invocations expose no live frames, but retained heaps and outputs can
 /// still contribute object roots. Source connections use each frame's exact `location`.
-pub struct InvocationInspection<'a> {
+struct StackInspection<'a> {
     program: &'a VerifiedProgram,
     ctx: &'a Registers,
     args: &'a [Value],
@@ -431,9 +472,9 @@ pub struct InvocationInspection<'a> {
     saved: Vec<SavedContinuation<'a>>,
     parent: Option<(ActivationId, TraceLocation)>,
 }
-impl fmt::Debug for InvocationInspection<'_> {
+impl fmt::Debug for StackInspection<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InvocationInspection")
+        f.debug_struct("StackInspection")
             .field("active", &self.active)
             .field("indexed_functions", &self.functions.len())
             .finish_non_exhaustive()
@@ -441,47 +482,183 @@ impl fmt::Debug for InvocationInspection<'_> {
 }
 
 impl<H: Host> Invocation<'_, H> {
-    /// Borrows paused state. Expensive register facts are built only for queried functions.
-    #[must_use]
-    pub fn inspect(&self) -> InvocationInspection<'_> {
-        let mut view = inspection(&self.continuation, self.vm.memory.aggs());
-        view.ancestors = self
-            .parents
-            .iter()
-            .rev()
-            .map(|parent| inspection(parent, self.vm.memory.aggs()))
-            .collect();
-        view.saved = saved_inspections(&self.resumptions, self.vm.memory.aggs());
-        view
+    /// Inspects active and saved computations without materializing verifier indexes eagerly.
+    pub fn inspect(&self) -> ExecutionInspection<'_> {
+        execution_inspection(
+            Some((&self.continuation, &self.parents)),
+            &self.resumptions,
+            self.vm.memory.aggs(),
+            &self.vm.roots,
+            None,
+        )
     }
-
-    /// Mutates host state between quanta. Preserve the validity of referenced object handles.
-    /// For collection, enumerate `inspect().visit_objects(...)` first and add the language's
-    /// external roots; this API does not choose a garbage-collection or object-lifetime policy.
+    /// Mutates host state between quanta; preserve external object validity.
     pub fn host_mut(&mut self) -> &mut H {
         &mut self.vm.host
     }
 }
-
 impl<H: Host> invocation::Running<'_, '_, H> {
-    pub(super) fn inspect(&self) -> InvocationInspection<'_> {
-        let mut view = inspection(self.continuation, self.vm.memory.aggs());
-        view.ancestors = self
-            .parents
+    pub(super) fn inspect(&self) -> ExecutionInspection<'_> {
+        execution_inspection(
+            Some((self.continuation, self.parents)),
+            self.resumptions,
+            self.vm.memory.aggs(),
+            &self.vm.roots,
+            None,
+        )
+    }
+}
+impl<H: Host> Vm<H> {
+    /// Inspects paused and saved computations, registered values and conservative host roots.
+    /// Analysis is built only for registers actually queried. A leaked execution lease denies
+    /// inspection instead of fabricating empty state.
+    pub fn inspect(&self) -> Result<ExecutionInspection<'_>, ControlError> {
+        let domain = self.domain.as_ref().ok_or(ControlError::StoreLeased)?;
+        Ok(execution_inspection(
+            domain
+                .paused
+                .as_ref()
+                .map(|chain| (&chain.continuation, chain.parents.as_slice())),
+            &domain.saved,
+            self.memory.aggs(),
+            &self.roots,
+            None,
+        ))
+    }
+}
+
+/// One borrowed inspection vocabulary for active work, saved computations and VM value roots.
+///
+/// Queries allocate only requested frame metadata and verifier indexes. A native effect may
+/// have no active frames while retaining inspectable saved stacks. Holding the view prevents
+/// execution and moving collection. Object roots are conservative, not minimal liveness.
+pub struct ExecutionInspection<'a> {
+    active: Option<StackInspection<'a>>,
+    saved: Vec<SavedContinuation<'a>>,
+    heap: &'a AggHeap,
+    retained: Vec<(usize, &'a [Value])>,
+    effect: Option<&'a [Value]>,
+}
+impl fmt::Debug for ExecutionInspection<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionInspection")
+            .field("active", &self.active)
+            .field("saved", &self.saved)
+            .field("retained_groups", &self.retained.len())
+            .finish()
+    }
+}
+impl<'a> ExecutionInspection<'a> {
+    /// Current attached frames, innermost first. Native effects can have none.
+    pub fn frames(&self) -> impl ExactSizeIterator<Item = PausedFrame> + DoubleEndedIterator + '_ {
+        self.active
+            .as_ref()
+            .map_or_else(Vec::new, |active| active.frames().collect())
+            .into_iter()
+    }
+    /// Saved computations outside the attached chain, each with its exact capability identity.
+    pub fn saved_continuations(&self) -> impl ExactSizeIterator<Item = &SavedContinuation<'a>> {
+        self.saved.iter()
+    }
+    /// Reads one definitely initialized source register in an active or saved activation.
+    /// Foreign, retired, missing or unavailable registers return the same explicit absence
+    /// information as ordinary paused inspection; no bank defaults are exposed.
+    pub fn register(
+        &mut self,
+        activation: &ActivationId,
+        register: u32,
+    ) -> Option<RegisterValue<'a>> {
+        self.active
+            .iter_mut()
+            .chain(self.saved.iter_mut().flat_map(|saved| &mut saved.stacks))
+            .find_map(|stack| stack.register(activation, register))
+    }
+    /// Reads declared registers in source order. Verifier facts are lazy and local to this view.
+    pub fn registers(
+        &mut self,
+        activation: &ActivationId,
+    ) -> Option<impl Iterator<Item = RegisterValue<'a>> + '_> {
+        let count = self
+            .frames()
+            .chain(self.saved.iter().flat_map(|saved| saved.frames()))
+            .find(|frame| &frame.activation == activation)?
+            .register_count;
+        let activation = activation.clone();
+        Some((0..count).filter_map(move |register| self.register(&activation, register)))
+    }
+    /// Visits conservative references in live stacks, registered values, a pending effect,
+    /// and aggregate storage. Include the language's globals and other external roots too.
+    /// This does not collect host objects or claim to establish their minimal liveness.
+    pub fn visit_objects(&mut self, mut visit: impl FnMut(ObjectRoot)) {
+        for stack in self
+            .active
+            .iter_mut()
+            .chain(self.saved.iter_mut().flat_map(|saved| &mut saved.stacks))
+        {
+            stack.visit_objects_dyn(&mut visit, false);
+        }
+        for &(group, values) in &self.retained {
+            for (index, value) in values.iter().enumerate() {
+                if let Value::Obj(object) = value {
+                    visit(ObjectRoot {
+                        object: *object,
+                        origin: ObjectRootOrigin::RetainedValue { group, index },
+                    });
+                }
+            }
+        }
+        if let Some(request) = self.effect {
+            for (index, value) in request.iter().enumerate() {
+                if let Value::Obj(object) = value {
+                    visit(ObjectRoot {
+                        object: *object,
+                        origin: ObjectRootOrigin::EffectRequest { index },
+                    });
+                }
+            }
+        }
+        for (aggregate, index, object) in self.heap.object_references() {
+            visit(ObjectRoot {
+                object,
+                origin: ObjectRootOrigin::Aggregate { aggregate, index },
+            });
+        }
+    }
+}
+
+pub(super) fn execution_inspection<'a>(
+    active: Option<(
+        &'a continuation::Continuation<'_>,
+        &'a [continuation::Continuation<'_>],
+    )>,
+    saved: &'a crate::control::arena::Resumptions<invocation::delimited::Saved>,
+    heap: &'a AggHeap,
+    roots: &'a roots::Roots,
+    effect: Option<&'a [Value]>,
+) -> ExecutionInspection<'a> {
+    let active = active.map(|(leaf, parents)| {
+        let mut view = inspection(leaf, heap);
+        view.ancestors = parents
             .iter()
             .rev()
-            .map(|parent| inspection(parent, self.vm.memory.aggs()))
+            .map(|parent| inspection(parent, heap))
             .collect();
-        view.saved = saved_inspections(self.resumptions, self.vm.memory.aggs());
         view
+    });
+    ExecutionInspection {
+        active,
+        saved: saved_inspections(saved, heap),
+        heap,
+        retained: roots.values().collect(),
+        effect,
     }
 }
 
 fn inspection<'a>(
     continuation: &'a continuation::Continuation<'_>,
     aggregates: &'a AggHeap,
-) -> InvocationInspection<'a> {
-    InvocationInspection {
+) -> StackInspection<'a> {
+    StackInspection {
         program: &continuation.program,
         ctx: &continuation.ctx,
         args: &continuation.args,
@@ -500,12 +677,7 @@ fn inspection<'a>(
     }
 }
 
-impl<'a> InvocationInspection<'a> {
-    /// Computations retained outside the active call chain. These still contribute object roots.
-    pub fn saved_continuations(&self) -> impl ExactSizeIterator<Item = &SavedContinuation<'a>> {
-        self.saved.iter()
-    }
-
+impl<'a> StackInspection<'a> {
     fn frame_at(&self, index: usize) -> PausedFrame {
         let frame = &self.ctx.frames[index];
         let activation = frame.activation;
@@ -563,7 +735,7 @@ impl<'a> InvocationInspection<'a> {
 
     /// Visits active and suspended parent frames, innermost first. Frame metadata is materialized
     /// on demand; this query constructs no verifier or register indexes.
-    pub fn frames(&self) -> impl ExactSizeIterator<Item = PausedFrame> + DoubleEndedIterator + '_ {
+    fn frames(&self) -> impl ExactSizeIterator<Item = PausedFrame> + DoubleEndedIterator + '_ {
         let mut frames = Vec::new();
         self.append_frames(&mut frames);
         frames.into_iter()
@@ -585,7 +757,7 @@ impl<'a> InvocationInspection<'a> {
     /// Queries one register. Unknown, retired or foreign activations and absent registers return
     /// `None`. A known declaration without definite initialization returns a value with `None`.
     /// Waiting callers use facts before their pending call, never hypothetical returned values.
-    pub fn register(&mut self, id: &ActivationId, register: u32) -> Option<RegisterValue<'a>> {
+    fn register(&mut self, id: &ActivationId, register: u32) -> Option<RegisterValue<'a>> {
         let Some(index) = self.index(id) else {
             return self
                 .ancestors
@@ -642,7 +814,7 @@ impl<'a> InvocationInspection<'a> {
 
     /// Iterates declarations in source-register order, including explicit unavailable values.
     /// Building/retaining only this selected function's facts is an on-demand inspection cost.
-    pub fn registers(
+    fn registers(
         &mut self,
         id: &ActivationId,
     ) -> Option<impl Iterator<Item = RegisterValue<'a>> + '_> {
@@ -653,19 +825,6 @@ impl<'a> InvocationInspection<'a> {
             .register_count;
         let id = id.clone();
         Some((0..count).filter_map(move |register| self.register(&id, register)))
-    }
-
-    /// Enumerates conservative host-object references without materializing a root vector.
-    ///
-    /// Includes initialized active registers, borrowed arguments, pending callback results,
-    /// committed outputs and every
-    /// VM aggregate field (including retained results and uncommitted temporaries). Duplicates
-    /// and no-longer-needed values may occur; this is not a minimal liveness set. No uninitialized
-    /// register slots are read. The collector must additionally trace its own heap, globals,
-    /// snapshots and other external roots. Object identity, relocation and reclamation belong to
-    /// that collector. This method performs no collection or host-state mutation.
-    pub fn visit_objects(&mut self, mut visit: impl FnMut(ObjectRoot)) {
-        self.visit_objects_dyn(&mut visit, true);
     }
 
     fn visit_objects_dyn(&mut self, visit: &mut dyn FnMut(ObjectRoot), shared_heap: bool) {

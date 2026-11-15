@@ -8,7 +8,7 @@ use crate::{
     instance::{Instance, InstanceError},
     recording::execution::{self as evidence, Action as TransferAction, RecordedActivation},
     trace::{ControlEvent, RegisterEvent, RegisterPhase},
-    vm::{InvocationOptions, RunStatus},
+    vm::{RunStatus, TurnOptions},
 };
 use alloc::{boxed::Box, vec};
 
@@ -75,7 +75,7 @@ fn endpoint(id: &crate::vm::ActivationId) -> RecordedActivation {
 }
 fn limits_match(a: &crate::vm::Limits, b: &crate::vm::Limits) -> bool {
     a.fuel == b.fuel
-        && a.max_call_depth == b.max_call_depth
+        && a.max_frames == b.max_frames
         && a.max_continuations == b.max_continuations
         && a.max_host_calls == b.max_host_calls
         && a.max_contract_work == b.max_contract_work
@@ -874,7 +874,7 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
         | TraceMask::VALUES
         | TraceMask::CALL
         | TraceMask::REGISTERS;
-    let options = InvocationOptions::default()
+    let options = TurnOptions::default()
         .yield_host_calls()
         .trace_owned(mask, Observer(Rc::clone(&context)));
     let result = match root_instance.start_prepaid(&mut vm, entry.func, &args, options, entry.work)
@@ -892,7 +892,10 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
                 Ok(RunStatus::Complete) => {
                     break Ok(invocation.take_outputs().expect("actual root results"));
                 }
-                Ok(RunStatus::AwaitingHost) => {
+                Ok(RunStatus::AwaitingEffect) => {
+                    unreachable!("legacy invocations trap unhandled effects")
+                }
+                Ok(RunStatus::AwaitingHost(_)) => {
                     let mut request = invocation
                         .pending_host_call()
                         .expect("active replay boundary");

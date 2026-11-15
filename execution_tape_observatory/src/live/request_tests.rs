@@ -9,7 +9,7 @@ use execution_tape::{
     source::{SourceDocument, SourceId, SourceLimits, SourceMapping},
     value::FuncId,
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, Vm},
+    vm::{Limits, TurnOptions, Vm},
 };
 use ratatui::crossterm::event::KeyModifiers;
 
@@ -102,15 +102,10 @@ fn awaiting_host_is_explicit_stepping_waits_and_only_explicit_host_dispatch_has_
         .unwrap();
     let args = [Value::Agg(root)];
     let call = vm
-        .start(
-            &p,
-            entry,
-            &args,
-            InvocationOptions::default().yield_host_calls(),
-        )
+        .start(&p, entry, &args, TurnOptions::default().yield_host_calls())
         .unwrap();
     let mut view = LiveExplorer::new(call).sources(&sources).unwrap();
-    assert_eq!(view.step().unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(view.step().unwrap(), RunStatus::AwaitingHost(_)));
     let fuel = view.invocation.remaining_fuel();
     let text = view.render_text(140, 42).unwrap();
     assert!(text.contains("AWAITING HOST"));
@@ -151,12 +146,7 @@ fn leaving_presentation_preserves_a_pending_invocation_for_external_completion()
     let root = vm.aggregate_builder().tuple_new(vec![]).unwrap();
     let args = [Value::Agg(root)];
     let call = vm
-        .start(
-            &p,
-            entry,
-            &args,
-            InvocationOptions::default().yield_host_calls(),
-        )
+        .start(&p, entry, &args, TurnOptions::default().yield_host_calls())
         .unwrap();
     let mut view = LiveExplorer::new(call);
     view.step().unwrap();
@@ -186,17 +176,20 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
             &caller,
             caller_entry,
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(parent.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        parent.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let request = parent.pending_host_call().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
     vm.aggregate_builder()
         .tuple_new(vec![Value::I64(999)])
         .unwrap();
     let call = vm
-        .start(&callee, callee_entry, &[], InvocationOptions::default())
+        .start(&callee, callee_entry, &[], TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(call)
         .sources(&callee_sources)
@@ -286,14 +279,14 @@ fn stale_parent_sources_are_rejected_independently_of_the_child_source_map() {
             &caller,
             entry,
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     parent.resume(1).unwrap();
     let request = parent.pending_host_call().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let call = vm
-        .start(&callee, target, &[], InvocationOptions::default())
+        .start(&callee, target, &[], TurnOptions::default())
         .unwrap();
     assert!(matches!(
         LiveExplorer::new(call).requested_by(&request, Some(&wrong_sources)),
@@ -311,7 +304,7 @@ fn a_stored_owned_invocation_can_use_local_sources_and_return_to_its_scheduler()
         .start_owned(
             Vm::new(Counter::default(), Limits::default()),
             vec![],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     let mut stored: Option<Invocation<'static, Counter>> = Some(call);

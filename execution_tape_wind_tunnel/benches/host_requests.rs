@@ -8,9 +8,8 @@ use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::ValueType,
-    trace::TraceMask,
     value::{FuncId, Value},
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{
     future::Future,
@@ -90,13 +89,27 @@ fn host_requests(c: &mut Criterion) {
                 b.iter(|| {
                     if matches!(mode, Mode::Ordinary) {
                         let out = vm
-                            .run(&program, FuncId(0), &[], TraceMask::NONE, None)
+                            .run(
+                                execution_tape::callable::Callable::function(
+                                    std::sync::Arc::new(
+                                        execution_tape::verifier::VerifiedProgram::clone(&program),
+                                    ),
+                                    FuncId(0),
+                                )
+                                .expect("verified entry"),
+                                &[],
+                                execution_tape::vm::TurnOptions::default(),
+                            )
                             .unwrap();
-                        assert_eq!(out, [Value::I64((100 * bytes) as i64)]);
-                        black_box(out);
+                        let out = out.into_returned().unwrap();
+                        assert_eq!(
+                            vm.resolve(&out).unwrap().values(),
+                            &[Value::I64((100 * bytes) as i64)]
+                        );
+                        let _ = black_box(out);
                         return;
                     }
-                    let mut options = InvocationOptions::default();
+                    let mut options = TurnOptions::default();
                     if !matches!(mode, Mode::Scheduled) {
                         options = options.yield_host_calls();
                     }
@@ -104,8 +117,11 @@ fn host_requests(c: &mut Criterion) {
                     loop {
                         match run.resume(u64::MAX).unwrap() {
                             RunStatus::Suspended => unreachable!("unlimited quantum"),
+                            RunStatus::AwaitingEffect => {
+                                panic!("fixture has no escaping native effect")
+                            }
                             RunStatus::Complete => break,
-                            RunStatus::AwaitingHost => {
+                            RunStatus::AwaitingHost(_) => {
                                 let request = run.pending_host_call().unwrap();
                                 match mode {
                                     Mode::Dispatch => request.dispatch().unwrap(),
@@ -190,14 +206,31 @@ fn host_aggregate_results(c: &mut Criterion) {
         let mut vm = Vm::new(Rich { bytes }, Limits::default());
         group.bench_with_input(BenchmarkId::from_parameter(bytes), &bytes, |b, _| {
             b.iter(|| {
-                let output = vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap();
-                assert_eq!(output, [Value::U64(2)], "rich result consumed by guest");
+                let output = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                &program,
+                            )),
+                            entry,
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
+                let output = output.into_returned().unwrap();
+                assert_eq!(
+                    vm.resolve(&output).unwrap().values(),
+                    &[Value::U64(2)],
+                    "rich result consumed by guest"
+                );
                 assert_eq!(
                     vm.aggregates().len_u32(),
                     0,
                     "temporary result retired per sample"
                 );
-                black_box(output);
+                let _ = black_box(output);
             });
         });
     }

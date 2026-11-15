@@ -3,6 +3,10 @@
 
 //! Decimal range, representation, codec, and ABI boundaries through the public API.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::codec::{self, DecodedOperand, Operand};
 use execution_tape::disasm::ConstValue;
@@ -55,7 +59,7 @@ fn function(
 }
 
 fn run(program: &VerifiedProgram, args: &[Value]) -> Result<Vec<Value>, TrapInfo> {
-    Vm::new(NoHost, Limits::default()).run(program, FuncId(0), args, TraceMask::NONE, None)
+    Vm::new(NoHost, Limits::default()).run_values(program, FuncId(0), args, TraceMask::NONE, None)
 }
 
 #[test]

@@ -62,7 +62,7 @@ mod tests {
         program::ValueType,
         trace::TraceMask,
         value::{FuncId, Value},
-        vm::{InvocationOptions, Limits, RunStatus, Vm},
+        vm::{Limits, RunStatus, TurnOptions, Vm},
     };
     use alloc::{vec, vec::Vec};
 
@@ -114,11 +114,14 @@ mod tests {
                 &program,
                 FuncId(0),
                 &[],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         assert_eq!(invocation.work(), ExecutionWork::default());
-        assert_eq!(invocation.resume(10).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            invocation.resume(10).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         assert_eq!(invocation.work().host_calls, 1);
         let before = invocation.work();
         let mut request = invocation.pending_host_call().unwrap();
@@ -152,7 +155,7 @@ mod tests {
         assert_eq!(invocation.work(), work);
         drop(invocation);
         // The ordinary unobserved path remains usable without a work observer.
-        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+        vm.run_values(&program, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap();
     }
 
@@ -171,7 +174,7 @@ mod tests {
                 &program,
                 FuncId(0),
                 &[],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         invocation.resume(1).unwrap();

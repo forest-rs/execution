@@ -128,6 +128,48 @@ impl Scopes {
         self.active.push(index);
         Some(index)
     }
+    pub(super) fn import(
+        &mut self,
+        id: Option<&ActivationId>,
+        run: Option<Scope>,
+        scopes: Vec<Scope>,
+        parked: bool,
+    ) {
+        if !self.consistent || (run.is_none() && scopes.is_empty()) {
+            return;
+        }
+        if self.find(id).is_some() {
+            self.fail();
+            return;
+        }
+        let mut stack = Stack {
+            id: id.cloned(),
+            attached: false,
+            run,
+            scopes,
+        };
+        if !parked {
+            stack.attach();
+        }
+        let index = self
+            .stacks
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.stacks.len());
+        if index == self.stacks.len() {
+            self.stacks.push(Some(stack));
+        } else {
+            self.stacks[index] = Some(stack);
+        }
+        if !parked {
+            self.active.push(index);
+        }
+    }
+    pub(super) fn release(&mut self, id: Option<&ActivationId>) {
+        if let Some(index) = self.find(id) {
+            self.end_index(index);
+        }
+    }
     pub(super) fn start_run(&mut self, id: Option<&ActivationId>, mut scope: Scope) {
         if let Some(index) = self.ensure(id, true) {
             if self.stacks[index]

@@ -3,6 +3,10 @@
 
 //! A host can build rich results without mutating borrowed inputs or exporting foreign handles.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     callable::Callable,
@@ -11,7 +15,7 @@ use execution_tape::{
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{TraceMask, TraceSink},
     value::{AggHandle, Value},
-    vm::{DataWork, InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{DataWork, Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -165,7 +169,7 @@ fn synchronous_and_yielded_hosts_build_shared_structures_and_replay_identically(
             RecordLimits::default(),
         )));
         let mask = capture.mask();
-        let options = InvocationOptions::default().trace_owned(mask, capture.clone());
+        let options = TurnOptions::default().trace_owned(mask, capture.clone());
         let options = if yielded {
             options.yield_host_calls()
         } else {
@@ -175,7 +179,10 @@ fn synchronous_and_yielded_hosts_build_shared_structures_and_replay_identically(
             .start_owned(vm, vec![Value::Agg(input)], options)
             .unwrap();
         if yielded {
-            assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+            assert!(matches!(
+                run.resume(u64::MAX).unwrap(),
+                RunStatus::AwaitingHost(_)
+            ));
             run.pending_host_call().unwrap().dispatch().unwrap();
         }
         assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
@@ -220,7 +227,7 @@ fn pending_views_share_staging_and_retention_copies_only_the_reachable_graph() {
         .start_owned(
             vm,
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(u64::MAX).unwrap();
@@ -248,7 +255,7 @@ fn pending_views_share_staging_and_retention_copies_only_the_reachable_graph() {
             payload: 1032
         }
     );
-    assert_eq!(run.resume(0).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(run.resume(0).unwrap(), RunStatus::AwaitingHost(_)));
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.context().tuple_len(staged), Ok(2));
     request.complete(&mut [Value::Agg(staged)], Ok(0)).unwrap();
@@ -279,7 +286,7 @@ fn host_failure_discards_staging_but_replay_preserves_spent_work_and_original_er
         .start(
             &mut vm,
             vec![Value::Agg(input)],
-            InvocationOptions::default().trace_owned(mask, capture.clone()),
+            TurnOptions::default().trace_owned(mask, capture.clone()),
         )
         .unwrap();
     assert!(matches!(
@@ -333,7 +340,7 @@ fn denied_construction_can_fall_back_without_allocating_or_spending_the_denied_d
             .start_owned(
                 vm,
                 vec![Value::Agg(input)],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(mask, capture.clone()),
             )
@@ -380,7 +387,7 @@ fn construction_rejects_invalid_nominal_shapes_and_dangling_children_before_muta
         .start(
             &mut vm,
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(u64::MAX).unwrap();
@@ -415,7 +422,7 @@ fn cancelling_staged_results_preserves_only_explicitly_retained_roots() {
             .start(
                 &mut vm,
                 vec![Value::Agg(input)],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(u64::MAX).unwrap();
@@ -434,7 +441,7 @@ fn cancelling_staged_results_preserves_only_explicitly_retained_roots() {
         Ok(Value::Bytes(vec![0; 1024]))
     );
     assert_eq!(
-        vm.run(
+        vm.run_values(
             target.program(),
             target.function_id(),
             &[Value::Agg(input)],
@@ -467,7 +474,7 @@ fn staged_work_uses_the_guest_budget_and_replay_does_not_replenish_it() {
         .start(
             &mut vm,
             vec![Value::Agg(input)],
-            InvocationOptions::default().trace_owned(mask, capture.clone()),
+            TurnOptions::default().trace_owned(mask, capture.clone()),
         )
         .unwrap();
     assert!(matches!(
@@ -505,7 +512,7 @@ fn bad_return_validation_keeps_raw_evidence_and_discards_unreturned_staging() {
             .start(
                 &mut vm,
                 vec![Value::Agg(input)],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(mask, capture.clone()),
             )
@@ -555,7 +562,7 @@ fn abandoning_an_async_producer_retires_its_staging_and_never_redispatches() {
         .start(
             &mut vm,
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(u64::MAX).unwrap();
@@ -606,7 +613,7 @@ fn guest_created_values_between_host_results_keep_their_identity_during_replay()
     let mut recorder = Recorder::new(target.program().clone(), RecordLimits::default());
     let mask = recorder.mask();
     let result = vm
-        .run(
+        .run_values(
             target.program(),
             target.function_id(),
             &[Value::Agg(input)],
@@ -652,7 +659,7 @@ fn retiring_an_owned_invocation_moves_rich_payloads_into_its_snapshot() {
         .start_owned(
             vm,
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(u64::MAX).unwrap();
@@ -690,11 +697,7 @@ fn consuming_a_borrowed_invocation_preserves_its_vms_existing_raw_handles() {
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let mut run = target
-        .start(
-            &mut vm,
-            vec![Value::Agg(input)],
-            InvocationOptions::default(),
-        )
+        .start(&mut vm, vec![Value::Agg(input)], TurnOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     let roots = run.result().unwrap().unwrap().to_vec();
@@ -710,7 +713,7 @@ fn nominal_result_code_owners_survive_dropped_lookup_handles_and_vm_retirement()
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let mut run = target
-        .start_owned(vm, vec![Value::Agg(input)], InvocationOptions::default())
+        .start_owned(vm, vec![Value::Agg(input)], TurnOptions::default())
         .unwrap();
     drop(target);
     run.resume(u64::MAX).unwrap();

@@ -3,6 +3,10 @@
 
 //! Producer-declared register kinds through the public assembly, codec and preparation APIs.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::format::{DecodeError, Reader};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
@@ -245,7 +249,7 @@ fn block_parameter_kinds_come_from_the_function() {
     .unwrap();
     assert!(verified.function(FuncId(0)).is_some());
     let outputs = Vm::new(NoHost, Limits::default())
-        .run(&verified, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&verified, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert!(matches!(outputs.as_slice(), [Value::I64(7)]));
 }
@@ -320,7 +324,7 @@ fn nested_projection_overwriting_its_source_keeps_the_inner_proof() {
     verify_program_owned_with_lints(decoded, &config).unwrap();
     assert_eq!(
         Vm::new(NoHost, Limits::default())
-            .run(&prepared, FuncId(0), &[], TraceMask::NONE, None)
+            .run_values(&prepared, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(7)]
     );

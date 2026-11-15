@@ -9,6 +9,27 @@ use crate::trace::ControlEvent;
 /// A denied control target or a terminal failure after a control operation was admitted.
 #[derive(Clone, Debug)]
 pub enum ControlError {
+    /// A deliberately leaked turn still owns the VM's control domain. Its namespace cannot
+    /// be safely reset or recovered; create another VM rather than reusing its capabilities.
+    StoreLeased,
+    /// An active computation or unresolved effect prevents starting another root.
+    Busy,
+    /// No host instruction is currently waiting for external completion.
+    NoHostRequest,
+    /// This response identifies a different host admission. The current request is untouched.
+    HostRequestMismatch,
+    /// The VM cannot allocate another unique control identity without reuse.
+    IdentityExhausted,
+    /// The value is not a function or closure.
+    NotCallable {
+        /// Actual storage kind.
+        actual: ValueType,
+    },
+    /// Input materialization failed before a guest activation was installed.
+    Input(Trap),
+    /// Registered input or result ownership was rejected.
+    Retention(RootError),
+
     /// A foreign, consumed or closed continuation was denied without changing this request.
     Resumption(crate::control::ResumeError),
     /// The code instance belongs to another VM store. The pending request remains usable.
@@ -23,6 +44,18 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::StoreLeased => f.write_str("VM control is held by an unreleased execution lease"),
+            Self::Busy => f.write_str("VM already has an active computation or pending effect"),
+            Self::NoHostRequest => f.write_str("no host request is pending"),
+            Self::HostRequestMismatch => {
+                f.write_str("response belongs to a different host admission")
+            }
+            Self::IdentityExhausted => f.write_str("VM control identity space is exhausted"),
+            Self::NotCallable { actual } => {
+                write!(f, "cannot start {actual:?}; expected a function or closure")
+            }
+            Self::Input(error) => write!(f, "guest input admission failed: {error}"),
+            Self::Retention(error) => error.fmt(f),
             Self::Resumption(error) => error.fmt(f),
             Self::ForeignStore => f.write_str("code instance belongs to another VM store"),
             Self::ForeignInvocation => f.write_str("control target belongs to another invocation"),
@@ -35,6 +68,8 @@ impl core::error::Error for ControlError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Trapped(trap) => Some(trap),
+            Self::Input(error) => Some(error),
+            Self::Retention(error) => Some(error),
             Self::Resumption(error) => Some(error),
             _ => None,
         }
@@ -353,7 +388,7 @@ impl<H: Host> Running<'_, '_, H> {
         self.continuation.control.waiting = Waiting::Ready;
         self.continuation.control.callback_results = None;
         if index == 0 {
-            if !self.has_parents() {
+            if !self.has_parents() && !self.defer_publication {
                 self.prepare_root_return(location);
                 self.vm
                     .memory
@@ -362,7 +397,11 @@ impl<H: Host> Running<'_, '_, H> {
             }
             self.continuation.outputs = values;
             self.continuation.returned_at = Some(location);
-            self.finish(Ok(()));
+            if !self.has_parents() && self.defer_publication {
+                self.continuation.pending_return = Some(ReturnSite { location, span });
+            } else {
+                self.finish(Ok(()));
+            }
         } else {
             let caller = self.continuation.ctx.frames.last().expect("target caller");
             let body = self

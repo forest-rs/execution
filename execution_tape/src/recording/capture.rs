@@ -374,6 +374,14 @@ impl core::fmt::Debug for SegmentRecorder {
 }
 
 impl TraceSink for SegmentRecorder {
+    fn stack_context(
+        &mut self,
+        _: crate::trace::TraceContext<'_>,
+        snapshot: crate::trace::StackSnapshot<'_>,
+    ) {
+        self.fail_at(CaptureFault::UnsupportedControl, snapshot.pending);
+    }
+
     fn run_mask(&mut self, context: crate::trace::TraceContext<'_>, mask: TraceMask) {
         let program = context.program();
         if !self.check(program) {

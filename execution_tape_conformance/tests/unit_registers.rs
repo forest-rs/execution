@@ -3,6 +3,10 @@
 
 //! Unit has no runtime payload; verification and source observations still distinguish registers.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use std::sync::Arc;
 
 use execution_tape::{
@@ -137,7 +141,7 @@ fn unit_operations_preserve_source_instructions_registers_and_fuel() {
             },
         );
         let result = vm
-            .run(
+            .run_values(
                 &program,
                 FuncId(0),
                 &[Value::Bool(condition)],
@@ -172,7 +176,7 @@ fn unit_operations_preserve_source_instructions_registers_and_fuel() {
                 ..Limits::default()
             },
         )
-        .run(
+        .run_values(
             &program,
             FuncId(0),
             &[Value::Bool(condition)],
@@ -246,7 +250,7 @@ fn repeated_guest_host_unit_boundaries_validate_kinds_and_replay() {
     for bad_return in [false, true] {
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
         let mut vm = Vm::new(UnitHost { bad_return }, Limits::default());
-        let result = vm.run(
+        let result = vm.run_values(
             &program,
             entry,
             &vec![Value::Unit; 10],
@@ -272,7 +276,7 @@ fn repeated_guest_host_unit_boundaries_validate_kinds_and_replay() {
     let mut bad_args = vec![Value::Unit; 10];
     bad_args[9] = Value::Bool(true);
     let error = Vm::new(UnitHost { bad_return: false }, Limits::default())
-        .run(&program, entry, &bad_args, TraceMask::NONE, None)
+        .run_values(&program, entry, &bad_args, TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(
         error.trap,

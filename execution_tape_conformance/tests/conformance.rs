@@ -3,6 +3,10 @@
 
 #![allow(missing_docs, reason = "integration test crate")]
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::aggregates::AggError;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
@@ -121,7 +125,7 @@ fn entry_arity_errors_allow_context_reuse() {
     .unwrap();
     assert_eq!(outputs, vec![Value::I64(42)]);
     assert!(matches!(
-        vm.run(&program, FuncId(u32::MAX), &[], TraceMask::NONE, None)
+        vm.run_values(&program, FuncId(u32::MAX), &[], TraceMask::NONE, None)
             .unwrap_err()
             .trap,
         Trap::InvalidPc
@@ -233,15 +237,15 @@ fn zero_call_depth_rejects_the_entry_frame() {
     let mut vm = Vm::new(
         TestHost,
         Limits {
-            max_call_depth: 0,
+            max_frames: 0,
             ..Limits::default()
         },
     );
     assert!(matches!(
-        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+        vm.run_values(&program, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err()
             .trap,
-        Trap::CallDepthExceeded
+        Trap::FrameLimitExceeded { .. }
     ));
 }
 
@@ -287,7 +291,7 @@ fn float_to_integer_rejects_rounded_upper_bounds() {
                 .unwrap();
             let program = builder.build_verified().unwrap();
             let mut vm = Vm::new(TestHost, Limits::default());
-            let result = vm.run(&program, FuncId(0), &[], TraceMask::NONE, None);
+            let result = vm.run_values(&program, FuncId(0), &[], TraceMask::NONE, None);
             if out_of_range {
                 assert!(matches!(result.unwrap_err().trap, Trap::IntCastOverflow));
             } else {
@@ -331,7 +335,7 @@ fn verifier_preserves_tuple_shape_across_a_jump() {
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
     assert_eq!(
-        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+        vm.run_values(&program, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(7)]
     );
@@ -378,7 +382,7 @@ fn verifier_meets_tuple_shapes_at_branch_joins() {
             let mut vm = Vm::new(TestHost, Limits::default());
             for condition in [true, false] {
                 assert_eq!(
-                    vm.run(
+                    vm.run_values(
                         &program,
                         FuncId(0),
                         &[Value::Bool(condition)],
@@ -443,7 +447,7 @@ fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
     assert_eq!(
-        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+        vm.run_values(&program, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(7)]
     );
@@ -610,7 +614,7 @@ fn roundtrip_verify_run_pure_ops() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::I64(16)]);
 }
@@ -659,7 +663,7 @@ fn roundtrip_verify_run_cmp_cast_select() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::I64(8)]);
 }
@@ -699,7 +703,7 @@ fn roundtrip_verify_run_u64_ops() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::U64(49)]);
 }
@@ -779,7 +783,7 @@ fn roundtrip_verify_run_f64_ext_ops() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
 
     assert_eq!(out.len(), 9);
@@ -825,7 +829,7 @@ fn roundtrip_verify_run_u64_ops_wrap() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::U64(0)]);
 }
@@ -877,7 +881,7 @@ fn roundtrip_verify_run_u64_bitwise_and_shifts() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::U64(0b0001), Value::U64(0b0000)]);
 }
@@ -917,7 +921,7 @@ fn roundtrip_verify_run_u64_ordering() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(
         out,
@@ -959,7 +963,7 @@ fn roundtrip_verify_run_bool_bitwise() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(
         out,
@@ -1015,7 +1019,7 @@ fn roundtrip_verify_run_i64_bitwise_and_shifts() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::I64(0b1011), Value::I64(0b1000)]);
 }
@@ -1055,7 +1059,7 @@ fn roundtrip_verify_run_i64_ordering() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(
         out,
@@ -1102,7 +1106,7 @@ fn roundtrip_verify_run_decimal_ops() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::Decimal(Decimal::new(550, 2))]);
 }
@@ -1134,7 +1138,7 @@ fn vm_traps_decimal_scale_mismatch() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::DecimalScaleMismatch));
 }
@@ -1166,7 +1170,7 @@ fn vm_traps_decimal_overflow_on_scale_add() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::DecimalOverflow));
 }
@@ -1210,7 +1214,7 @@ fn roundtrip_verify_run_f64_ops() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::F64(6.5)]);
 }
@@ -1236,7 +1240,7 @@ fn vm_traps_on_cast_overflow() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::IntCastOverflow));
 }
@@ -1272,7 +1276,7 @@ fn roundtrip_verify_run_host_call() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::I64(9)]);
 }
@@ -1316,7 +1320,7 @@ fn roundtrip_verify_run_host_call_with_aggregate_arg() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm
-        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::I64(42)]);
 }
@@ -1367,7 +1371,9 @@ fn roundtrip_verify_run_call_indirect_via_func_value() {
     let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, caller, &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&back, caller, &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::I64(9)]);
 }
 
@@ -1427,7 +1433,9 @@ fn roundtrip_verify_run_call_indirect_via_closure_with_env_injection() {
 
     let p = pb.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, caller, &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, caller, &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::U64(42)]);
 }
 
@@ -1475,7 +1483,7 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
     let mut vm = Vm::new(TestHost, Limits::default());
     let callee = vm.function(&p, callee).unwrap();
     let err = vm
-        .run(&p, caller, &[Value::Func(callee)], TraceMask::NONE, None)
+        .run_values(&p, caller, &[Value::Func(callee)], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(
         err.trap,
@@ -1525,13 +1533,15 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
 
     let limits = Limits {
         fuel: 1_000_000,
-        max_call_depth: 8,
+        max_frames: 8,
         max_host_calls: 1_000_000,
         ..Limits::default()
     };
     let mut vm = Vm::new(TestHost, limits);
-    let err = vm.run(&p, f, &[], TraceMask::NONE, None).unwrap_err();
-    assert!(matches!(err.trap, Trap::CallDepthExceeded));
+    let err = vm
+        .run_values(&p, f, &[], TraceMask::NONE, None)
+        .unwrap_err();
+    assert!(matches!(err.trap, Trap::FrameLimitExceeded { .. }));
 }
 
 #[test]
@@ -1606,7 +1616,9 @@ fn vm_loop_sum_0_to_n_minus_1() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::I64(10)]);
 }
 
@@ -1635,7 +1647,7 @@ fn vm_traps_fuel_in_tight_loop() {
     };
     let mut vm = Vm::new(TestHost, limits);
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::FuelExceeded));
 }
@@ -1691,7 +1703,7 @@ fn vm_traps_host_call_limit_in_loop() {
     };
     let mut vm = Vm::new(CountingHost { calls: 0 }, limits);
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::HostCallLimitExceeded));
 }
@@ -1749,7 +1761,7 @@ fn vm_traps_on_negative_i64_to_u64() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::IntCastOverflow));
 }
@@ -1784,7 +1796,9 @@ fn roundtrip_verify_run_tuple_len() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::U64(2), Value::I64(20)]);
 }
 
@@ -1825,7 +1839,9 @@ fn roundtrip_verify_run_struct_field_count() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::U64(3), Value::U64(2)]);
 }
 
@@ -1861,7 +1877,9 @@ fn roundtrip_verify_run_array_get_imm() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::I64(9)]);
 }
 
@@ -1894,7 +1912,7 @@ fn vm_traps_array_get_imm_oob() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::AggError(AggError::OutOfBounds)));
 }
@@ -1930,7 +1948,9 @@ fn roundtrip_verify_run_bytes_len_and_str_len() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::U64(4), Value::U64(3)]);
 }
 
@@ -1976,7 +1996,9 @@ fn roundtrip_verify_run_div_rem() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(
         out,
         vec![Value::I64(6), Value::I64(1), Value::U64(6), Value::U64(1)]
@@ -2010,7 +2032,7 @@ fn vm_traps_div_by_zero() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::DivByZero));
 }
@@ -2042,7 +2064,7 @@ fn vm_traps_i64_div_overflow_min_over_minus_one() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::IntDivOverflow));
 }
@@ -2088,7 +2110,9 @@ fn roundtrip_verify_run_int_float_conversions() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
 
     match (&out[0], &out[1]) {
         (Value::F64(a), Value::F64(b)) => {
@@ -2144,7 +2168,9 @@ fn roundtrip_verify_run_f64_div_and_comparisons() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out[0], Value::F64(4.5));
     assert_eq!(out[1], Value::Bool(false));
     assert_eq!(out[2], Value::Bool(true));
@@ -2193,7 +2219,9 @@ fn roundtrip_verify_run_f64_comparisons_nan_are_false() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(
         out,
         vec![
@@ -2227,7 +2255,7 @@ fn vm_traps_f64_to_int_on_nan() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::FloatToIntInvalid));
 }
@@ -2253,7 +2281,7 @@ fn vm_traps_f64_to_u64_on_negative() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::IntCastOverflow));
 }
@@ -2284,7 +2312,9 @@ fn roundtrip_verify_run_decimal_conversions_scale_0_only() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out[0], Value::I64(42));
     assert_eq!(out[1], Value::Decimal(Decimal::new(4200, 2)));
 }
@@ -2310,7 +2340,7 @@ fn vm_traps_dec_to_i64_on_nonzero_scale() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::DecimalScaleMismatch));
 }
@@ -2379,7 +2409,9 @@ fn roundtrip_verify_run_bytes_and_string_ops() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out[0], Value::U64(4));
     assert_eq!(out[1], Value::Bytes(vec![2, 3, 4]));
     assert_eq!(out[2], Value::Bool(true));
@@ -2419,7 +2451,7 @@ fn vm_traps_str_slice_on_non_boundary() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::StrNotCharBoundary));
 }
@@ -2447,7 +2479,7 @@ fn vm_traps_bytes_to_str_on_invalid_utf8() {
 
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(err.trap, Trap::InvalidUtf8));
 }

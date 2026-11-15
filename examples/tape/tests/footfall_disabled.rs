@@ -48,10 +48,19 @@ fn runs_and_reuses_sink_without_backend() {
     let mask = TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR;
     let mut vm = Vm::new(NoHost, Limits::default());
     for _ in 0..2 {
-        assert_eq!(
-            vm.run(&program, FuncId(0), &[], mask, Some(&mut sink))
-                .unwrap(),
-            [Value::I64(42)]
-        );
+        let roots = vm
+            .run(
+                execution_tape::callable::Callable::function(
+                    std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                    FuncId(0),
+                )
+                .expect("verified entry"),
+                &[],
+                execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+            )
+            .unwrap()
+            .into_returned()
+            .expect("synchronous demo return");
+        assert_eq!(vm.resolve(&roots).unwrap().values(), &[Value::I64(42)]);
     }
 }

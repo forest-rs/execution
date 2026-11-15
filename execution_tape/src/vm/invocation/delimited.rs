@@ -13,6 +13,26 @@ pub(in crate::vm) struct Delimiter {
     handlers: HandlerTable,
     results: ContractOwner,
 }
+impl Delimiter {
+    pub(in crate::vm) fn add_roots(&self, roots: &mut Vec<Value>) {
+        if let HandlerTable::Native(handlers) = &self.handlers {
+            for Handler::Suspend { handler, .. } in handlers {
+                if let Some(handle) = crate::aggregates::aggregate_handle(handler) {
+                    roots.push(Value::Agg(handle));
+                }
+            }
+        }
+    }
+    pub(in crate::vm) fn remap(&mut self, remap: &crate::aggregates::AggRemap) {
+        if let HandlerTable::Native(handlers) = &mut self.handlers {
+            for Handler::Suspend { handler, .. } in handlers {
+                remap
+                    .remap_values_in_place(core::slice::from_mut(handler))
+                    .expect("planned handler");
+            }
+        }
+    }
+}
 enum HandlerTable {
     /// Bind dynamic tag registers in the frozen resumer to immutable prepared clause targets.
     Guest,
@@ -26,13 +46,13 @@ pub(in crate::vm) enum Saved {
     Suspended(Vec<continuation::Continuation<'static>>),
 }
 impl Saved {
-    fn frames(&self) -> usize {
+    pub(in crate::vm) fn frames(&self) -> usize {
         match self {
             Self::New { .. } => 0,
             Self::Suspended(stacks) => stacks.iter().map(|stack| stack.ctx.frames.len()).sum(),
         }
     }
-    pub(super) fn cancel(self, observers: &mut Observers<'_>) {
+    pub(in crate::vm) fn cancel(self, observers: &mut Observers<'_>) {
         if let Self::Suspended(mut stacks) = self {
             for stack in stacks.iter_mut().rev() {
                 finish_control_trace(stack, TraceOutcome::Cancelled, observers);
@@ -145,7 +165,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                         program: program.clone(),
                         range: entry.ret_types,
                     };
-                    let control = self.new_control();
+                    let control = self.new_control()?;
                     let reference = self.save(
                         Saved::New {
                             callable: callee,
@@ -361,7 +381,11 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                 self.observers,
             )?;
         }
-        Ok(RunStatus::Suspended)
+        Ok(if self.continuation.native_effect.is_some() {
+            RunStatus::AwaitingEffect
+        } else {
+            RunStatus::Suspended
+        })
     }
 
     fn save(
@@ -379,6 +403,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             self.continuation.control.execution_owner(),
             saved,
             self.vm.limits.max_continuations,
+            self.epoch,
         ) {
             Ok(key) => {
                 if let Saved::Suspended(stacks) =
@@ -784,9 +809,18 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         request: Vec<Value>,
         pending: PendingGuest,
     ) -> Result<bool, Trap> {
-        let (index, arm) = self
-            .handler_index(&tag)
-            .ok_or_else(|| Trap::UnhandledControlTag { tag: tag.clone() })?;
+        let Some((index, arm)) = self.handler_index(&tag) else {
+            if self.defer_publication {
+                self.continuation.control.waiting = Waiting::Control(pending);
+                self.continuation.native_effect = Some(turn::EffectRequest {
+                    tag,
+                    request,
+                    location: pending.location,
+                });
+                return Ok(false);
+            }
+            return Err(Trap::UnhandledControlTag { tag });
+        };
         if self.resumptions.len() >= self.vm.limits.max_continuations {
             return Err(Trap::ContinuationLimitExceeded);
         }
@@ -864,7 +898,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                 handler
             }
         };
-        let control = self.new_control();
+        let control = self.new_control()?;
         // Validate the actual request across the code boundary before moving its source
         // stack. The generated continuation is execution-local metadata, appended below.
         let mut handler = self.child(callable, request, control, pending.location)?;
@@ -899,7 +933,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         Ok(true)
     }
 
-    pub(super) fn complete_control(
+    pub(in crate::vm) fn complete_control(
         stack: &mut continuation::Continuation<'a>,
         values: Vec<Value>,
         heap: &AggHeap,
@@ -986,6 +1020,12 @@ fn cancel_stack(saved: Saved, budget: &mut Budget, observers: &mut Observers<'_>
 }
 
 impl<'state, H: Host> Running<'_, 'state, H> {
+    pub(super) fn retire_epoch(&mut self) -> impl Iterator<Item = Saved> + use<H> {
+        let retired: Vec<_> = self.resumptions.retire_epoch(self.epoch).collect();
+        self.budget.frames -= retired.iter().map(Saved::frames).sum::<usize>();
+        retired.into_iter()
+    }
+
     pub(super) fn retire_saved(&mut self) -> impl Iterator<Item = Saved> + use<'state, H> {
         self.budget.frames -= self
             .resumptions
@@ -1027,7 +1067,7 @@ impl<H: Host> Running<'_, '_, H> {
             RunStatus::Suspended
         } else {
             self.continuation.control.callback_results = Some(values);
-            RunStatus::AwaitingHost
+            self.host_status()
         };
         Ok(status)
     }
@@ -1086,7 +1126,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
                 program: program.clone(),
                 range: body.ret_types,
             };
-            let control = self.running.new_control();
+            let control = self.running.new_control()?;
             self.running.save(
                 Saved::New {
                     callable: callee,
@@ -1249,7 +1289,7 @@ impl<H: Host> Running<'_, '_, H> {
 }
 
 /// The owner is installed before this observer runs; the waiting operation stays poisoned.
-pub(super) fn attach_trace(
+pub(in crate::vm) fn attach_trace(
     stack: &mut continuation::Continuation<'_>,
     observers: &mut Observers<'_>,
 ) {

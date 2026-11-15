@@ -150,7 +150,7 @@ Preparation translates virtual register IDs into class-local operands. Runtime a
 the corresponding bank base and class-local index, not `base + virtual_register_id`. Unit needs
 no payload address. Arguments and results are explicit register lists in bytecode.
 
-Recursion is allowed, subject to `Limits::max_call_depth`. A runtime `FunctionRef` retains its exact
+Recursion is allowed, subject to `Limits::max_frames`. A runtime `FunctionRef` retains its exact
 `Instance`; local function IDs are interpreted by that instance's verified definition. Independently
 compiled functions can call each other in one store and execution. Explicit raw nominal aggregates
 retain their definition's interpretation and cannot cross incompatible definitions. A closure's
@@ -244,7 +244,7 @@ reset. Exceeding the budget traps with the function, argument/result position an
 Traversals are iterative; sharing does not cause repeated expansion of proven subgraphs.
 
 - `fuel`: each executable instruction costs one; successful host calls may charge additional fuel.
-- `max_call_depth`: caps guest frames.
+- `max_frames`: caps guest frames.
 - `max_continuations`: caps simultaneously saved computations, including unstarted ones (1,024 by default).
 - `max_host_calls`: caps executed host calls.
 - `max_contract_work`: bounds boundary-contract traversal as described above.

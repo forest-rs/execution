@@ -3,6 +3,10 @@
 
 //! Observed paths, independently bounded from boundary recording and checked by replay.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
@@ -94,7 +98,7 @@ fn capture(
     } else {
         TraceMask::RUN | TraceMask::VALUES | TraceMask::CALL
     };
-    let _ = vm.run(
+    let _ = vm.run_values(
         &p,
         FuncId(1),
         &[Value::Bool(condition)],
@@ -234,7 +238,7 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
     let mut recorder =
         Recorder::new(Arc::clone(&p), RecordLimits::default()).with_instructions(config);
     let mut vm = Vm::new(NoHost, Limits::default());
-    vm.run(
+    vm.run_values(
         &p,
         FuncId(1),
         &[Value::Bool(false)],
@@ -298,7 +302,7 @@ fn trapping_instruction_has_inputs_but_never_successful_writes() {
     );
     let mut vm = Vm::new(NoHost, Limits::default());
     assert!(
-        vm.run(
+        vm.run_values(
             &p,
             FuncId(0),
             &[Value::I64(42)],
@@ -353,7 +357,7 @@ fn aliased_aggregate_watches_preserve_before_after_graph_identity() {
         },
     );
     let mut vm = Vm::new(NoHost, Limits::default());
-    vm.run(
+    vm.run_values(
         &p,
         FuncId(0),
         &[Value::Str("retained text".into())],
@@ -394,7 +398,7 @@ fn omitted_watch_callbacks_do_not_claim_complete_value_history() {
         },
     );
     let mut vm = Vm::new(NoHost, Limits::default());
-    vm.run(
+    vm.run_values(
         &p,
         FuncId(1),
         &[Value::Bool(true)],
@@ -523,7 +527,7 @@ fn zero_budget_does_not_hide_disabled_instruction_callbacks_on_a_trap() {
             TraceMask::RUN | TraceMask::VALUES | TraceMask::CALL
         };
         assert!(
-            vm.run(&p, FuncId(0), &[], mask, Some(&mut recorder))
+            vm.run_values(&p, FuncId(0), &[], mask, Some(&mut recorder))
                 .is_err()
         );
         let record = recorder.finish();
@@ -551,7 +555,7 @@ fn rejected_entry_is_complete_zero_attempt_history_when_subscriptions_are_enable
             });
         let mut vm = Vm::new(NoHost, Limits::default());
         assert!(
-            vm.run(&p, FuncId(1), &[], recorder.mask(), Some(&mut recorder))
+            vm.run_values(&p, FuncId(1), &[], recorder.mask(), Some(&mut recorder))
                 .is_err()
         );
         let record = recorder.finish();

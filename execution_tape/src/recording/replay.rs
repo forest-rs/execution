@@ -1350,37 +1350,38 @@ impl Recording {
             record: self,
             state: Rc::clone(&state),
         };
-        let options = crate::vm::InvocationOptions::default()
-            .yield_host_calls()
-            .trace(
-                TraceMask::INSTR
-                    | TraceMask::VALUES
-                    | if self
-                        .history
-                        .as_ref()
-                        .is_some_and(|h| !h.config.watches.is_empty())
-                    {
-                        TraceMask::REGISTERS
-                    } else {
-                        TraceMask::NONE
-                    }
-                    | if self.frames.is_empty() {
-                        TraceMask::NONE
-                    } else {
-                        TraceMask::CALL
-                    },
-                &mut check,
-            );
+        let options = crate::vm::TurnOptions::default().yield_host_calls().trace(
+            TraceMask::INSTR
+                | TraceMask::VALUES
+                | if self
+                    .history
+                    .as_ref()
+                    .is_some_and(|h| !h.config.watches.is_empty())
+                {
+                    TraceMask::REGISTERS
+                } else {
+                    TraceMask::NONE
+                }
+                | if self.frames.is_empty() {
+                    TraceMask::NONE
+                } else {
+                    TraceMask::CALL
+                },
+            &mut check,
+        );
         let result = match vm.start_prepaid(&self.program, entry.func, &args, options, entry.work) {
             Err(error) => Err(error),
             Ok(mut invocation) => loop {
                 match invocation.resume(u64::MAX) {
+                    Ok(crate::vm::RunStatus::AwaitingEffect) => {
+                        unreachable!("legacy invocations trap unhandled effects")
+                    }
                     Err(error) => break Err(error),
                     Ok(crate::vm::RunStatus::Suspended) => {}
                     Ok(crate::vm::RunStatus::Complete) => {
                         break Ok(invocation.take_outputs().expect("completed replay outputs"));
                     }
-                    Ok(crate::vm::RunStatus::AwaitingHost) => {
+                    Ok(crate::vm::RunStatus::AwaitingHost(_)) => {
                         let mut request = invocation
                             .pending_host_call()
                             .expect("yielded replay request");
@@ -1601,9 +1602,18 @@ fn same_trap(
         }
         (Trap::CrossInstanceValue { kind: a }, Trap::CrossInstanceValue { kind: b }) => a == b,
         (Trap::ForeignStoreValue { kind: a }, Trap::ForeignStoreValue { kind: b }) => a == b,
+        (
+            Trap::FrameLimitExceeded {
+                limit: a,
+                retained: used_a,
+            },
+            Trap::FrameLimitExceeded {
+                limit: b,
+                retained: used_b,
+            },
+        ) => a == b && used_a == used_b,
         (Trap::FuelExceeded, Trap::FuelExceeded)
         | (Trap::GuestTransferAbandoned, Trap::GuestTransferAbandoned)
-        | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
         | (Trap::InstanceLimitExceeded, Trap::InstanceLimitExceeded)
         | (Trap::AggregateSizeOverflow, Trap::AggregateSizeOverflow)
@@ -1797,7 +1807,7 @@ mod tests {
             Value::I64(7)
         };
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-        vm.run(
+        vm.run_values(
             &program,
             FuncId(0),
             &[arg],
@@ -1814,7 +1824,7 @@ mod tests {
 
     fn control_recording(exit: bool) -> Recording {
         use crate::trace::TraceSink;
-        use crate::vm::{InvocationOptions, RunStatus};
+        use crate::vm::{RunStatus, TurnOptions};
         let mut b = ProgramBuilder::new();
         let sig = FunctionSig {
             arg_types: vec![ValueType::I64],
@@ -1853,12 +1863,15 @@ mod tests {
                 &program,
                 root,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(recorder.mask(), recorder.clone()),
             )
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         {
             let request = run.pending_host_call().unwrap();
             let (callee, arguments) = (
@@ -1868,7 +1881,10 @@ mod tests {
             request.call_guest(callee, arguments)
         }
         .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
         if exit {
@@ -2043,7 +2059,7 @@ mod tests {
                     ..Limits::default()
                 },
             )
-            .run(
+            .run_values(
                 &program,
                 FuncId(0),
                 &[Value::Bytes(vec![1; 4])],
@@ -2203,7 +2219,7 @@ mod tests {
         let program = Arc::new(builder.build_verified().unwrap());
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
         Vm::new(Echo, Limits::default())
-            .run(
+            .run_values(
                 &program,
                 FuncId(0),
                 &[],
@@ -2313,7 +2329,7 @@ mod tests {
                     ..Limits::default()
                 },
             )
-            .run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+            .run_values(&program, entry, &[], recorder.mask(), Some(&mut recorder))
             .unwrap_err();
             assert!(matches!(error.trap, Trap::AggregateWorkExceeded { .. }));
             let mut recording = recorder.finish();

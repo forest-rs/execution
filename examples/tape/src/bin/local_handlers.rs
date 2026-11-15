@@ -9,7 +9,6 @@ use execution_tape::{
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::ValueType,
     source::{SourceDocument, SourceId, SourceLimits, SourceMap},
-    trace::TraceMask,
     value::Value,
     vm::{Limits, Vm},
 };
@@ -148,12 +147,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 2,
+            max_frames: 2,
             ..Limits::default()
         },
     );
-    let result = vm.run(&program, main, &[], TraceMask::NONE, None)?;
-    assert_eq!(result, [Value::I64(12)]);
+    let function = vm.function(&program, main)?;
+    let roots = vm
+        .run(function, [], execution_tape::vm::TurnOptions::default())?
+        .into_returned()
+        .expect("both effects have guest handlers");
+    let result = vm.resolve(&roots)?.values();
+    assert_eq!(result, &[Value::I64(12)]);
     println!("next(10) → 11; next(11) → 12. Final result: {result:?}");
     println!("Both requests used the same local clause, within a two-frame limit.");
     Ok(())

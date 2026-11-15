@@ -3,6 +3,10 @@
 
 //! Cross-code control uses one VM, heap transaction and resource authority.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::recording::{
     CaptureFault, CaptureResource, InstructionCapture, InstructionStatus, Outcome, RecordLimits,
     RecordedValue, Recorder, Recording, TransferAction,
@@ -14,7 +18,7 @@ use execution_tape::{
     trace::{ControlEvent, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink},
     value::{FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{ControlError, InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{ControlError, Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -37,7 +41,7 @@ fn recorded_composition(nonlocal: bool, limits: RecordLimits) -> Recording {
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )
@@ -212,7 +216,7 @@ fn qualified_guest_calls_inherit_the_execution_observer() {
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )
@@ -264,7 +268,7 @@ fn a_denied_entry_is_complete_trap_evidence_without_a_fabricated_child_run() {
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )
@@ -461,7 +465,7 @@ fn inspection_and_nonlocal_return_follow_the_actual_cross_instance_parent() {
             &parent,
             entry,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(100).unwrap();
@@ -532,7 +536,7 @@ fn inherited_observers_see_real_cross_code_enter_and_exit_without_fabricated_hos
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(mask, audit.clone()),
             )
@@ -597,7 +601,7 @@ fn nested_foreign_store_functions_are_rejected_before_entering_a_child() {
             &parent,
             entry,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(100).unwrap();
@@ -636,7 +640,7 @@ fn a_returned_child_home_cannot_retarget_the_next_child_with_the_same_local_ordi
             &parent,
             entry,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(100).unwrap();
@@ -688,9 +692,8 @@ fn a_returned_child_home_cannot_retarget_the_next_child_with_the_same_local_ordi
         .unwrap()
         .complete(&mut [argument], Ok(0))
         .unwrap();
-    assert_eq!(
-        run.resume(100).unwrap(),
-        RunStatus::AwaitingHost,
+    assert!(
+        matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)),
         "denial leaves the live child and its caller usable"
     );
 }
@@ -706,12 +709,11 @@ fn independently_compiled_child_returns_the_same_aggregate_without_import_or_com
             &parent,
             entry,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(
-        run.resume(100).unwrap(),
-        RunStatus::AwaitingHost,
+    assert!(
+        matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)),
         "caller reaches method lookup"
     );
     let request = run.pending_host_call().unwrap();
@@ -722,9 +724,8 @@ fn independently_compiled_child_returns_the_same_aggregate_without_import_or_com
             vec![original.clone()],
         )
         .unwrap();
-    assert_eq!(
-        run.resume(100).unwrap(),
-        RunStatus::AwaitingHost,
+    assert!(
+        matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)),
         "child returns to the original request"
     );
     assert!(
@@ -772,7 +773,7 @@ fn suspended_parents_count_against_child_depth_and_failure_rolls_back_every_segm
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 1,
+            max_frames: 1,
             ..Limits::default()
         },
     );
@@ -783,7 +784,7 @@ fn suspended_parents_count_against_child_depth_and_failure_rolls_back_every_segm
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();
@@ -796,7 +797,7 @@ fn suspended_parents_count_against_child_depth_and_failure_rolls_back_every_segm
             )
             .unwrap_err();
         assert!(
-            matches!(error, ControlError::Trapped(error) if matches!(error.trap, Trap::CallDepthExceeded)),
+            matches!(error, ControlError::Trapped(error) if matches!(error.trap, Trap::FrameLimitExceeded { .. })),
             "child cannot reset the frame allowance"
         );
         assert_eq!(
@@ -827,7 +828,7 @@ fn dropping_an_active_child_cancels_the_whole_execution() {
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();
@@ -854,7 +855,7 @@ fn dropping_an_active_child_cancels_the_whole_execution() {
         .tuple_new(vec![Value::I64(9)])
         .unwrap();
     assert_eq!(
-        vm.run(&child, method, &[Value::Agg(fresh)], TraceMask::NONE, None)
+        vm.run_values(&child, method, &[Value::Agg(fresh)], TraceMask::NONE, None)
             .unwrap(),
         [Value::Agg(fresh)],
         "the store remains usable after cancelling all control"
@@ -924,7 +925,7 @@ fn rejected_nonlocal_results_retain_both_the_initiating_code_and_contract_owner(
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )
@@ -1021,7 +1022,7 @@ fn cross_code_exit_to_a_local_callback_restores_its_original_host_request() {
                 &parent,
                 entry,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )

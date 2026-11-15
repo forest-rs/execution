@@ -293,7 +293,20 @@ fn bench_run_results(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_function(BenchmarkId::new("fresh", count), |b| {
             b.iter(|| {
-                black_box(vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap());
+                black_box(
+                    vm.run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                &p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap(),
+                );
             })
         });
         let mut ctx = ExecutionContext::new();
@@ -343,7 +356,19 @@ fn bench_i64_add_chain(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -360,7 +385,19 @@ fn bench_i64_add_chain_traced_instr(c: &mut Criterion) {
         let mask = sink.mask();
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -377,7 +414,19 @@ fn bench_i64_add_chain_traced_instr_span_dense(c: &mut Criterion) {
         let mask = sink.mask();
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -394,7 +443,19 @@ fn bench_i64_add_chain_traced_instr_span_sparse(c: &mut Criterion) {
         let mask = sink.mask();
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -409,7 +470,19 @@ fn bench_i64_add_chain_no_trace_span_dense(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -424,7 +497,19 @@ fn bench_bytes_const_len(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -439,7 +524,19 @@ fn bench_str_const_len(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -453,7 +550,17 @@ fn bench_call_overhead(c: &mut Criterion) {
 
     c.bench_function("call_overhead_one_call", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+            let out = vm
+                .run(
+                    execution_tape::callable::Callable::function(
+                        std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&p)),
+                        FuncId(0),
+                    )
+                    .expect("verified entry"),
+                    &[],
+                    execution_tape::vm::TurnOptions::default(),
+                )
+                .unwrap();
             black_box(out);
         });
     });
@@ -466,7 +573,19 @@ fn bench_call_loop(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -485,7 +604,17 @@ fn bench_call_indirect_loop(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("func", iters), &func_program, |b, p| {
             b.iter(|| {
                 let out = func_vm
-                    .run(p, FuncId(0), &[], TraceMask::NONE, None)
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
                     .unwrap();
                 black_box(out);
             });
@@ -496,7 +625,17 @@ fn bench_call_indirect_loop(c: &mut Criterion) {
             |b, p| {
                 b.iter(|| {
                     let out = closure_vm
-                        .run(p, FuncId(0), &[], TraceMask::NONE, None)
+                        .run(
+                            execution_tape::callable::Callable::function(
+                                std::sync::Arc::new(
+                                    execution_tape::verifier::VerifiedProgram::clone(p),
+                                ),
+                                FuncId(0),
+                            )
+                            .expect("verified entry"),
+                            &[],
+                            execution_tape::vm::TurnOptions::default(),
+                        )
                         .unwrap();
                     black_box(out);
                 });
@@ -513,7 +652,19 @@ fn bench_branch_hot_loop(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -527,7 +678,17 @@ fn bench_host_call(c: &mut Criterion) {
 
     c.bench_function("host_call_overhead_one_call", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+            let out = vm
+                .run(
+                    execution_tape::callable::Callable::function(
+                        std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&p)),
+                        FuncId(0),
+                    )
+                    .expect("verified entry"),
+                    &[],
+                    execution_tape::vm::TurnOptions::default(),
+                )
+                .unwrap();
             black_box(out);
         });
     });
@@ -540,7 +701,19 @@ fn bench_host_call_loop(c: &mut Criterion) {
         let mut vm = Vm::new(IdentityHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                p,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        &[],
+                        execution_tape::vm::TurnOptions::default(),
+                    )
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -556,7 +729,17 @@ fn bench_host_call_traced_run(c: &mut Criterion) {
 
     c.bench_function("host_call_traced_run_mask_run", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+            let out = vm
+                .run(
+                    execution_tape::callable::Callable::function(
+                        std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&p)),
+                        FuncId(0),
+                    )
+                    .expect("verified entry"),
+                    &[],
+                    execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+                )
+                .unwrap();
             black_box(out);
         });
     });
@@ -570,7 +753,17 @@ fn bench_host_call_traced_instr(c: &mut Criterion) {
 
     c.bench_function("host_call_traced_instr_mask_instr", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+            let out = vm
+                .run(
+                    execution_tape::callable::Callable::function(
+                        std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&p)),
+                        FuncId(0),
+                    )
+                    .expect("verified entry"),
+                    &[],
+                    execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+                )
+                .unwrap();
             black_box(out);
         });
     });
@@ -584,7 +777,17 @@ fn bench_host_call_traced_host(c: &mut Criterion) {
 
     c.bench_function("host_call_traced_host_mask_host", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+            let out = vm
+                .run(
+                    execution_tape::callable::Callable::function(
+                        std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&p)),
+                        FuncId(0),
+                    )
+                    .expect("verified entry"),
+                    &[],
+                    execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+                )
+                .unwrap();
             black_box(out);
         });
     });
@@ -1041,7 +1244,7 @@ fn build_host_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram
 fn wide_open_limits() -> Limits {
     Limits {
         fuel: u64::MAX,
-        max_call_depth: 1024,
+        max_frames: 1024,
         max_continuations: 1024,
         max_value_roots: 4096,
         max_host_calls: u64::MAX,

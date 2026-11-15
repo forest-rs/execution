@@ -14,7 +14,7 @@ use execution_tape::{
     trace::{TraceLocation, TraceSink},
     value::{Closure, FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -172,12 +172,15 @@ fn a_child_command_can_first_observe_an_aggregate_created_before_its_entry() {
                 &program,
                 root,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(recorder.mask(), &mut recorder),
             )
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         let request = run.pending_host_call().unwrap();
         let ValueRef::Agg(retained) = request.arguments().next().unwrap() else {
             panic!("root aggregate")
@@ -186,7 +189,10 @@ fn a_child_command_can_first_observe_an_aggregate_created_before_its_entry() {
         request
             .call_guest(instance.function(child).unwrap(), vec![])
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         // This object is older than the child's entry, but was never in that child's
         // arguments, any observed boundary, or its guest registers.
         run.pending_host_call()
@@ -196,11 +202,17 @@ fn a_child_command_can_first_observe_an_aggregate_created_before_its_entry() {
                 vec![Value::Agg(retained)],
             )
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
         request.complete(&mut results, Ok(0)).unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
         request.complete(&mut results, Ok(0)).unwrap();
@@ -253,14 +265,13 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
             &f.program,
             f.root,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace_owned(recorder.mask(), recorder.clone()),
         )
         .unwrap();
-    assert_eq!(
-        run.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost,
+    assert!(
+        matches!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost(_)),
         "root waits for outer host"
     );
     let mut outer = run.pending_host_call().unwrap();
@@ -282,9 +293,8 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         request.call_guest(callee, arguments)
     }
     .unwrap();
-    assert_eq!(
-        run.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost,
+    assert!(
+        matches!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost(_)),
         "nested callback waits for inner host"
     );
     let inner = run.pending_host_call().unwrap();
@@ -302,17 +312,15 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         request.call_guest(callee, arguments)
     }
     .unwrap();
-    assert_eq!(
-        run.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost,
+    assert!(
+        matches!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost(_)),
         "closure returns to inner request"
     );
     let mut inner = run.pending_host_call().unwrap();
     let mut values = inner.take_callback_results().unwrap();
     inner.complete(&mut values, Ok(2)).unwrap();
-    assert_eq!(
-        run.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost,
+    assert!(
+        matches!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost(_)),
         "outer callback returns to original request"
     );
     let mut outer = run.pending_host_call().unwrap();
@@ -490,7 +498,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
         ));
         let limits = match mode {
             3 => Limits {
-                max_call_depth: 1,
+                max_frames: 1,
                 ..Limits::default()
             },
             4 => Limits {
@@ -510,7 +518,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
                 &f.program,
                 f.root,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(recorder.mask(), recorder.clone()),
             )
@@ -563,7 +571,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
                 | Trap::TypeMismatch { .. }
                 | Trap::HostCallFailed { .. }
                 | Trap::FuelExceeded
-                | Trap::CallDepthExceeded
+                | Trap::FrameLimitExceeded { .. }
         ));
         drop(run);
         let record = finish(recorder);
@@ -601,7 +609,7 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
                 &f.program,
                 f.root,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(recorder.mask(), recorder.clone()),
             )
@@ -622,7 +630,10 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
                 .unwrap()
                 .complete(&mut [Value::Agg(input)], Ok(0))
                 .unwrap();
-            assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+            assert!(matches!(
+                run.resume(u64::MAX).unwrap(),
+                RunStatus::AwaitingHost(_)
+            ));
         }
         drop(run);
         let record = finish(recorder);

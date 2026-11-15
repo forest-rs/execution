@@ -273,6 +273,76 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         TraceMask::CALL | TraceMask::HOST
     }
 
+    fn stack_context(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        snapshot: execution_tape::trace::StackSnapshot<'_>,
+    ) {
+        if !self.consistent {
+            return;
+        }
+        let Some(id) = context.stack() else {
+            self.fail();
+            return;
+        };
+        if self
+            .stack
+            .iter()
+            .any(|scope| scope.stack.as_ref() == Some(id))
+            || self.parked.iter().any(|(stack, _)| stack == id)
+        {
+            self.fail();
+            return;
+        }
+        let scopes: Vec<_> = snapshot
+            .scopes
+            .iter()
+            .map(|scope| {
+                let label = self.resolve_label(context.program(), scope.kind);
+                let (file, line) = self.scope_source(context.program(), scope.location);
+                let guard = if snapshot.parked {
+                    None
+                } else {
+                    Self::open_scope(
+                        scope.kind,
+                        &label,
+                        file.as_deref().unwrap_or("execution_tape.bytecode"),
+                        line,
+                    )
+                };
+                ScopeEntry {
+                    stack: Some(id.clone()),
+                    file,
+                    line,
+                    kind: scope.kind,
+                    depth: scope.depth,
+                    label,
+                    guard,
+                }
+            })
+            .collect();
+        if scopes.is_empty() {
+            return;
+        }
+        if snapshot.parked {
+            self.parked.push((id.clone(), scopes));
+        } else {
+            self.stack.extend(scopes);
+        }
+    }
+    fn stack_release(&mut self, context: execution_tape::trace::TraceContext<'_>) {
+        if let Some(id) = context.stack() {
+            if let Some(index) = self.parked.iter().position(|(stack, _)| stack == id) {
+                self.parked.swap_remove(index);
+                return;
+            }
+            self.park(id);
+            if let Some(index) = self.parked.iter().position(|(stack, _)| stack == id) {
+                self.parked.swap_remove(index);
+            }
+        }
+    }
+
     fn stack_activity(
         &mut self,
         context: execution_tape::trace::TraceContext<'_>,

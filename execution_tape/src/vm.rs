@@ -36,15 +36,25 @@ use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
 mod aggregate_tests;
+mod arguments;
+mod callee;
+#[cfg(test)]
+mod test_support;
+pub use callee::Callee;
 pub(crate) mod budget;
 mod continuation;
+pub use arguments::Arguments;
+mod domain;
+mod turn;
 use budget::Budget;
+pub use turn::{Effect, PendingEffect, Turn, TurnOutcome};
 mod host_call;
+pub use host_call::HostRequestId;
 mod inspection;
 mod instances;
 mod invocation;
 pub use inspection::{
-    ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
+    ActivationId, ExecutionInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
     SavedContinuation,
 };
 use inspection::{ExecutionControl, Waiting};
@@ -55,7 +65,7 @@ mod roots;
 pub use roots::{CollectionStats, RootError, RootedValues, RootedView};
 mod ownership;
 mod work;
-pub use invocation::{ControlError, Invocation, InvocationOptions, PendingHostCall, RunStatus};
+pub use invocation::{ControlError, Invocation, PendingHostCall, RunStatus, TurnOptions};
 use ownership::BorrowedOrOwned;
 pub use work::ExecutionWork;
 #[cfg(test)]
@@ -66,10 +76,10 @@ mod payload_tests;
 pub struct Limits {
     /// Instruction budget. Each instruction costs 1 by default; host calls may charge extra.
     pub fuel: u64,
-    /// Maximum call depth (frames).
-    pub max_call_depth: usize,
-    /// Maximum saved one-use computations in a single execution (1,024 by default).
-    /// Parked frames also remain charged against [`Self::max_call_depth`].
+    /// Maximum resident frames across active and saved computations, including other turns.
+    pub max_frames: usize,
+    /// Maximum saved one-use computations in this VM (1,024 by default).
+    /// Parked frames also remain charged against [`Self::max_frames`].
     pub max_continuations: usize,
     /// Maximum live registered value groups in this VM (4,096 by default).
     /// This counts groups, not payload bytes; clones share a group.
@@ -151,7 +161,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             fuel: 1_000_000,
-            max_call_depth: 256,
+            max_frames: 256,
             max_continuations: 1024,
             max_value_roots: 4096,
             max_host_calls: 1_000_000,
@@ -258,6 +268,9 @@ impl core::error::Error for ContractBoundaryError {
 /// A runtime trap.
 #[derive(Clone, Debug)]
 pub enum Trap {
+    /// Registered input ownership failed after an operation was admitted. The concrete
+    /// root/projection error is preserved rather than reduced to a storage-kind mismatch.
+    ValueRoot(Box<RootError>),
     /// A control value or handler offers a different typed protocol.
     ControlSignatureMismatch(Box<crate::control::SignatureMismatch>),
     /// A control operation received the wrong number of input values.
@@ -281,12 +294,19 @@ pub enum Trap {
 
     /// Fuel limit exceeded.
     FuelExceeded,
-    /// Call depth limit exceeded.
-    CallDepthExceeded,
+    /// Live and saved computations have exhausted the VM's resident frame allowance.
+    FrameLimitExceeded {
+        /// Maximum resident frames across active and saved computations.
+        limit: usize,
+        /// Frames retained before the denied entry.
+        retained: usize,
+    },
     /// Host call count limit exceeded.
     HostCallLimitExceeded,
     /// The VM cannot represent another live code instance.
     InstanceLimitExceeded,
+    /// A monotonic guest control/request identity cannot advance without reuse.
+    ControlIdentityExhausted,
     /// A raw code-local value cannot be interpreted in another code instance.
     CrossInstanceValue {
         /// Storage kind containing a code-local identity.
@@ -414,6 +434,7 @@ pub enum Trap {
 impl fmt::Display for Trap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ValueRoot(error) => error.fmt(f),
             Self::ControlSignatureMismatch(error) => error.fmt(f),
             Self::ControlArityMismatch { boundary, expected, actual } => write!(f, "{boundary} requires {expected} input values, got {actual}"),
             Self::Continuation(error) => error.fmt(f),
@@ -421,9 +442,10 @@ impl fmt::Display for Trap {
             Self::UnhandledControlTag { tag } => write!(f, "no active handler for control operation {:?}", tag.name()),
 
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
-            Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
+            Self::FrameLimitExceeded { limit, retained } => write!(f, "resident frame limit {limit} reached ({retained} frames retained)"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
             Self::InstanceLimitExceeded => write!(f, "VM instance capacity exhausted"),
+            Self::ControlIdentityExhausted => f.write_str("VM control identity space is exhausted"),
             Self::CrossInstanceValue { kind } => write!(f, "cannot transfer code-local {kind:?} to another instance"),
             Self::ForeignStoreValue { kind } => write!(f, "cannot execute {kind:?} from another VM store"),
             Self::GuestTransferAbandoned => f.write_str("guest control transfer was abandoned"),
@@ -516,6 +538,7 @@ impl fmt::Display for Trap {
 impl core::error::Error for Trap {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            Self::ValueRoot(error) => Some(error),
             Self::ContractBoundary(error) => Some(error),
             Self::ControlSignatureMismatch(error) => Some(error),
             Self::Continuation(error) => Some(error),
@@ -748,6 +771,7 @@ pub struct Vm<H: Host> {
     memory: ProgramMemory,
     instances: instances::Instances,
     roots: roots::Roots,
+    domain: Option<domain::Domain>,
 }
 
 impl<H: Host> fmt::Debug for Vm<H> {
@@ -1381,48 +1405,36 @@ impl<H: Host> Vm<H> {
             memory: ProgramMemory::new(),
             instances: instances::Instances::default(),
             roots: roots::Roots::default(),
+            domain: Some(domain::Domain::default()),
         }
     }
 
-    /// Executes `program` starting at `entry` with `args` as value arguments.
+    /// Starts a callable, drives through internal transfers, and publishes one external outcome.
     ///
-    /// Convention:
-    /// - `r0` is the effect token (initialized to `Unit` at entry).
-    /// - value args are placed in `r1..=rN` where `N = entry.arg_count`.
-    ///
-    /// Tracing is controlled by `trace_mask`; pass `None` for `trace` to disable tracing.
-    ///
-    /// Even for verified bytecode, host calls are a trust boundary, so the VM validates host ABI
-    /// conformance (return arity and return types) at runtime.
-    ///
-    /// An incorrect entry argument count traps with [`Trap::ArityMismatch`]. An unknown entry
-    /// function traps with [`Trap::InvalidPc`].
-    ///
-    /// Only new aggregates reachable from returned values survive a successful run. Traps
-    /// discard all aggregates allocated during the run. Previously retained values stay valid.
-    /// Host argument handles are borrowed for the call; use [`HostContext::retain`] for durable
-    /// host state. A returned dangling aggregate or closure environment traps at `ret`.
-    pub fn run(
-        &mut self,
-        program: &VerifiedProgram,
-        entry: FuncId,
-        args: &[Value],
-        trace_mask: TraceMask,
-        trace: Option<&mut dyn TraceSink>,
-    ) -> Result<Vec<Value>, TrapInfo> {
-        let mut ctx = ExecutionContext::new();
-        let mut outputs = Vec::new();
-        self.run_with_ctx(
-            &mut ctx,
-            program,
-            entry,
-            args,
-            &mut outputs,
-            trace_mask,
-            trace,
-            None,
-        )?;
-        Ok(outputs)
+    /// This is the convenience path over [`Self::turn`], [`Turn::start`], [`Turn::drive`] and
+    /// [`Turn::finish`]. Qualified values keep their original store; retained callables import
+    /// captures under this turn's remaining budget. Results and effect requests are durable
+    /// registrations in this VM. Use explicit turns to schedule bounded quanta or respond to
+    /// saved work. A paused computation is never silently replaced by another start.
+    pub fn run<'turn, 'callee>(
+        &'turn mut self,
+        callee: impl Into<Callee<'callee>>,
+        arguments: impl Into<Arguments<'turn>>,
+        options: TurnOptions<'turn>,
+    ) -> Result<TurnOutcome, ControlError> {
+        let mut turn = self.turn(options)?;
+        turn.start(callee, arguments)?;
+        loop {
+            let status = if turn.yields_host_calls() {
+                turn.drive_mode::<true>(u64::MAX)
+            } else {
+                turn.drive_mode::<false>(u64::MAX)
+            }
+            .map_err(ControlError::Trapped)?;
+            if status != RunStatus::Suspended {
+                return turn.finish();
+            }
+        }
     }
 
     /// Executes a program using reusable scratch and appending returns to `outputs`.
@@ -1442,7 +1454,7 @@ impl<H: Host> Vm<H> {
         mut trace: Option<&mut dyn TraceSink>,
         mut access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
-        let options = InvocationOptions {
+        let options = TurnOptions {
             mask: Some(trace_mask),
             trace: trace
                 .as_mut()
@@ -1450,7 +1462,7 @@ impl<H: Host> Vm<H> {
             access: access
                 .as_mut()
                 .map(|sink| BorrowedOrOwned::Borrowed(sink as &mut dyn AccessSink)),
-            ..InvocationOptions::default()
+            ..TurnOptions::default()
         };
         let storage = core::mem::take(scratch);
         let prior_outputs = core::mem::take(outputs);
@@ -1461,7 +1473,10 @@ impl<H: Host> Vm<H> {
                 match run.resume_mode::<false>(u64::MAX) {
                     Ok(RunStatus::Complete) => break Ok(()),
                     Ok(RunStatus::Suspended) => {}
-                    Ok(RunStatus::AwaitingHost) => {
+                    Ok(RunStatus::AwaitingEffect) => {
+                        unreachable!("legacy invocations trap unhandled effects")
+                    }
+                    Ok(RunStatus::AwaitingHost(_)) => {
                         unreachable!("synchronous execution dispatches its host")
                     }
                     Err(error) => break Err(error),
@@ -1486,7 +1501,7 @@ impl<H: Host> Vm<H> {
         instance: Option<&Instance>,
     ) -> Result<(), TrapInfo> {
         let program_ref = program.program();
-        let max_call_depth = self.limits.max_call_depth;
+        let max_frames = self.limits.max_frames;
         ctx.clear();
         ctx.instance = instance.cloned();
 
@@ -1500,12 +1515,15 @@ impl<H: Host> Vm<H> {
         let entry_vf = program
             .verified(entry)
             .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
-        if budget.frames >= max_call_depth {
+        if budget.frames >= max_frames {
             return Err(ctx.trap(
                 entry,
                 0,
                 entry_vf.span_at_ix(0).map(|id| id.get()),
-                Trap::CallDepthExceeded,
+                Trap::FrameLimitExceeded {
+                    limit: max_frames,
+                    retained: budget.frames,
+                },
             ));
         }
         let entry_base = ctx.alloc_frame(entry_vf);
@@ -1553,7 +1571,7 @@ impl<H: Host> Vm<H> {
         let root_args = args;
         let output_start = outputs.len();
         let program_ref = program.program();
-        let max_call_depth = self.limits.max_call_depth;
+        let max_frames = self.limits.max_frames;
         let max_host_calls = self.limits.max_host_calls;
 
         loop {
@@ -2289,8 +2307,16 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if budget.frames >= max_call_depth {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
+                    if budget.frames >= max_frames {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::FrameLimitExceeded {
+                                limit: max_frames,
+                                retained: budget.frames,
+                            },
+                        ));
                     }
 
                     let callee_fn = program_ref
@@ -2338,7 +2364,9 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    control.enter(ctx, TraceLocation { func: func_id, pc });
+                    control
+                        .enter(ctx, TraceLocation { func: func_id, pc })
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     P::call_scope_enter(
                         trace,
                         program_ref,
@@ -2506,6 +2534,20 @@ impl<H: Host> Vm<H> {
 
                     let call_args: &[ValueRef<'_>] = call_args_mut;
 
+                    if YIELD {
+                        let request = control
+                            .next_host_request()
+                            .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                        // Admission is installed before callbacks/native work can unwind. A
+                        // partially delivered host operation must never be skipped or retried.
+                        control.waiting = Waiting::Host(host_call::PendingHost {
+                            location: TraceLocation { func: func_id, pc },
+                            request,
+                            instruction: instr_ix,
+                            depth: frame_index + 1,
+                            abandoned: true,
+                        });
+                    }
                     P::host_scope_enter(
                         trace,
                         program_ref,
@@ -2519,12 +2561,11 @@ impl<H: Host> Vm<H> {
                     );
 
                     if YIELD && control.yield_host_calls {
-                        control.waiting = Waiting::Host(host_call::PendingHost {
-                            location: TraceLocation { func: func_id, pc },
-                            instruction: instr_ix,
-                            depth: frame_index + 1,
-                            abandoned: false,
-                        });
+                        control
+                            .waiting
+                            .host_mut()
+                            .expect("admitted request")
+                            .abandoned = false;
                         return Ok(Progress::AwaitingHost);
                     }
                     let mut inline_rets: [Value; 8] = core::array::from_fn(|_| Value::Unit);
@@ -2626,6 +2667,9 @@ impl<H: Host> Vm<H> {
                         span_id,
                     );
                     ctx.frames[frame_index].pc = next_pc;
+                    if YIELD {
+                        control.waiting = Waiting::Ready;
+                    }
                 }
                 ExecInstr::CallIndirectFunc {
                     call_sig,
@@ -2633,8 +2677,16 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if budget.frames >= max_call_depth {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
+                    if budget.frames >= max_frames {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::FrameLimitExceeded {
+                                limit: max_frames,
+                                retained: budget.frames,
+                            },
+                        ));
                     }
 
                     let callee_ref = ctx.read_func(base, *callee);
@@ -2719,7 +2771,9 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    control.enter(ctx, TraceLocation { func: func_id, pc });
+                    control
+                        .enter(ctx, TraceLocation { func: func_id, pc })
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     P::call_scope_enter(
                         trace,
                         program_ref,
@@ -2741,8 +2795,16 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if budget.frames >= max_call_depth {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
+                    if budget.frames >= max_frames {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::FrameLimitExceeded {
+                                limit: max_frames,
+                                retained: budget.frames,
+                            },
+                        ));
                     }
 
                     let callee = ctx.read_closure(base, *callee);
@@ -2865,7 +2927,9 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    control.enter(ctx, TraceLocation { func: func_id, pc });
+                    control
+                        .enter(ctx, TraceLocation { func: func_id, pc })
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     P::call_scope_enter(
                         trace,
                         program_ref,
@@ -4830,11 +4894,11 @@ mod tests {
                     limits.fuel = 1;
                 }
                 if mode == 5 {
-                    limits.max_call_depth = 1;
+                    limits.max_frames = 1;
                 }
                 let mut vm = Vm::new(HostMode(mode), limits);
                 let mut sink = Sink::default();
-                let result = vm.run(&p, entry, &[], mask, Some(&mut sink));
+                let result = vm.run_values(&p, entry, &[], mask, Some(&mut sink));
                 assert_eq!(result.is_ok(), mode == 6, "mode={mode}: {result:?}");
                 assert!(sink.pending.is_none());
                 assert!(sink.scopes.is_empty());
@@ -4970,7 +5034,7 @@ mod tests {
                 Limits::default(),
             );
             let error = vm
-                .run(&p, entry, &[], TraceMask::INSTR, Some(&mut observer))
+                .run_values(&p, entry, &[], TraceMask::INSTR, Some(&mut observer))
                 .unwrap_err();
             assert_eq!(vm.aggregates().len_u32(), 0);
             error
@@ -5034,13 +5098,15 @@ mod tests {
         let program = pb.build_verified().unwrap();
         let mut vm = Vm::new(StateHost::default(), Limits::default());
         assert_eq!(
-            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            vm.run_values(&program, entry, &[], TraceMask::NONE, None)
+                .unwrap(),
             [Value::I64(1), Value::I64(2)]
         );
         assert_eq!(vm.host().calls, [first, second]);
         vm.host_mut().offset = 10;
         assert_eq!(
-            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            vm.run_values(&program, entry, &[], TraceMask::NONE, None)
+                .unwrap(),
             [Value::I64(11), Value::I64(12)]
         );
         assert_eq!(vm.host().calls, [first, second, first, second]);
@@ -5181,7 +5247,9 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         let mut prior = Vec::new();
         for run in 0..3 {
-            let outputs = vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap();
+            let outputs = vm
+                .run_values(&program, entry, &[], TraceMask::NONE, None)
+                .unwrap();
             assert_eq!(vm.aggregates().len_u32(), (run + 1) * 2);
             let [Value::Agg(root), Value::Closure(closure)] = &outputs[..] else {
                 panic!("unexpected returned graph");
@@ -5206,7 +5274,7 @@ mod tests {
             prior.push(*root);
             for &old_root in &prior {
                 assert_eq!(
-                    vm.run(
+                    vm.run_values(
                         &program,
                         read,
                         &[Value::Agg(old_root)],
@@ -5382,7 +5450,7 @@ mod tests {
                 .unwrap();
             let program = pb.build_verified().unwrap();
             let mut vm = Vm::new(RetainingHost::default(), Limits::default());
-            let result = vm.run(&program, entry, &[], TraceMask::NONE, None);
+            let result = vm.run_values(&program, entry, &[], TraceMask::NONE, None);
             assert_eq!(result.is_err(), trap);
             assert_eq!(vm.aggregates().len_u32(), u32::from(!trap));
             if let Ok(outputs) = result {
@@ -5689,7 +5757,8 @@ mod tests {
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(InspectHost, Limits::default());
         assert_eq!(
-            vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap(),
+            vm.run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+                .unwrap(),
             vec![
                 Value::Bytes(b"second".to_vec()),
                 Value::Str("second".into())
@@ -5772,7 +5841,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(7)]);
     }
 
@@ -5834,7 +5905,7 @@ mod tests {
             instrs: Vec::new(),
         };
         let out = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[],
@@ -5875,7 +5946,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(9)]);
     }
 
@@ -5907,7 +5980,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(42)]);
     }
 
@@ -5939,7 +6014,7 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
         assert!(matches!(
             &err.trap,
@@ -6010,7 +6085,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         // "id" host echoes args back — verify ordering is preserved.
         let expected: Vec<Value> = (10..10 + i64::from(n)).map(Value::I64).collect();
         assert_eq!(out, expected);
@@ -6060,7 +6137,7 @@ mod tests {
 
         let mut vm = Vm::new(LazyHost, Limits::default());
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
         assert!(matches!(
             err.trap,
@@ -6234,7 +6311,7 @@ mod tests {
 
         let mut vm = Vm::new(SumTupleHost, Limits::default());
         let out = vm
-            .run(&p, entry, &[], TraceMask::NONE, None)
+            .run_values(&p, entry, &[], TraceMask::NONE, None)
             .expect("host should read tuple contents");
         assert_eq!(out, vec![Value::I64(42)]);
     }
@@ -6265,7 +6342,7 @@ mod tests {
 
         vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[Value::Closure(closure.clone())],
@@ -6309,7 +6386,7 @@ mod tests {
 
         vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[Value::Closure(closure.clone())],
@@ -6366,7 +6443,7 @@ mod tests {
             .unwrap();
 
         let out = vm
-            .run(&p, FuncId(0), &[Value::Agg(env)], TraceMask::NONE, None)
+            .run_values(&p, FuncId(0), &[Value::Agg(env)], TraceMask::NONE, None)
             .unwrap();
         let closure = match out.as_slice() {
             [Value::Closure(c)] => c.clone(),
@@ -6448,7 +6525,9 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(9)]);
     }
 
@@ -6526,7 +6605,9 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::U64(2)]);
     }
 
@@ -6590,7 +6671,9 @@ mod tests {
 
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(42)]);
     }
 
@@ -6657,7 +6740,7 @@ mod tests {
         let instance = vm.instances.default_for(&p).unwrap();
 
         let err = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[Value::Func(FunctionRef::from_verified(
@@ -6734,7 +6817,7 @@ mod tests {
         let instance = vm.instances.default_for(&p).unwrap();
 
         let err = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[Value::Func(FunctionRef::from_verified(
@@ -6791,7 +6874,7 @@ mod tests {
         let instance = vm.instances.default_for(&p).unwrap();
 
         let err = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[Value::Closure(Closure {
@@ -6831,7 +6914,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(1)]);
     }
 
@@ -6861,7 +6946,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(16)]);
     }
 
@@ -6897,7 +6984,7 @@ mod tests {
 
         vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[Value::Closure(closure.clone())],
@@ -6932,16 +7019,31 @@ mod tests {
             },
         )
         .unwrap();
+        let mut bodies = Vec::new();
+        for _ in 0..2 {
+            let mut body = Asm::new();
+            body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+            body.ret(0, &[]);
+            bodies.push(
+                pb.push_function_checked(
+                    body,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Agg],
+                        ret_types: vec![],
+                    },
+                )
+                .unwrap(),
+            );
+        }
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(TestHost, Limits::default());
-        let instance = vm.instances.default_for(&p).unwrap();
 
         let closure_a = Closure {
-            func: FunctionRef::from_verified(instance.clone(), FuncId(10)),
+            func: vm.function(&p, bodies[0]).unwrap(),
             env: AggHandle(0),
         };
         let closure_b = Closure {
-            func: FunctionRef::from_verified(instance.clone(), FuncId(20)),
+            func: vm.function(&p, bodies[1]).unwrap(),
             env: AggHandle(1),
         };
 
@@ -6949,7 +7051,7 @@ mod tests {
         vm.aggregate_builder().tuple_new(vec![]).unwrap();
         vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[
@@ -6963,12 +7065,9 @@ mod tests {
             .unwrap();
         assert_eq!(out, vec![Value::Closure(closure_a.clone())]);
 
-        // cond=false → selects r3 (closure_b)
-        let mut vm = Vm::new(TestHost, Limits::default());
-        vm.aggregate_builder().tuple_new(vec![]).unwrap();
-        vm.aggregate_builder().tuple_new(vec![]).unwrap();
+        // cond=false → selects r3 in the same store, preserving both environments.
         let out = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[
@@ -7075,14 +7174,14 @@ mod tests {
         let mut vm = Vm::new(
             TestHost,
             Limits {
-                max_call_depth: 10,
+                max_frames: 10,
                 ..Limits::default()
             },
         );
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
-        assert!(matches!(err.trap, Trap::CallDepthExceeded));
+        assert!(matches!(err.trap, Trap::FrameLimitExceeded { .. }));
     }
 
     #[test]
@@ -7149,7 +7248,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let out = vm
+            .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap();
 
         // Each closure should have returned its own env
         let (env_a, env_b) = match out.as_slice() {
@@ -7229,7 +7330,7 @@ mod tests {
 
         let env = vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let err = vm
-            .run(
+            .run_values(
                 &p,
                 FuncId(0),
                 &[Value::Closure(Closure {

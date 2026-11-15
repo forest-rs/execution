@@ -6,7 +6,6 @@ mod authoring;
 
 use execution_tape::{
     host::{Host, HostContext, HostError, SigHash, ValueRef},
-    trace::TraceMask,
     value::{FuncId, Value},
     verifier::{VerifyConfig, verify_program_owned},
     vm::{Limits, Vm},
@@ -34,16 +33,19 @@ fn streaming_registers_and_join_arguments_preserve_the_result() {
         let program = verify_program_owned(source, &VerifyConfig::default()).unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
         for input in [-42, 0, 42] {
-            assert_eq!(
-                vm.run(
-                    &program,
-                    FuncId(0),
-                    &[Value::I64(input)],
-                    TraceMask::NONE,
-                    None
+            let function = vm.function(&program, FuncId(0)).unwrap();
+            let roots = vm
+                .run(
+                    function,
+                    [Value::I64(input)],
+                    execution_tape::vm::TurnOptions::default(),
                 )
-                .unwrap(),
-                [Value::I64(input + i64::from(steps))]
+                .unwrap()
+                .into_returned()
+                .unwrap();
+            assert_eq!(
+                vm.resolve(&roots).unwrap().values(),
+                &[Value::I64(input + i64::from(steps))]
             );
         }
     }
@@ -75,17 +77,17 @@ fn lowered_callers_preserve_closure_contracts_and_source_metadata() {
                 .unwrap();
             assert_eq!(spans.len(), 1);
             assert_eq!(spans[0].span_id.get(), u64::from(function) + 1);
-            assert_eq!(
-                vm.run(
-                    &program,
-                    FuncId(function),
-                    &[Value::I64(-17)],
-                    TraceMask::NONE,
-                    None
+            let function = vm.function(&program, FuncId(function)).unwrap();
+            let roots = vm
+                .run(
+                    function,
+                    [Value::I64(-17)],
+                    execution_tape::vm::TurnOptions::default(),
                 )
-                .unwrap(),
-                [Value::I64(25)]
-            );
+                .unwrap()
+                .into_returned()
+                .unwrap();
+            assert_eq!(vm.resolve(&roots).unwrap().values(), &[Value::I64(25)]);
         }
     }
 }

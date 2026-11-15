@@ -53,7 +53,7 @@
 //!     trace::TraceSink,
 //!     value::{FuncId, Value},
 //!     verifier::VerifiedProgram,
-//!     vm::{Limits, Vm},
+//!     vm::{TurnOptions, Limits, Vm},
 //! };
 //!
 //! fn capture<H: Host>(
@@ -61,8 +61,9 @@
 //! ) -> Result<Recording, Box<dyn std::error::Error>> {
 //!     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
 //!     // Capture successful returns and guest traps alike.
+//!     let callable = execution_tape::callable::Callable::function(program, entry)?;
 //!     let _live_result = Vm::new(host, Limits::default())
-//!         .run(&program, entry, args, recorder.mask(), Some(&mut recorder));
+//!         .run(&callable, args, TurnOptions::default().trace(recorder.mask(), &mut recorder));
 //!     let recording = recorder.finish();
 //!     recording.status().map_err(Clone::clone)?;
 //!     let _checked_outcome = recording.replay()?;

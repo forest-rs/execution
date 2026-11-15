@@ -729,6 +729,18 @@ impl Session {
 }
 
 impl TraceSink for Recorder {
+    fn stack_context(
+        &mut self,
+        context: crate::trace::TraceContext<'_>,
+        snapshot: crate::trace::StackSnapshot<'_>,
+    ) {
+        if let Some(session) = &mut self.session {
+            session.fail(CaptureFault::UnsupportedControl, snapshot.pending);
+        } else {
+            self.dispatch(context, |capture| capture.stack_context(context, snapshot));
+        }
+    }
+
     fn mask(&self) -> TraceMask {
         self.active().mask()
     }

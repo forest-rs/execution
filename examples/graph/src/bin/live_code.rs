@@ -14,7 +14,7 @@ use execution_tape::{
     source::{SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping},
     trace::{TraceLocation, TraceSink},
     value::{FuncId, Obj, ObjHandle, Value},
-    vm::{Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Invocation, Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{
     cell::RefCell,
@@ -237,7 +237,7 @@ fn invoke(callback: &Callback, host: &Cells) -> Result<i64> {
     let mut call = callback.target.start(
         &mut vm,
         vec![],
-        InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+        TurnOptions::default().trace(recorder.mask(), &mut recorder),
     )?;
     while call.resume(1)? == RunStatus::Suspended {}
     let answer = returned(call.result().unwrap().map_err(Clone::clone)?)?;
@@ -344,7 +344,7 @@ fn run(view: View, old: &Revision, new: &Revision) -> Result<Story> {
     let mut paused = first.target.start(
         &mut vm,
         vec![],
-        InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+        TurnOptions::default().trace(recorder.mask(), &mut recorder),
     )?;
     assert_eq!(
         paused.resume(2)?,

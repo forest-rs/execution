@@ -13,9 +13,7 @@ use execution_tape::{
     trace::{TraceLocation, TraceSink},
     value::{FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{
-        ActivationId, ControlError, Invocation, InvocationOptions, Limits, RunStatus, TrapInfo, Vm,
-    },
+    vm::{ActivationId, ControlError, Invocation, Limits, RunStatus, TrapInfo, TurnOptions, Vm},
 };
 use std::{
     cell::RefCell,
@@ -339,7 +337,7 @@ impl Runtime {
         let run = callable.start_owned(
             Vm::new(NoHost, limits),
             vec![],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace_owned(recorder.mask(), recorder.clone()),
         )?;
@@ -581,8 +579,9 @@ impl Runtime {
     fn step(&mut self, quantum: u64) -> Result<Status, Error> {
         match self.run.resume(quantum)? {
             RunStatus::Suspended => return Ok(Status::Running),
+            RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
             RunStatus::Complete => return Ok(Status::Complete),
-            RunStatus::AwaitingHost => {}
+            RunStatus::AwaitingHost(_) => {}
         }
         let key = self.key()?;
         let mut request = self

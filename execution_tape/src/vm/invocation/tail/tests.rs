@@ -80,7 +80,7 @@ fn long_cross_code_tail_chains_bound_frames_registers_and_owned_payloads() {
         let mut vm = Vm::new(
             NoHost,
             Limits {
-                max_call_depth: if outer { 2 } else { 1 },
+                max_frames: if outer { 2 } else { 1 },
                 ..Limits::default()
             },
         );
@@ -93,7 +93,7 @@ fn long_cross_code_tail_chains_bound_frames_registers_and_owned_payloads() {
             Value::Str("x".repeat(4096)),
         ];
         let mut run = a
-            .start(&mut vm, entry, &args, InvocationOptions::default())
+            .start(&mut vm, entry, &args, TurnOptions::default())
             .unwrap();
         while run.resume(100).unwrap() != RunStatus::Complete {
             assert!(run.inspect().frames().len() <= if outer { 2 } else { 1 });
@@ -135,7 +135,7 @@ fn reusable_root_outputs_preserve_nominal_prefixes_across_tail_replacement() {
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 1,
+            max_frames: 1,
             ..Limits::default()
         },
     );
@@ -203,12 +203,13 @@ fn tail_resumption_can_replace_an_execution_root_without_a_forwarder() {
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 1,
+            max_frames: 1,
             ..Limits::default()
         },
     );
     assert_eq!(
-        vm.run(&program, root, &[], TraceMask::NONE, None).unwrap(),
+        vm.run_values(&program, root, &[], TraceMask::NONE, None)
+            .unwrap(),
         [Value::I64(42)]
     );
 }
@@ -278,7 +279,7 @@ fn eliminated_return_edges_keep_nominal_checks_but_hide_private_closure_captures
         let mut vm = Vm::new(
             NoHost,
             Limits {
-                max_call_depth: 1,
+                max_frames: 1,
                 ..Limits::default()
             },
         );
@@ -287,7 +288,7 @@ fn eliminated_return_edges_keep_nominal_checks_but_hide_private_closure_captures
         let args = [Value::Func(b.function(middle).unwrap())];
         {
             let mut run = a
-                .start(&mut vm, root, &args, InvocationOptions::default())
+                .start(&mut vm, root, &args, TurnOptions::default())
                 .unwrap();
             let result = loop {
                 match run.resume(100) {
@@ -392,7 +393,7 @@ fn tail_calls_keep_the_enclosing_handler_and_tail_resume_retires_its_actual_fram
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 3,
+            max_frames: 3,
             max_continuations: 1,
             ..Limits::default()
         },
@@ -402,7 +403,7 @@ fn tail_calls_keep_the_enclosing_handler_and_tail_resume_retires_its_actual_fram
             &program,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     let mut retired = None;
@@ -416,7 +417,7 @@ fn tail_calls_keep_the_enclosing_handler_and_tail_resume_retires_its_actual_fram
                     retired = Some(frame.activation);
                 }
             }
-            RunStatus::AwaitingHost => {
+            RunStatus::AwaitingHost(_) => {
                 assert_eq!(run.inspect().frames().len(), 2);
                 assert_eq!(run.inspect().saved_continuations().len(), 0);
                 let request = run.pending_host_call().unwrap();
@@ -433,6 +434,7 @@ fn tail_calls_keep_the_enclosing_handler_and_tail_resume_retires_its_actual_fram
                 assert_eq!(request.symbol(), "pause");
                 request.complete(&mut [Value::I64(42)], Ok(0)).unwrap();
             }
+            RunStatus::AwaitingEffect => panic!("fixture has no escaping effect"),
             RunStatus::Complete => break,
         }
     }
@@ -464,7 +466,7 @@ fn tail_chains_return_to_the_original_pending_native_request() {
     let mut vm = Vm::new(
         NoHost,
         Limits {
-            max_call_depth: 2,
+            max_frames: 2,
             ..Limits::default()
         },
     );
@@ -475,10 +477,13 @@ fn tail_chains_return_to_the_original_pending_native_request() {
             &parent,
             root,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(100).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let home = run.inspect().frames().next().unwrap().activation;
     run.pending_host_call()
         .unwrap()
@@ -497,7 +502,8 @@ fn tail_chains_return_to_the_original_pending_native_request() {
             RunStatus::Suspended => {
                 assert_eq!(run.inspect().frames().last().unwrap().activation, home);
             }
-            RunStatus::AwaitingHost => break,
+            RunStatus::AwaitingHost(_) => break,
+            RunStatus::AwaitingEffect => panic!("fixture has no escaping effect"),
             RunStatus::Complete => {
                 panic!("a callback cannot complete the original host request")
             }
@@ -520,7 +526,7 @@ fn a_failed_replacement_preserves_output_prefix_and_reusable_scratch() {
         NoHost,
         Limits {
             fuel: 9,
-            max_call_depth: 1,
+            max_frames: 1,
             ..Limits::default()
         },
     );
@@ -603,7 +609,7 @@ fn interrupted_tail_observation_cannot_retry_or_start_the_unentered_replacement(
         let mut vm = Vm::new(
             NoHost,
             Limits {
-                max_call_depth: if outer { 2 } else { 1 },
+                max_frames: if outer { 2 } else { 1 },
                 ..Limits::default()
             },
         );
@@ -621,7 +627,7 @@ fn interrupted_tail_observation_cannot_retry_or_start_the_unentered_replacement(
                 &mut vm,
                 entry,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .trace_owned(TraceMask::RUN | TraceMask::CONTROL, observer.clone()),
             )
             .unwrap();

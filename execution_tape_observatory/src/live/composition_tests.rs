@@ -8,7 +8,7 @@ use execution_tape::{
     program::ValueType,
     source::{SourceDocument, SourceId, SourceLimits},
     value::FuncId,
-    vm::{InvocationOptions, Limits, Vm},
+    vm::{Limits, TurnOptions, Vm},
 };
 use ratatui::crossterm::event::KeyModifiers;
 
@@ -75,7 +75,7 @@ fn caller_and_child_with_equal_local_ids_keep_their_own_code_sources_and_breakpo
             &caller,
             FuncId(0),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(100).unwrap();

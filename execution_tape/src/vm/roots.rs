@@ -18,10 +18,28 @@ use alloc::{
 /// an aggregate handle out of that view does not create another root. Equality and hashing
 /// compare registration identity, not the contained values.
 #[derive(Clone)]
+#[must_use = "keep this handle while its values must remain registered"]
 pub struct RootedValues {
     owner: Arc<()>,
     witness: Arc<()>,
     slot: usize,
+}
+
+impl RootedValues {
+    /// Selects a callable for future admission without copying a movable closure handle.
+    /// The selection retains this registration and resolves its current environment only when
+    /// the turn starts, so explicit collection between selection and execution is safe.
+    #[must_use]
+    pub fn callee(&self, index: usize) -> Callee<'static> {
+        Callee::registered(self, index)
+    }
+
+    /// Selects arguments for a future turn without borrowing this VM's current storage.
+    /// Materialization preserves this group's nominal owner and charges only selected payloads.
+    #[must_use]
+    pub fn arguments(&self, range: impl core::ops::RangeBounds<usize>) -> Arguments<'static> {
+        Arguments::select(self, range)
+    }
 }
 
 impl PartialEq for RootedValues {
@@ -73,6 +91,26 @@ impl<'a> RootedView<'a> {
 /// A retained-value operation was rejected without collecting or relocating storage.
 #[derive(Clone, Debug)]
 pub enum RootError {
+    /// A registered callable selection is outside the group's values.
+    InvalidIndex {
+        /// Requested value position.
+        index: usize,
+        /// Values available in the group.
+        len: usize,
+    },
+    /// A registered argument projection does not fit the group's values.
+    InvalidRange {
+        /// Requested starting bound.
+        start: core::ops::Bound<usize>,
+        /// Requested ending bound.
+        end: core::ops::Bound<usize>,
+        /// Values present in the registered group.
+        len: usize,
+    },
+    /// An execution lease was deliberately leaked; its ownership cannot safely be recovered.
+    StoreLeased,
+    /// Collection found an invalid aggregate or payload source before relocating storage.
+    Collection(AggError),
     /// The instance or handle belongs to another VM.
     ForeignStore,
     /// The group was revoked or its registration no longer exists.
@@ -99,6 +137,15 @@ pub enum RootError {
 impl fmt::Display for RootError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidIndex { index, len } => {
+                write!(f, "registered callable index {index} exceeds {len} values")
+            }
+            Self::InvalidRange { start, end, len } => write!(
+                f,
+                "registered argument range {start:?}..{end:?} exceeds {len} values"
+            ),
+            Self::StoreLeased => f.write_str("VM control is held by an unreleased execution lease"),
+            Self::Collection(error) => write!(f, "cannot collect VM values: {error}"),
             Self::ForeignStore => f.write_str("retained value belongs to another VM"),
             Self::Expired => f.write_str("retained value registration has expired"),
             Self::CapacityExceeded => f.write_str("retained value owner capacity exceeded"),
@@ -119,6 +166,7 @@ impl core::error::Error for RootError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::InvalidValue { source, .. } => Some(source),
+            Self::Collection(error) => Some(error),
             _ => None,
         }
     }
@@ -150,6 +198,15 @@ pub(super) struct Roots {
     groups: Vec<Option<Group>>,
 }
 impl Roots {
+    pub(super) fn values(&self) -> impl Iterator<Item = (usize, &[Value])> {
+        self.groups.iter().enumerate().filter_map(|(index, group)| {
+            let group = group
+                .as_ref()
+                .filter(|group| group.witness.strong_count() != 0)?;
+            Some((index, group.values.as_slice()))
+        })
+    }
+
     fn prune(&mut self) -> usize {
         let mut released = 0;
         for group in &mut self.groups {
@@ -163,7 +220,7 @@ impl Roots {
         }
         released
     }
-    fn live(&self) -> usize {
+    pub(super) fn live(&self) -> usize {
         self.groups
             .iter()
             .flatten()
@@ -218,14 +275,14 @@ impl Roots {
             slot,
         })
     }
-    fn handles(&self, out: &mut Vec<Value>) {
+    pub(super) fn handles(&self, out: &mut Vec<Value>) {
         for value in self.groups.iter().flatten().flat_map(|group| &group.values) {
             if let Some(handle) = crate::aggregates::aggregate_handle(value) {
                 out.push(Value::Agg(handle));
             }
         }
     }
-    fn remap(&mut self, remap: &AggRemap) -> Result<(), AggError> {
+    pub(super) fn remap(&mut self, remap: &AggRemap) -> Result<(), AggError> {
         for group in self.groups.iter_mut().flatten() {
             remap.remap_values_in_place(&mut group.values)?;
         }
@@ -309,20 +366,26 @@ impl<H: Host> Vm<H> {
     /// exclusive VM access, so no invocation is active. This full traversal is explicit
     /// embedding work, outside guest fuel; it does not promise a latency bound. Heap capacity
     /// can be reused rather than returned to the allocator.
-    pub fn collect(&mut self) -> Result<CollectionStats, AggError> {
+    pub fn collect(&mut self) -> Result<CollectionStats, RootError> {
+        let domain = self.domain.as_mut().ok_or(RootError::StoreLeased)?;
         let released_groups = self.roots.prune();
         let nodes_before = self.memory.aggs().len_u32();
         let mut handles = Vec::new();
         self.roots.handles(&mut handles);
-        if handles.is_empty() {
+        let plan = domain
+            .plan_collection(self.memory.aggs(), &mut handles)
+            .map_err(RootError::Collection)?;
+        if handles.is_empty() && !domain.has_control() {
             self.memory.aggs_mut().clear();
         } else {
             let remap = self
                 .memory
                 .aggs_mut()
-                .compact_since(0, &mut handles, true)?
+                .compact_since(0, &mut handles, true)
+                .map_err(RootError::Collection)?
                 .expect("requested remap");
-            self.roots.remap(&remap)?;
+            self.roots.remap(&remap).expect("planned registered roots");
+            domain.apply_collection(plan, &remap);
         }
         Ok(CollectionStats {
             live_groups: self.roots.live(),
@@ -344,7 +407,7 @@ impl<H: Host> Vm<H> {
     /// into this VM's old heap; the returned heap preserves those handles. This operation never
     /// copies payloads. Most embeddings should use registered values or independent snapshots.
     pub fn take_aggregates(&mut self) -> Result<AggHeap, RootError> {
-        if self.roots.live() != 0 {
+        if self.roots.live() != 0 || self.domain.as_ref().is_none_or(domain::Domain::has_control) {
             return Err(RootError::HeapInUse);
         }
         self.roots.prune();
@@ -366,8 +429,12 @@ impl<H: Host> Vm<H> {
                         kind: ValueType::Tag,
                     });
                 }
-                Value::Continuation(_) => {
-                    return Err(Trap::AggError(AggError::ExecutionLocalValue));
+                Value::Continuation(continuation) => {
+                    if !self.instances.owns_control(continuation.id()) {
+                        return Err(Trap::ForeignStoreValue {
+                            kind: ValueType::Continuation,
+                        });
+                    }
                 }
                 Value::Closure(closure) => {
                     if !self.owns_instance(closure.func.instance()) {

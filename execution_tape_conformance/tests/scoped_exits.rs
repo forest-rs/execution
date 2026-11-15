@@ -14,7 +14,7 @@ use execution_tape::{
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{ControlError, InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{ControlError, Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -91,8 +91,8 @@ fn fixture() -> Fixture {
         leaf,
     }
 }
-fn options<'a>() -> InvocationOptions<'a> {
-    InvocationOptions::default().yield_host_calls()
+fn options<'a>() -> TurnOptions<'a> {
+    TurnOptions::default().yield_host_calls()
 }
 
 #[test]
@@ -101,7 +101,10 @@ fn home_returns_use_target_multiple_values_and_resume_only_its_real_caller() {
     for (frame_index, expected) in [(0, 1107), (1, 1007), (2, 7)] {
         let mut vm = Vm::new(NeverHost, Limits::default());
         let mut run = vm.start(&f.program, f.root, &[], options()).unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            run.resume(100).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         let frames: Vec<_> = run.inspect().frames().collect();
         assert_eq!(
             frames.iter().map(|f| f.location.func).collect::<Vec<_>>(),
@@ -115,7 +118,10 @@ fn home_returns_use_target_multiple_values_and_resume_only_its_real_caller() {
             )
             .unwrap();
         if frame_index != 2 {
-            assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+            assert!(matches!(
+                run.resume(100).unwrap(),
+                RunStatus::AwaitingHost(_)
+            ));
             let after = run.pending_host_call().unwrap();
             assert_eq!(after.symbol(), "after");
             after.complete(&mut [], Ok(0)).unwrap();

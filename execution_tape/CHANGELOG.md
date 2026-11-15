@@ -17,6 +17,31 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add explicit `Vm::turn` publication boundaries. The VM owns paused and saved computations
+  across turns; `drive` observes progress and `finish` publishes it. Native effects can be
+  answered during the same turn or published with a typed request and one-use continuation.
+  Cancellation retires the active chain and new descendants while preserving untouched older
+  saved computations. Collection traces and remaps their registers and payload sources too.
+  `Vm::run` now takes a `Callee`, `Arguments` and execution options, returning `TurnOutcome`;
+  resolve `Returned` registrations with `Vm::resolve` rather than using a raw result vector.
+  Qualified values keep their originating store; retained callables import captures under the
+  current turn's allowance. Replace `InvocationOptions` with `TurnOptions`.
+  `RootedValues::arguments` selects inputs lazily with their owner.
+  `ExecutionInspection` replaces `InvocationInspection` and is available from both VM and turn,
+  including when all frames are parked at a native effect. `ValueContext` shares budgeted
+  construction between host calls and native effects. Publication capacity failure aborts the
+  turn; external effects are not rolled back.
+
+- `HostRequestId` identifies one admitted instruction across turns and guest callbacks. Delayed
+  responses cannot complete another admission, even at the same function/instruction location.
+  `TraceSink::stack_context` imports current frames/scopes without fabricating historical entry;
+  `stack_release` releases an observer without reporting a guest return. Forward both callbacks
+  in tracing adapters. Recording currently rejects imported context as `UnsupportedControl`.
+  Rename `Limits::max_call_depth` to `max_frames`: saved siblings count toward residency too.
+  Match `Trap::FrameLimitExceeded { limit, retained }` instead of `CallDepthExceeded`.
+  `Vm::collect` now reports `RootError`, including collection faults and an unreleased store
+  lease, rather than returning `AggError` directly.
+
 - Retain successful invocation results with `retain_outputs`, or explicitly register raw
   values with `Vm::retain_values`. Cloneable `RootedValues` handles share a registration;
   `Vm::resolve` borrows its current values, heap and actual code owner. Last-drop makes the

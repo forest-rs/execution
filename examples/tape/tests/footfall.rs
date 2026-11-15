@@ -11,7 +11,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::Value;
-use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
+use execution_tape::vm::{Limits, RunStatus, TurnOptions, Vm};
 use execution_tape_footfall::FootfallSink;
 use footfall::runtime::{Observation, Runtime, Snapshot};
 use footfall::{InstrumentationLevel, LabelKey, RegisteredContext};
@@ -109,7 +109,7 @@ fn composed_capture(runtime: &Runtime, parent_context: &RegisteredContext) {
                 &parent,
                 FuncId(0),
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(sink.mask(), &mut sink),
             )
@@ -207,11 +207,20 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let all = sink.mask() | TraceMask::INSTR;
     let arguments = [Value::Bool(true), Value::I64(41)];
     let start = runtime.snapshot().next_cursor();
-    assert_eq!(
-        vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
-            .unwrap(),
-        [Value::I64(42)]
-    );
+    let roots = vm
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
+        )
+        .unwrap()
+        .into_returned()
+        .unwrap();
+    assert_eq!(vm.resolve(&roots).unwrap().values(), &[Value::I64(42)]);
     let success = runtime.snapshot_since(start);
     balanced(&success);
     assert_eq!(success.window().missed(), 0);
@@ -252,17 +261,20 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let taken = branch_target.expect("branch reports its actual target");
 
     let start = runtime.snapshot().next_cursor();
-    assert_eq!(
-        vm.run(
-            &program,
-            ENTRY,
+    let roots = vm
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
             &[Value::Bool(false), Value::I64(41)],
-            all,
-            Some(&mut sink),
+            execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
         )
-        .unwrap(),
-        [Value::I64(0)]
-    );
+        .unwrap()
+        .into_returned()
+        .unwrap();
+    assert_eq!(vm.resolve(&roots).unwrap().values(), &[Value::I64(0)]);
     let skipped = runtime.snapshot_since(start);
     balanced(&skipped);
     assert_eq!(count(&skipped, "execution_tape.host"), 0);
@@ -282,8 +294,16 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     for behavior in [Behavior::Failure, Behavior::InvalidReturn] {
         vm.host_mut().behavior = behavior;
         let start = runtime.snapshot().next_cursor();
-        vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
-            .unwrap_err();
+        vm.run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
+        )
+        .unwrap_err();
         let trapped = runtime.snapshot_since(start);
         balanced(&trapped);
         assert_eq!(count(&trapped, "execution_tape.host"), 1);
@@ -294,8 +314,16 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     }
 
     let start = runtime.snapshot().next_cursor();
-    vm.run(&program, GUEST_TRAP, &[], all, Some(&mut sink))
-        .unwrap_err();
+    vm.run(
+        execution_tape::callable::Callable::function(
+            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            GUEST_TRAP,
+        )
+        .expect("verified entry"),
+        &[],
+        execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
+    )
+    .unwrap_err();
     let trapped = runtime.snapshot_since(start);
     balanced(&trapped);
     assert_eq!(count(&trapped, "execution_tape.instr_trap"), 1);
@@ -325,13 +353,21 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     }
     let mut custom = Vm::new(CustomFailureHost, Limits::default());
     let failure = custom
-        .run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
+        )
         .unwrap_err();
     assert!(matches!(
-        failure.trap,
-        execution_tape::vm::Trap::HostCallFailed {
-            error: HostError::Custom(source), ..
-        } if source.downcast_ref::<OpaqueFailure>().is_some()
+        failure,
+        execution_tape::vm::ControlError::Trapped(execution_tape::vm::TrapInfo {
+            trap: execution_tape::vm::Trap::HostCallFailed { error: HostError::Custom(source), .. }, ..
+        }) if source.downcast_ref::<OpaqueFailure>().is_some()
     ));
 
     vm.host_mut().behavior = Behavior::Success;
@@ -344,7 +380,7 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
                 &program,
                 ENTRY,
                 &arguments,
-                InvocationOptions::default().trace(mask, &mut sink),
+                TurnOptions::default().trace(mask, &mut sink),
             )
             .unwrap();
         assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
@@ -379,8 +415,16 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
         TraceMask::NONE,
     ] {
         let start = runtime.snapshot().next_cursor();
-        vm.run(&program, ENTRY, &arguments, mask, Some(&mut sink))
-            .unwrap();
+        vm.run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+        )
+        .unwrap();
         let snapshot = runtime.snapshot_since(start);
         balanced(&snapshot);
         assert_eq!(
@@ -402,8 +446,16 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
 
         vm.host_mut().behavior = Behavior::Failure;
         let start = runtime.snapshot().next_cursor();
-        vm.run(&program, ENTRY, &arguments, mask, Some(&mut sink))
-            .unwrap_err();
+        vm.run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+        )
+        .unwrap_err();
         let trapped = runtime.snapshot_since(start);
         balanced(&trapped);
         assert_eq!(
@@ -441,11 +493,13 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut vm = Vm::new(PanicHost, Limits::default());
         let _ = vm.run(
-            &program,
-            ENTRY,
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
             &arguments,
-            all,
-            Some(&mut interrupted_sink),
+            execution_tape::vm::TurnOptions::default().trace(all, &mut interrupted_sink),
         );
     }));
     assert!(result.is_err());
@@ -464,11 +518,14 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let start = runtime.snapshot().next_cursor();
     let mut replacement = FootfallSink::new(context.handle());
     vm.run(
-        &program,
-        ENTRY,
+        execution_tape::callable::Callable::function(
+            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            ENTRY,
+        )
+        .expect("verified entry"),
         &arguments,
-        TraceMask::CALL | TraceMask::HOST,
-        Some(&mut replacement),
+        execution_tape::vm::TurnOptions::default()
+            .trace(TraceMask::CALL | TraceMask::HOST, &mut replacement),
     )
     .unwrap();
     balanced(&runtime.snapshot_since(start));
@@ -486,8 +543,16 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     );
     runtime.set_level(InstrumentationLevel::Off);
     let start = runtime.snapshot().next_cursor();
-    vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
-        .unwrap();
+    vm.run(
+        execution_tape::callable::Callable::function(
+            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            ENTRY,
+        )
+        .expect("verified entry"),
+        &arguments,
+        execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
+    )
+    .unwrap();
     assert!(runtime.snapshot_since(start).events().is_empty());
     runtime.set_level(InstrumentationLevel::Scoped);
 
@@ -523,11 +588,22 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     );
     let start = runtime.snapshot().next_cursor();
     let mask_at_entry = sink.mask();
+    let roots = disabling_vm
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(mask_at_entry, &mut sink),
+        )
+        .unwrap()
+        .into_returned()
+        .unwrap();
     assert_eq!(
-        disabling_vm
-            .run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
-            .unwrap(),
-        [Value::I64(42)]
+        disabling_vm.resolve(&roots).unwrap().values(),
+        &[Value::I64(42)]
     );
     let lowered = runtime.snapshot_since(start);
     assert!(count(&lowered, "execution_tape.host") > 0);
@@ -537,8 +613,16 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     runtime.set_level(InstrumentationLevel::Scoped);
     let start = runtime.snapshot().next_cursor();
     let mask_at_entry = sink.mask();
-    vm.run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
-        .unwrap();
+    vm.run(
+        execution_tape::callable::Callable::function(
+            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            ENTRY,
+        )
+        .expect("verified entry"),
+        &arguments,
+        execution_tape::vm::TurnOptions::default().trace(mask_at_entry, &mut sink),
+    )
+    .unwrap();
     let resumed = runtime.snapshot_since(start);
     assert_eq!(count(&resumed, "execution_tape.run"), 1);
     balanced(&resumed);
@@ -550,7 +634,15 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     runtime.set_level(InstrumentationLevel::Off);
     disabling_vm.host_mut().level = InstrumentationLevel::Scoped;
     disabling_vm
-        .run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
+        )
         .unwrap();
     drop(application_root);
     let enabled_mid_run = runtime.snapshot_since(start);
@@ -572,8 +664,16 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
 
     let start = runtime.snapshot().next_cursor();
     for _ in 0..100 {
-        vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
-            .unwrap();
+        vm.run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
+            &arguments,
+            execution_tape::vm::TurnOptions::default().trace(all, &mut sink),
+        )
+        .unwrap();
     }
     let truncated = runtime.snapshot_since(start);
     assert!(truncated.window().missed() > 0);

@@ -101,8 +101,14 @@ impl<H: Host> Vm<H> {
                 },
             ));
         }
-        if budget.frames >= self.limits.max_call_depth {
-            return Err(trap(ctx, Trap::CallDepthExceeded));
+        if budget.frames >= self.limits.max_frames {
+            return Err(trap(
+                ctx,
+                Trap::FrameLimitExceeded {
+                    limit: self.limits.max_frames,
+                    retained: budget.frames,
+                },
+            ));
         }
         let frame = ctx.frames.last().expect("calling guest frame");
         let pending = PendingGuest {
@@ -142,30 +148,6 @@ impl<H: Host> Vm<H> {
             environment: transfer.environment,
             args: values,
         })
-    }
-}
-
-impl<'state, H: Host> Invocation<'state, H> {
-    pub(in crate::vm) fn enter_guest(
-        &mut self,
-        target: FunctionRef,
-        environment: Option<AggHandle>,
-        args: Vec<Value>,
-    ) -> Result<RunStatus, TrapInfo> {
-        let callee = match environment {
-            Some(env) => Value::Closure(Closure { func: target, env }),
-            None => Value::Func(target),
-        };
-        self.running()
-            .enter_segment(callee, args, EntryOrigin::GuestCall)?;
-        let parent = self.parents.last_mut().expect("guest caller retained");
-        parent
-            .control
-            .waiting
-            .guest_mut()
-            .expect("pending guest call")
-            .abandoned = false;
-        Ok(RunStatus::Suspended)
     }
 }
 

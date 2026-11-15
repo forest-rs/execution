@@ -124,7 +124,15 @@ fn main() {
         let program = std::sync::Arc::new(builder.build_verified().unwrap());
         let mut recorder = Recorder::new(std::sync::Arc::clone(&program), RecordLimits::default());
         Vm::new(NoHost, Limits::default())
-            .run(&program, id, &[], recorder.mask(), Some(&mut recorder))
+            .run(
+                execution_tape::callable::Callable::function(
+                    std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                    id,
+                )
+                .expect("verified entry"),
+                &[],
+                execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
+            )
             .unwrap();
         let recording = recorder.finish();
         recording.status().unwrap();

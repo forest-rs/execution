@@ -3,6 +3,10 @@
 
 //! Function values preserve executable identity across independently compiled code.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
     contract::Contract,
@@ -12,7 +16,7 @@ use execution_tape::{
     trace::{EntryOrigin, TraceSink},
     value::{Closure, FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -127,14 +131,15 @@ fn ordinary_indirect_calls_follow_qualified_functions_and_closures_through_aggre
                     &caller,
                     entry,
                     &args,
-                    InvocationOptions::default().trace(mask, &mut recorder),
+                    TurnOptions::default().trace(mask, &mut recorder),
                 )
                 .unwrap();
             let mut complete = false;
             for _ in 0..20 {
                 match run.resume(100).unwrap() {
                     RunStatus::Suspended => {}
-                    RunStatus::AwaitingHost => panic!("a guest call needs no host choreography"),
+                    RunStatus::AwaitingHost(_) => panic!("a guest call needs no host choreography"),
+                    RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
                     RunStatus::Complete => {
                         complete = true;
                         break;
@@ -148,7 +153,7 @@ fn ordinary_indirect_calls_follow_qualified_functions_and_closures_through_aggre
             assert_eq!(run.take_outputs().unwrap(), [Value::I64(42)]);
         }
         assert_eq!(
-            vm.run(
+            vm.run_values(
                 &caller,
                 entry,
                 &[argument],
@@ -279,18 +284,21 @@ fn a_closure_keeps_nominal_captures_private_across_code_boundaries() {
                         &caller,
                         root,
                         &args,
-                        InvocationOptions::default()
+                        TurnOptions::default()
                             .yield_host_calls()
                             .trace(recorder.mask(), &mut recorder),
                     )
                     .unwrap();
                 if native {
-                    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+                    assert!(matches!(
+                        run.resume(100).unwrap(),
+                        RunStatus::AwaitingHost(_)
+                    ));
                     run.pending_host_call()
                         .unwrap()
                         .call_guest(closure, vec![Value::I64(2)])
                         .unwrap();
-                    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+                    while !matches!(run.resume(100).unwrap(), RunStatus::AwaitingHost(_)) {}
                     let mut request = run.pending_host_call().unwrap();
                     let mut values = request.take_callback_results().unwrap();
                     assert_eq!(values, [Value::I64(42)]);
@@ -395,7 +403,7 @@ fn replacement_can_be_compiled_and_instantiated_while_an_old_method_is_suspended
                 &caller,
                 entry,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )
@@ -405,11 +413,12 @@ fn replacement_can_be_compiled_and_instantiated_while_an_old_method_is_suspended
         for _ in 0..20 {
             match run.resume(100).unwrap() {
                 RunStatus::Suspended => {}
+                RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
                 RunStatus::Complete => {
                     complete = true;
                     break;
                 }
-                RunStatus::AwaitingHost => {
+                RunStatus::AwaitingHost(_) => {
                     if replacement.is_none() {
                         assert_eq!(run.program().program().name(), Some("old method"));
                         let (code, entry) = replacement_method(100, false);
@@ -511,7 +520,7 @@ fn an_escaped_closure_can_capture_foreign_code_and_run_after_its_original_store_
             env,
         })];
         let mut run = source
-            .start(&program, factory, &args, InvocationOptions::default())
+            .start(&program, factory, &args, TurnOptions::default())
             .unwrap();
         assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
         run.retain_callable(0).unwrap()
@@ -525,13 +534,14 @@ fn an_escaped_closure_can_capture_foreign_code_and_run_after_its_original_store_
             .start(
                 &mut destination,
                 vec![],
-                InvocationOptions::default().trace(mask, &mut recorder),
+                TurnOptions::default().trace(mask, &mut recorder),
             )
             .unwrap();
         loop {
             match run.resume(100).unwrap() {
                 RunStatus::Suspended => {}
-                RunStatus::AwaitingHost => panic!("captured guest calls execute in the VM"),
+                RunStatus::AwaitingHost(_) => panic!("captured guest calls execute in the VM"),
+                RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
                 RunStatus::Complete => break,
             }
         }
@@ -565,7 +575,7 @@ fn an_indirect_signature_denial_names_the_actual_code_and_replays_without_enteri
     let mut recorder = Recorder::new(caller.clone(), RecordLimits::default());
     let mask = recorder.mask();
     let error = vm
-        .run(
+        .run_values(
             &caller,
             entry,
             &[Value::Func(target.clone())],
@@ -605,7 +615,7 @@ fn automatic_entries_share_capture_limits_without_turning_them_into_driver_comma
         );
         let mask = recorder.mask();
         assert_eq!(
-            vm.run(
+            vm.run_values(
                 &caller,
                 entry,
                 &[Value::Func(target)],

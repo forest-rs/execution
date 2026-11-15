@@ -8,7 +8,6 @@ use execution_tape::asm::{CallTarget, FunctionAbi, ProgramBuilder};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
-use execution_tape::trace::TraceMask;
 use execution_tape::value::Value;
 use execution_tape::vm::{Limits, Vm};
 
@@ -82,14 +81,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut vm = Vm::new(NoHost, Limits::default());
     let target = vm.function(&program, target)?;
-    let result = vm.run(
-        &program,
-        entry,
-        &[Value::Func(target)],
-        TraceMask::NONE,
-        None,
-    )?;
-    assert_eq!(result, vec![Value::I64(42)]);
+    let entry = vm.function(&program, entry)?;
+    let roots = vm
+        .run(
+            entry,
+            [Value::Func(target)],
+            execution_tape::vm::TurnOptions::default(),
+        )?
+        .into_returned()
+        .expect("typed indirect call completes synchronously");
+    let result = vm.resolve(&roots)?.values();
+    assert_eq!(result, &[Value::I64(42)]);
     println!(
         "{}",
         match result[0] {

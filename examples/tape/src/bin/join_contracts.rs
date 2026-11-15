@@ -6,7 +6,6 @@
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
-use execution_tape::trace::TraceMask;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use execution_tape::vm::{Limits, Vm};
@@ -71,15 +70,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bytes = builder.build_checked()?.encode();
     let prepared = verify_program_owned(Program::decode(&bytes)?, &VerifyConfig::default())?;
     let mut vm = Vm::new(NoHost, Limits::default());
+    let function = vm.function(&prepared, entry)?;
     for condition in [true, false] {
-        let values = vm.run(
-            &prepared,
-            entry,
-            &[Value::Bool(condition)],
-            TraceMask::NONE,
-            None,
-        )?;
-        assert_eq!(values, vec![Value::U64(1)]);
+        let roots = vm
+            .run(
+                function.clone(),
+                [Value::Bool(condition)],
+                execution_tape::vm::TurnOptions::default(),
+            )?
+            .into_returned()
+            .expect("join program returns without an external request");
+        let values = vm.resolve(&roots)?.values();
+        assert_eq!(values, &[Value::U64(1)]);
         println!("condition={condition}: tuple length {values:?}");
     }
     println!(

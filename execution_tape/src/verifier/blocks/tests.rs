@@ -43,7 +43,7 @@ fn verify(asm: Asm, args: &[ValueType], returns: &[ValueType]) -> VerifiedProgra
 
 fn run(p: &VerifiedProgram, args: &[Value]) -> Vec<Value> {
     Vm::new(NoHost, Limits::default())
-        .run(p, FuncId(0), args, TraceMask::NONE, None)
+        .run_values(p, FuncId(0), args, TraceMask::NONE, None)
         .unwrap()
 }
 
@@ -240,6 +240,7 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
     let rets: Vec<_> = (1..=u32::try_from(args.len()).unwrap()).collect();
     asm.ret(0, &rets);
     let p = verify(asm, &args, &args);
+    let mut vm = Vm::new(NoHost, Limits::default());
     let pairs = [
         [Value::Unit, Value::Unit],
         [Value::Bool(false), Value::Bool(true)],
@@ -266,14 +267,14 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
             }),
         ],
         {
-            let function = Vm::new(NoHost, Limits::default())
-                .function(&p, FuncId(0))
-                .unwrap();
+            let function = vm.function(&p, FuncId(0)).unwrap();
             [Value::Func(function.clone()), Value::Func(function)]
         },
     ];
     let values: Vec<_> = pairs.into_iter().flatten().collect();
-    let out = run(&p, &values);
+    let out = vm
+        .run_values(&p, FuncId(0), &values, TraceMask::NONE, None)
+        .unwrap();
     for (ix, (actual, expected)) in out
         .iter()
         .zip(sources.iter().map(|&r| &values[r as usize - 1]))
@@ -342,7 +343,9 @@ fn aggregate_and_closure_handles_survive_parallel_cycles_and_run_cleanup() {
         .unwrap();
     let p = builder.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let out = vm
+        .run_values(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     let [
         Value::Agg(empty),
         Value::Agg(full),
@@ -848,7 +851,7 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
         let p = builder.build_verified().unwrap();
         let mut scopes = Scopes::default();
         let out = Vm::new(NoHost, Limits::default())
-            .run(
+            .run_values(
                 &p,
                 entry,
                 &[Value::I64(7)],

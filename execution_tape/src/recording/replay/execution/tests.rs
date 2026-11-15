@@ -46,7 +46,7 @@ fn baseline_fallback_checks_contents_and_global_aliases_before_returning_a_value
         .tuple_new(vec![Value::I64(-1)])
         .unwrap();
     let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
-    vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+    vm.run_values(&program, entry, &[], recorder.mask(), Some(&mut recorder))
         .unwrap();
     let mut record = recorder.finish();
     let root = record.arena.values[record.candidate.as_ref().unwrap().1.start].clone();
@@ -132,7 +132,7 @@ fn capture(nonlocal: bool) -> Recording {
                 &parent,
                 entry,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )
@@ -282,7 +282,7 @@ fn replay_restores_initial_nodes_observed_only_inside_a_child() {
                 &parent,
                 entry,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(mask, &mut recorder),
             )

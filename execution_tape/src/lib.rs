@@ -26,9 +26,8 @@
 //! use execution_tape::asm::{FunctionSig, ProgramBuilder};
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
-//! use execution_tape::trace::TraceMask;
 //! use execution_tape::value::Value;
-//! use execution_tape::vm::{Limits, Vm};
+//! use execution_tape::vm::{TurnOptions, Limits, Vm};
 //!
 //! struct NoHost;
 //!
@@ -62,16 +61,19 @@
 //!
 //!     let program = builder.build_verified()?;
 //!     let mut vm = Vm::new(NoHost, Limits::default());
-//!     let out = vm.run(&program, entry, &[Value::I64(41)], TraceMask::NONE, None)?;
-//!     assert_eq!(out, vec![Value::I64(42)]);
+//!     let function = vm.function(&program, entry)?;
+//!     let returned = vm.run(function, [Value::I64(41)], TurnOptions::default())?
+//!         .into_returned().expect("add_one returns without an external request");
+//!     assert_eq!(vm.resolve(&returned)?.values(), &[Value::I64(42)]);
 //!     Ok(())
 //! }
 //! ```
 //!
-//! For repeated execution, keep an [`ExecutionContext`](vm::ExecutionContext) and a result `Vec`.
-//! Clear the result buffer between runs and call [`Vm::run_with_ctx`](vm::Vm::run_with_ctx)
-//! to reuse both allocations. Results append in return-signature order; a trap preserves the
-//! buffer's original contents. Aggregate results belong to the VM heap and survive context resets.
+//! Keep the VM and qualified functions for repeated execution. Returned [`RootedValues`](vm::RootedValues)
+//! preserve their code ownership and resolve through the VM after explicit moving collection.
+//! Use [`Vm::turn`](vm::Vm::turn) for bounded scheduling, pending host requests and typed native
+//! effects. Driving observes progress; finishing publishes it. Dropping an unfinished turn
+//! aborts its active work while preserving untouched older saved computations.
 //!
 //! ## Nested Guest Contracts
 //!
@@ -226,10 +228,10 @@
 //!
 //! ```
 //! use execution_tape::{host::Host, verifier::VerifiedProgram, value::{FuncId, Value},
-//!     vm::{InvocationOptions, RunStatus, TrapInfo, Vm}};
+//!     vm::{TurnOptions, RunStatus, TrapInfo, Vm}};
 //! fn scheduled<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId,
 //!     args: &[Value]) -> Result<Vec<Value>, TrapInfo> {
-//!     let mut invocation = vm.start(program, entry, args, InvocationOptions::default())?;
+//!     let mut invocation = vm.start(program, entry, args, TurnOptions::default())?;
 //!     while invocation.resume(1024)? == RunStatus::Suspended {
 //!         // Return control to the application's scheduler between quanta.
 //!     }
@@ -253,10 +255,10 @@
 //!
 //! ```
 //! # use execution_tape::{host::Host, value::FuncId, verifier::VerifiedProgram,
-//! #     vm::{RunStatus, InvocationOptions, Vm}};
+//! #     vm::{RunStatus, TurnOptions, Vm}};
 //! # fn retain<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId) {
 //! let roots = {
-//!     let mut invocation = vm.start(program, entry, &[], InvocationOptions::default())
+//!     let mut invocation = vm.start(program, entry, &[], TurnOptions::default())
 //!         .expect("valid entry");
 //!     while invocation.resume(64).expect("execution succeeds") != RunStatus::Complete {}
 //!     invocation.retain_outputs().expect("registration admitted")
@@ -288,14 +290,14 @@
 //! use std::{cell::RefCell, rc::Rc};
 //! use execution_tape::{callable::Callable, host::Host,
 //!     recording::{Recorder, RecordLimits}, trace::TraceSink, value::Value,
-//!     vm::{Invocation, InvocationOptions, TrapInfo, Vm}};
+//!     vm::{Invocation, TurnOptions, TrapInfo, Vm}};
 //! fn stored<H: Host + 'static>(target: &Callable, vm: Vm<H>, args: Vec<Value>)
 //!     -> Result<(Invocation<'static, H>, Rc<RefCell<Recorder>>), TrapInfo>
 //! {
 //!     let capture = Rc::new(RefCell::new(Recorder::new(
 //!         target.program().clone(), RecordLimits::default())));
 //!     let mask = capture.mask();
-//!     let invocation = target.start_owned(vm, args, InvocationOptions::default()
+//!     let invocation = target.start_owned(vm, args, TurnOptions::default()
 //!         .yield_host_calls().trace_owned(mask, Rc::clone(&capture)))?;
 //!     Ok((invocation, capture))
 //! }
@@ -345,7 +347,7 @@
 //!
 //! ## Yielded host requests
 //!
-//! Opt into `InvocationOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
+//! Opt into `TurnOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
 //! a host instruction is admitted. `pending_host_call()` exclusively borrows that invocation:
 //! query its import, source location, borrowed arguments and aggregate context, then `dispatch`
 //! through the existing host or `complete` with return slots and a fuel/error outcome. Stack
@@ -479,11 +481,11 @@
 //! ```no_run
 //! use std::sync::Arc;
 //! use execution_tape::{callable::Callable, host::Host, value::{FuncId, Value},
-//!     verifier::VerifiedProgram, vm::{InvocationOptions, RunStatus, Vm}};
+//!     verifier::VerifiedProgram, vm::{TurnOptions, RunStatus, Vm}};
 //! fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory: FuncId,
 //!     args: Vec<Value>) -> Result<Callable, Box<dyn std::error::Error>> {
 //!     let factory = Callable::function(program, factory)?;
-//!     let mut invocation = factory.start(vm, args, InvocationOptions::default())?;
+//!     let mut invocation = factory.start(vm, args, TurnOptions::default())?;
 //!     while invocation.resume(1024)? == RunStatus::Suspended {}
 //!     Ok(invocation.retain_callable(0)?)
 //! }

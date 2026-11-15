@@ -11,7 +11,7 @@ use execution_tape::{
     program::{HostTypeId, ValueType},
     trace::TraceMask,
     value::{Obj, ObjHandle, Value},
-    vm::{ExecutionContext, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{ExecutionContext, Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{hint::black_box, sync::Arc, time::Duration};
 
@@ -56,8 +56,16 @@ fn stepping(c: &mut Criterion) {
     group.bench_function("ordinary_run_1000", |b| {
         b.iter(|| {
             black_box(
-                vm.run(&p, entry, black_box(&args), TraceMask::NONE, None)
-                    .unwrap(),
+                vm.run(
+                    execution_tape::callable::Callable::function(
+                        std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&p)),
+                        entry,
+                    )
+                    .expect("verified entry"),
+                    black_box(&args),
+                    execution_tape::vm::TurnOptions::default(),
+                )
+                .unwrap(),
             );
         })
     });
@@ -87,7 +95,7 @@ fn stepping(c: &mut Criterion) {
             |b, &quantum| {
                 b.iter(|| {
                     let mut run = vm
-                        .start(&p, entry, black_box(&args), InvocationOptions::default())
+                        .start(&p, entry, black_box(&args), TurnOptions::default())
                         .unwrap();
                     while run.resume(quantum).unwrap() == RunStatus::Suspended {}
                     black_box(run.result().unwrap().unwrap());
@@ -106,17 +114,9 @@ fn stepping(c: &mut Criterion) {
             b.iter(|| {
                 let mut fresh = Vm::new(NoHost, Limits::default());
                 let mut invocation = if owned {
-                    callable.start_owned(
-                        fresh,
-                        black_box(args.to_vec()),
-                        InvocationOptions::default(),
-                    )
+                    callable.start_owned(fresh, black_box(args.to_vec()), TurnOptions::default())
                 } else {
-                    callable.start(
-                        &mut fresh,
-                        black_box(args.to_vec()),
-                        InvocationOptions::default(),
-                    )
+                    callable.start(&mut fresh, black_box(args.to_vec()), TurnOptions::default())
                 }
                 .unwrap();
                 assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
@@ -130,9 +130,7 @@ fn stepping(c: &mut Criterion) {
     vm.aggregate_builder()
         .tuple_new(vec![object; 1024])
         .unwrap();
-    let mut run = vm
-        .start(&p, entry, &args, InvocationOptions::default())
-        .unwrap();
+    let mut run = vm.start(&p, entry, &args, TurnOptions::default()).unwrap();
     run.resume(100).unwrap();
     let mut group = c.benchmark_group("live_inspection");
     group.bench_function("frame_metadata", |b| {
@@ -198,15 +196,25 @@ fn callback_free_calls(c: &mut Criterion) {
     group.bench_function("ordinary_1000", |b| {
         b.iter(|| {
             black_box(
-                vm.run(&program, caller, &[], TraceMask::NONE, None)
-                    .unwrap(),
+                vm.run(
+                    execution_tape::callable::Callable::function(
+                        std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                            &program,
+                        )),
+                        caller,
+                    )
+                    .expect("verified entry"),
+                    &[],
+                    execution_tape::vm::TurnOptions::default(),
+                )
+                .unwrap(),
             );
         })
     });
     group.bench_function("scheduled_1000", |b| {
         b.iter(|| {
             let mut invocation = vm
-                .start(&program, caller, &[], InvocationOptions::default())
+                .start(&program, caller, &[], TurnOptions::default())
                 .unwrap();
             assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
             black_box(invocation.result().unwrap().unwrap());

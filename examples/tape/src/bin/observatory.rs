@@ -171,8 +171,21 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
             max_steps: 1000,
             watches,
         });
-    let output = vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder))?;
-    if output != [Value::I64(42)] || vm.host().state() != &[[0, 7, 14], [1, 5, 10], [2, 9, 18]] {
+    let output = vm.run(
+        execution_tape::callable::Callable::function(
+            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            entry,
+        )
+        .expect("verified entry"),
+        &[],
+        execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
+    )?;
+    let output = output
+        .into_returned()
+        .expect("demo completes synchronously");
+    if vm.resolve(&output)?.values() != [Value::I64(42)]
+        || vm.host().state() != &[[0, 7, 14], [1, 5, 10], [2, 9, 18]]
+    {
         return Err("demo did not produce the expected stored samples and sum".into());
     }
     let record = recorder.finish();

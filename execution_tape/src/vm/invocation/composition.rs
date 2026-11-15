@@ -10,15 +10,15 @@ use crate::value::FunctionRef;
 use alloc::collections::BTreeSet;
 
 impl<'state, H: Host> Running<'_, 'state, H> {
-    pub(super) fn new_control(&mut self) -> ExecutionControl {
+    pub(super) fn new_control(&mut self) -> Result<ExecutionControl, Trap> {
         let mut control = ExecutionControl::start(self.continuation.control.yield_host_calls);
         control.inherit_execution(&self.continuation.control);
         control.segment = *self.next_segment;
         *self.next_segment = self
             .next_segment
             .checked_add(1)
-            .expect("segment creation spends hard fuel");
-        control
+            .ok_or(Trap::ControlIdentityExhausted)?;
+        Ok(control)
     }
 
     /// Build owned control state uniformly; admission and initialization remain explicit.
@@ -92,7 +92,7 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         !self.parents.is_empty()
     }
 
-    pub(super) fn check_return_values(&mut self, values: &[Value]) -> Result<(), Trap> {
+    pub(in crate::vm) fn check_return_values(&mut self, values: &[Value]) -> Result<(), Trap> {
         if self.parents.is_empty() && !self.continuation.structural_results {
             return Ok(());
         }
@@ -226,7 +226,9 @@ impl<'state, H: Host> Running<'_, 'state, H> {
             self.finish(Err(error.clone()));
             error
         })?;
-        let control = self.new_control();
+        let control = self
+            .new_control()
+            .map_err(|trap| self.control_trap(location, trap))?;
         let child = self.segment(&target, environment, args, control, location);
         let instance = target.instance();
         let entry = target.id();
@@ -432,7 +434,7 @@ impl<H: Host> Running<'_, '_, H> {
             .expect("resumed host")
             .abandoned = false;
         self.budget.select(&self.continuation.control);
-        Ok(RunStatus::AwaitingHost)
+        Ok(self.host_status())
     }
 }
 

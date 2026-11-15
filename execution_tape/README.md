@@ -228,10 +228,10 @@ is separate from these limits. Host calls run synchronously by default.
 
 ```rust
 use execution_tape::{host::Host, verifier::VerifiedProgram, value::{FuncId, Value},
-    vm::{InvocationOptions, RunStatus, TrapInfo, Vm}};
+    vm::{TurnOptions, RunStatus, TrapInfo, Vm}};
 fn scheduled<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId,
     args: &[Value]) -> Result<Vec<Value>, TrapInfo> {
-    let mut invocation = vm.start(program, entry, args, InvocationOptions::default())?;
+    let mut invocation = vm.start(program, entry, args, TurnOptions::default())?;
     while invocation.resume(1024)? == RunStatus::Suspended {
         // Return control to the application's scheduler between quanta.
     }
@@ -255,7 +255,7 @@ through the VM after collection; raw aggregate numbers from an older view can ha
 
 ```rust
 let roots = {
-    let mut invocation = vm.start(program, entry, &[], InvocationOptions::default())
+    let mut invocation = vm.start(program, entry, &[], TurnOptions::default())
         .expect("valid entry");
     while invocation.resume(64).expect("execution succeeds") != RunStatus::Complete {}
     invocation.retain_outputs().expect("registration admitted")
@@ -285,14 +285,14 @@ reusable VM storage. Observations can also be owned, including shared collectors
 use std::{cell::RefCell, rc::Rc};
 use execution_tape::{callable::Callable, host::Host,
     recording::{Recorder, RecordLimits}, trace::TraceSink, value::Value,
-    vm::{Invocation, InvocationOptions, TrapInfo, Vm}};
+    vm::{Invocation, TurnOptions, TrapInfo, Vm}};
 fn stored<H: Host + 'static>(target: &Callable, vm: Vm<H>, args: Vec<Value>)
     -> Result<(Invocation<'static, H>, Rc<RefCell<Recorder>>), TrapInfo>
 {
     let capture = Rc::new(RefCell::new(Recorder::new(
         target.program().clone(), RecordLimits::default())));
     let mask = capture.mask();
-    let invocation = target.start_owned(vm, args, InvocationOptions::default()
+    let invocation = target.start_owned(vm, args, TurnOptions::default()
         .yield_host_calls().trace_owned(mask, Rc::clone(&capture)))?;
     Ok((invocation, capture))
 }
@@ -342,7 +342,7 @@ replay restores rich results without repeating native work or replenishing guest
 
 ## Yielded host requests
 
-Opt into `InvocationOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
+Opt into `TurnOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
 a host instruction is admitted. `pending_host_call()` exclusively borrows that invocation:
 query its import, source location, borrowed arguments and aggregate context, then `dispatch`
 through the existing host or `complete` with return slots and a fuel/error outcome. Stack
@@ -476,11 +476,11 @@ successful invocation. That returned callable survives its creator's frames and 
 ```rust
 use std::sync::Arc;
 use execution_tape::{callable::Callable, host::Host, value::{FuncId, Value},
-    verifier::VerifiedProgram, vm::{InvocationOptions, RunStatus, Vm}};
+    verifier::VerifiedProgram, vm::{TurnOptions, RunStatus, Vm}};
 fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory: FuncId,
     args: Vec<Value>) -> Result<Callable, Box<dyn std::error::Error>> {
     let factory = Callable::function(program, factory)?;
-    let mut invocation = factory.start(vm, args, InvocationOptions::default())?;
+    let mut invocation = factory.start(vm, args, TurnOptions::default())?;
     while invocation.resume(1024)? == RunStatus::Suspended {}
     Ok(invocation.retain_callable(0)?)
 }

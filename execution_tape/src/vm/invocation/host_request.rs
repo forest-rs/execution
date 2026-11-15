@@ -115,6 +115,15 @@ impl<H: Host> fmt::Debug for PendingHostCall<'_, '_, H> {
     }
 }
 impl<H: Host> PendingHostCall<'_, '_, H> {
+    /// Stable identity of this admission, preserved while guest callbacks run.
+    #[must_use]
+    pub fn id(&self) -> HostRequestId {
+        self.running
+            .continuation
+            .control
+            .host_request_id(self.original)
+    }
+
     fn site(&self) -> Site<'_> {
         site(
             &self.running.continuation.program,
@@ -163,7 +172,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Analysis is lazy and read-only, as with [`Invocation::inspect`]. The pending call is
     /// shown before its result, preserving uninitialized destinations as unavailable.
     #[must_use]
-    pub fn inspect(&self) -> InvocationInspection<'_> {
+    pub fn inspect(&self) -> ExecutionInspection<'_> {
         self.running.inspect()
     }
     /// Declared host symbol, without allocating a label.

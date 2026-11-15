@@ -10,7 +10,7 @@ use execution_tape::{
     source::{SourceDocument, SourceId, SourceLimits, SourceMap},
     value::{FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, Vm},
+    vm::{Limits, TurnOptions, Vm},
 };
 use execution_tape_observatory::LiveExplorer;
 
@@ -165,7 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Limits::default(),
     );
     let args = [Value::Obj(object())];
-    let invocation = vm.start(&p, entry, &args, InvocationOptions::default())?;
+    let invocation = vm.start(&p, entry, &args, TurnOptions::default())?;
     let mut view = LiveExplorer::new(invocation).sources(&sources)?;
     view.resume(if complete { u64::MAX } else { steps })?;
     if snapshot {
@@ -199,9 +199,7 @@ mod tests {
             Limits::default(),
         );
         let args = [Value::Obj(object())];
-        let invocation = vm
-            .start(&p, entry, &args, InvocationOptions::default())
-            .unwrap();
+        let invocation = vm.start(&p, entry, &args, TurnOptions::default()).unwrap();
         let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
         view.step().unwrap();
         let text = view.render_text(140, 42).unwrap();

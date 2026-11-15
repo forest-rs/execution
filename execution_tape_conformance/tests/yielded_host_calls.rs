@@ -14,7 +14,7 @@ use execution_tape::{
     },
     value::{FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -135,13 +135,16 @@ fn pending_request_borrows_inputs_keeps_source_and_hides_unreturned_destinations
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .access(&mut access),
         )
         .unwrap();
     assert!(call.pending_host_call().is_none());
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let fuel = call.remaining_fuel();
     let work = call.data_work();
     assert_eq!(call.host().calls, 0);
@@ -191,7 +194,10 @@ fn pending_request_borrows_inputs_keeps_source_and_hides_unreturned_destinations
             "echo(message)"
         );
         drop(request);
-        assert_eq!(call.resume(quantum).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            call.resume(quantum).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         assert_eq!(call.remaining_fuel(), fuel);
         assert_eq!(call.data_work(), work);
     }
@@ -238,7 +244,7 @@ fn external_completion_runs_no_native_host_and_finishes_only_its_instruction() {
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(recorder.mask(), &mut recorder),
         )
@@ -247,7 +253,7 @@ fn external_completion_runs_no_native_host_and_finishes_only_its_instruction() {
     loop {
         match call.resume(1).unwrap() {
             RunStatus::Suspended => {}
-            RunStatus::AwaitingHost => {
+            RunStatus::AwaitingHost(_) => {
                 let before = call.remaining_fuel();
                 let mut request = call.pending_host_call().unwrap();
                 request
@@ -263,6 +269,7 @@ fn external_completion_runs_no_native_host_and_finishes_only_its_instruction() {
                     "host completion does not execute guest return"
                 );
             }
+            RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
             RunStatus::Complete => break,
         }
     }
@@ -307,12 +314,15 @@ fn return_arity_kind_payload_and_owned_host_errors_use_normal_admission_and_roll
                 &f.program,
                 f.entry,
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace(recorder.mask(), &mut recorder),
             )
             .unwrap();
-        assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        assert!(matches!(
+            call.resume(u64::MAX).unwrap(),
+            RunStatus::AwaitingHost(_)
+        ));
         let fuel = call.remaining_fuel();
         let outcome = match case {
             0 => Ok((vec![], 2)),
@@ -396,11 +406,14 @@ fn hard_limits_deny_requests_before_external_effects_and_waiting_cannot_replenis
                 &f.program,
                 f.entry,
                 &args,
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         if max_host_calls == 1 {
-            assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+            assert!(matches!(
+                call.resume(u64::MAX).unwrap(),
+                RunStatus::AwaitingHost(_)
+            ));
             call.pending_host_call().unwrap().dispatch().unwrap();
         }
         assert!(matches!(
@@ -423,7 +436,7 @@ fn hard_limits_deny_requests_before_external_effects_and_waiting_cannot_replenis
                 &f.program,
                 f.entry,
                 &args,
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         assert!(matches!(
@@ -452,10 +465,13 @@ fn async_producer_borrows_payload_across_a_real_pending_poll_then_completes_once
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let fuel = call.remaining_fuel();
     let mut producer = Box::pin(
         call.pending_host_call()
@@ -510,12 +526,15 @@ fn cancelling_a_polled_async_delivery_prevents_redispatch_and_keeps_effects() {
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(recorder.mask(), &mut recorder),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let budget = (call.remaining_fuel(), call.data_work());
     let mut producer = Box::pin(call.pending_host_call().unwrap().complete_with(async |_| {
         effects.set(effects.get() + 1);
@@ -565,14 +584,20 @@ fn an_unpolled_async_delivery_leaves_the_request_unclaimed() {
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     drop(call.pending_host_call().unwrap().complete_with(async |_| {
         panic!("unpolled producer must not run");
     }));
-    assert_eq!(call.resume(0).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(0).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     call.pending_host_call().unwrap().dispatch().unwrap();
     assert_eq!(call.host().calls, 1);
     assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
@@ -588,10 +613,13 @@ fn successful_completion_moves_payloads_from_reusable_slots_without_an_extra_cop
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let text = String::from("owned reply");
     let pointer = text.as_ptr();
     let mut slots = [Value::Str(text)];
@@ -625,10 +653,13 @@ fn owned_code_and_inputs_survive_a_dropped_lookup_while_a_host_request_is_pendin
         .start(
             &mut vm,
             args().to_vec(),
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     assert!(weak.upgrade().is_some());
     assert_eq!(call.pending_host_call().unwrap().arguments().len(), 1);
     call.pending_host_call().unwrap().dispatch().unwrap();
@@ -685,14 +716,12 @@ fn empty_and_wide_host_boundaries_use_the_same_request_and_completion_contract()
         for dispatch in [false, true] {
             let mut vm = Vm::new(Fill, Limits::default());
             let mut call = vm
-                .start(
-                    &p,
-                    entry,
-                    &args,
-                    InvocationOptions::default().yield_host_calls(),
-                )
+                .start(&p, entry, &args, TurnOptions::default().yield_host_calls())
                 .unwrap();
-            assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+            assert!(matches!(
+                call.resume(u64::MAX).unwrap(),
+                RunStatus::AwaitingHost(_)
+            ));
             let request = call.pending_host_call().unwrap();
             assert_eq!(request.arguments().len(), count as usize);
             if dispatch {
@@ -720,12 +749,15 @@ fn cancellation_of_a_pending_host_call_is_incomplete_and_releases_only_new_aggre
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(recorder.mask(), &mut recorder),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     drop(call.pending_host_call().unwrap());
     drop(call);
     assert_eq!(vm.aggregates().len_u32(), 1);
@@ -838,7 +870,7 @@ fn yielded_dispatch_has_exactly_the_same_trace_register_phases_and_fuel_as_sync_
         let mut log = Log::default();
         let mirror = log.clone();
         let mut vm = Vm::new(Echo::default(), Limits::default());
-        let options = InvocationOptions::default().trace(mask, &mut log);
+        let options = TurnOptions::default().trace(mask, &mut log);
         let mut call = vm
             .start(
                 &f.program,
@@ -853,9 +885,10 @@ fn yielded_dispatch_has_exactly_the_same_trace_register_phases_and_fuel_as_sync_
             .unwrap();
         loop {
             match call.resume(1).unwrap() {
+                RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
                 RunStatus::Complete => break,
                 RunStatus::Suspended => {}
-                RunStatus::AwaitingHost => {
+                RunStatus::AwaitingHost(_) => {
                     let before = mirror.0.borrow().len();
                     assert!(
                         mirror
@@ -865,7 +898,10 @@ fn yielded_dispatch_has_exactly_the_same_trace_register_phases_and_fuel_as_sync_
                             .unwrap()
                             .starts_with("enter HostCall")
                     );
-                    assert_eq!(call.resume(0).unwrap(), RunStatus::AwaitingHost);
+                    assert!(matches!(
+                        call.resume(0).unwrap(),
+                        RunStatus::AwaitingHost(_)
+                    ));
                     assert_eq!(mirror.0.borrow().len(), before);
                     call.pending_host_call().unwrap().dispatch().unwrap();
                 }
@@ -901,12 +937,15 @@ fn unwound_host_delivery_cannot_retry_effects_and_records_cancellation_instead_o
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(recorder.mask(), &mut recorder),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         call.pending_host_call().unwrap().dispatch()
     }));
@@ -964,12 +1003,15 @@ fn abandonment_is_terminal_even_when_a_cancellation_observer_panics() {
             &f.program,
             f.entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(TraceMask::INSTR, &mut observer),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let mut producer = Box::pin(call.pending_host_call().unwrap().complete_with(async |_| {
         pending::<()>().await;
         Ok((Vec::new(), 0))
@@ -1004,4 +1046,57 @@ fn abandonment_is_terminal_even_when_a_cancellation_observer_panics() {
         1,
         "drop cannot re-notify the panicking observer"
     );
+}
+
+#[cfg(panic = "unwind")]
+#[test]
+fn interrupted_host_entry_never_skips_the_admitted_instruction() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    struct PanicAtHostEntry;
+    impl TraceSink for PanicAtHostEntry {
+        fn scope_enter(
+            &mut self,
+            _: execution_tape::trace::TraceContext<'_>,
+            kind: ScopeKind,
+            _: usize,
+            _: FuncId,
+            _: u32,
+            _: Option<u64>,
+        ) {
+            if matches!(kind, ScopeKind::HostCall { .. }) {
+                panic!("injected host-entry observer panic");
+            }
+        }
+    }
+
+    for yielded in [false, true] {
+        let fixture = fixture(1, false);
+        let args = args();
+        let mut vm = Vm::new(Echo::default(), Limits::default());
+        let mut observer = PanicAtHostEntry;
+        let mut options = TurnOptions::default().trace(TraceMask::HOST, &mut observer);
+        if yielded {
+            options = options.yield_host_calls();
+        }
+        let mut call = vm
+            .start(&fixture.program, fixture.entry, &args, options)
+            .unwrap();
+        assert!(catch_unwind(AssertUnwindSafe(|| call.resume(u64::MAX))).is_err());
+        assert!(
+            call.pending_host_call().is_none(),
+            "partial admission is poisoned"
+        );
+        let work = call.work();
+        for _ in 0..2 {
+            assert!(matches!(
+                call.resume(u64::MAX).unwrap_err().trap,
+                Trap::HostCallAbandoned
+            ));
+            assert_eq!(call.work(), work, "interrupted host work cannot be retried");
+        }
+        assert_eq!(call.host().calls, 0);
+        drop(call);
+        assert_eq!(vm.aggregates().len_u32(), 0);
+    }
 }

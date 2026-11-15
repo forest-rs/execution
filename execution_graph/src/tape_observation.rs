@@ -125,6 +125,40 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
             observer.run_mask(context, self.observer_mask);
         }
     }
+    fn stack_context(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        snapshot: execution_tape::trace::StackSnapshot<'_>,
+    ) {
+        if self.observer_mask != TraceMask::NONE
+            && let Some(observer) = self.observer.as_deref_mut()
+        {
+            let scopes: alloc::vec::Vec<_> = snapshot
+                .scopes
+                .iter()
+                .copied()
+                .filter(|scope| match scope.kind {
+                    ScopeKind::CallFrame { .. } => self.observer_mask.contains(TraceMask::CALL),
+                    ScopeKind::HostCall { .. } => self.observer_mask.contains(TraceMask::HOST),
+                })
+                .collect();
+            observer.stack_context(
+                context,
+                execution_tape::trace::StackSnapshot {
+                    mask: self.observer_mask,
+                    scopes: &scopes,
+                    ..snapshot
+                },
+            );
+        }
+    }
+    fn stack_release(&mut self, context: execution_tape::trace::TraceContext<'_>) {
+        if self.observer_mask != TraceMask::NONE
+            && let Some(observer) = self.observer.as_deref_mut()
+        {
+            observer.stack_release(context);
+        }
+    }
     fn stack_activity(
         &mut self,
         context: execution_tape::trace::TraceContext<'_>,

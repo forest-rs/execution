@@ -5,9 +5,41 @@
 
 use super::*;
 
+/// Identity of one admitted host request, stable across drive turns and guest callbacks.
+///
+/// Equal function/PC locations do not identify the same request. Retain this token with an
+/// external job and present it when reacquiring completion authority; delayed replies must
+/// not complete a later admission. It retains identity rather than the VM or request.
+#[derive(Clone)]
+pub struct HostRequestId {
+    pub(super) owner: alloc::sync::Arc<()>,
+    pub(super) ordinal: u64,
+}
+impl PartialEq for HostRequestId {
+    fn eq(&self, other: &Self) -> bool {
+        self.ordinal == other.ordinal && alloc::sync::Arc::ptr_eq(&self.owner, &other.owner)
+    }
+}
+impl Eq for HostRequestId {}
+impl core::hash::Hash for HostRequestId {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&alloc::sync::Arc::as_ptr(&self.owner), state);
+        core::hash::Hash::hash(&self.ordinal, state);
+    }
+}
+impl fmt::Debug for HostRequestId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostRequestId")
+            .field("owner", &alloc::sync::Arc::as_ptr(&self.owner))
+            .field("admission", &self.ordinal)
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingHost {
     pub(super) location: TraceLocation,
+    pub(super) request: u64,
     pub(super) instruction: usize,
     // Admitting guest frame. A poisoned callback can leave this parent operation suspended
     // below a new guest leaf; inspection must not assign the parent's location to that leaf.

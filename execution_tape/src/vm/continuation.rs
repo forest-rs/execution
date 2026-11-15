@@ -48,6 +48,8 @@ pub(super) struct Continuation<'a> {
     pub(super) parent: Option<(ActivationId, TraceLocation)>,
     pub(super) delimiter: Option<invocation::delimited::Delimiter>,
     pub(super) structural_results: bool,
+    pub(super) native_effect: Option<turn::EffectRequest>,
+    pub(super) pending_return: Option<ReturnSite>,
     pub(super) returned_at: Option<TraceLocation>,
     pub(super) args: Cow<'a, [Value]>,
     pub(super) ctx: Registers,
@@ -74,6 +76,8 @@ impl<'a> Continuation<'a> {
             parent: None,
             delimiter: None,
             returned_at: None,
+            pending_return: None,
+            native_effect: None,
             structural_results: false,
             args,
             ctx: Registers::default(),
@@ -98,6 +102,8 @@ impl<'a> Continuation<'a> {
             delimiter: self.delimiter,
             structural_results: self.structural_results,
             returned_at: self.returned_at,
+            pending_return: self.pending_return,
+            native_effect: self.native_effect,
             ctx: self.ctx,
             control: self.control,
             trace: self.trace,
@@ -110,6 +116,26 @@ impl<'a> Continuation<'a> {
     }
 
     pub(super) fn initialize<H: Host>(
+        &mut self,
+        vm: &mut Vm<H>,
+        budget: &mut Budget,
+        work: DataWork,
+        observers: &mut Observers<'_>,
+    ) -> Result<(), TrapInfo> {
+        self.initialize_mode::<H, false>(vm, budget, work, observers)
+    }
+
+    pub(super) fn initialize_prepaid<H: Host>(
+        &mut self,
+        vm: &mut Vm<H>,
+        budget: &mut Budget,
+        work: DataWork,
+        observers: &mut Observers<'_>,
+    ) -> Result<(), TrapInfo> {
+        self.initialize_mode::<H, true>(vm, budget, work, observers)
+    }
+
+    pub(super) fn initialize_mode<H: Host, const PREPAID: bool>(
         &mut self,
         vm: &mut Vm<H>,
         budget: &mut Budget,
@@ -138,9 +164,11 @@ impl<'a> Continuation<'a> {
             limits: &vm.limits,
             work,
         });
-        budget
-            .charge_import(work)
-            .map_err(|trap| self.ctx.trap(self.entry, 0, None, trap))?;
+        if !PREPAID {
+            budget
+                .charge_import(work)
+                .map_err(|trap| self.ctx.trap(self.entry, 0, None, trap))?;
+        }
         if tracing {
             vm.initialize_run::<WithTracePolicy>(
                 &mut self.ctx,
@@ -493,6 +521,8 @@ mod tests {
             parents: &mut Vec::new(),
             next_segment: &mut 1,
             resumptions: &mut Resumptions::default(),
+            epoch: 0,
+            defer_publication: false,
         }
         .pending_host_call()
         .unwrap()
@@ -579,7 +609,7 @@ mod tests {
         let mut vm = Vm::new(
             NoHost,
             Limits {
-                max_call_depth: 1,
+                max_frames: 1,
                 ..Limits::default()
             },
         );
@@ -604,7 +634,7 @@ mod tests {
                 &mut Observers::default(),
             )
             .unwrap_err();
-        assert!(matches!(error.trap, Trap::CallDepthExceeded));
+        assert!(matches!(error.trap, Trap::FrameLimitExceeded { .. }));
         assert_eq!(budget.frames, 1);
         assert!(matches!(
             first.advance(&mut vm, &mut budget, 10),
@@ -786,6 +816,8 @@ mod tests {
                 parents: &mut Vec::new(),
                 next_segment: &mut 1,
                 resumptions: &mut Resumptions::default(),
+                epoch: 0,
+                defer_publication: false,
             }
             .pending_host_call()
             .unwrap()
@@ -801,6 +833,8 @@ mod tests {
                 parents: &mut Vec::new(),
                 next_segment: &mut 1,
                 resumptions: &mut Resumptions::default(),
+                epoch: 0,
+                defer_publication: false,
             }
             .pending_host_call()
             .unwrap()

@@ -382,7 +382,7 @@ mod tests {
         let program = program.build_verified().unwrap();
         let mut vm = Vm::new(Negate::default(), Limits::default());
         assert_eq!(
-            vm.run(&program, entry, &[Value::I64(42)], TraceMask::NONE, None)
+            vm.run_values(&program, entry, &[Value::I64(42)], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(-42), Value::Bool(true)]
         );

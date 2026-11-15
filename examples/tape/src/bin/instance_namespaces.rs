@@ -9,7 +9,7 @@ use execution_tape::{
     instance::Instance,
     program::ValueType,
     value::{FuncId, Value},
-    vm::{InvocationOptions, Limits, Vm},
+    vm::{Limits, TurnOptions, Vm},
 };
 use std::{collections::HashMap, error::Error};
 
@@ -47,7 +47,7 @@ impl Host for Counters {
 }
 
 fn next(vm: &mut Vm<Counters>, instance: &Instance, entry: FuncId) -> Result<u64, Box<dyn Error>> {
-    let mut call = instance.start(vm, entry, &[], InvocationOptions::default())?;
+    let mut call = instance.start(vm, entry, &[], TurnOptions::default())?;
     call.resume(u64::MAX)?;
     match call.take_outputs().as_deref() {
         Some([Value::U64(count)]) => Ok(*count),

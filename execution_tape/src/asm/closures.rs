@@ -300,7 +300,7 @@ mod tests {
         let program = program.build_verified().unwrap();
         assert_eq!(
             Vm::new(NoHost, Limits::default())
-                .run(&program, entry, &[], TraceMask::NONE, None)
+                .run_values(&program, entry, &[], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(42)]
         );
@@ -391,7 +391,7 @@ mod tests {
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         let failure = Vm::new(NoHost, Limits::default())
-            .run(&program, entry, &[], TraceMask::NONE, None)
+            .run_values(&program, entry, &[], TraceMask::NONE, None)
             .unwrap_err();
         assert!(matches!(failure.trap, crate::vm::Trap::ContractMismatch {
             position: crate::contract::ContractPosition::Argument { callee, index: 0 }, ..

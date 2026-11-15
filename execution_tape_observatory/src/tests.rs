@@ -124,15 +124,20 @@ fn recording_with_options(
         });
     }
     let _ = vm.run(
-        &program,
-        FuncId(0),
+        execution_tape::callable::Callable::function(
+            Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            FuncId(0),
+        )
+        .expect("verified entry"),
         &[Value::Agg(root)],
-        if calls {
-            recorder.mask()
-        } else {
-            execution_tape::trace::TraceMask::RUN | execution_tape::trace::TraceMask::VALUES
-        },
-        Some(&mut recorder),
+        execution_tape::vm::TurnOptions::default().trace(
+            if calls {
+                recorder.mask()
+            } else {
+                execution_tape::trace::TraceMask::RUN | execution_tape::trace::TraceMask::VALUES
+            },
+            &mut recorder,
+        ),
     );
     (recorder.finish(), effects)
 }
@@ -325,11 +330,13 @@ fn wide_nodes_render_only_the_selected_viewport() {
         .unwrap();
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
     vm.run(
-        &program,
-        FuncId(0),
+        execution_tape::callable::Callable::function(
+            Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            FuncId(0),
+        )
+        .expect("verified entry"),
         &[Value::Agg(root)],
-        recorder.mask(),
-        Some(&mut recorder),
+        execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
     )
     .unwrap();
     let record = recorder.finish();
@@ -435,11 +442,13 @@ fn source_register_previews_report_omissions() {
         Limits::default(),
     )
     .run(
-        &program,
-        FuncId(0),
-        &vec![Value::I64(42); 12],
-        recorder.mask(),
-        Some(&mut recorder),
+        execution_tape::callable::Callable::function(
+            Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            FuncId(0),
+        )
+        .expect("verified entry"),
+        vec![Value::I64(42); 12],
+        execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
     )
     .unwrap();
     let shown = render_text(&recorder.finish(), 180, 36).unwrap();
@@ -491,11 +500,13 @@ fn successful_void_return_is_not_presented_as_missing_capture() {
         Limits::default(),
     )
     .run(
-        &program,
-        FuncId(0),
+        execution_tape::callable::Callable::function(
+            Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            FuncId(0),
+        )
+        .expect("verified entry"),
         &[],
-        recorder.mask(),
-        Some(&mut recorder),
+        execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
     )
     .unwrap();
     let record = recorder.finish();
@@ -576,7 +587,15 @@ fn selecting_a_caller_frame_moves_source_to_its_recorded_call_site() {
         },
         Limits::default(),
     )
-    .run(&p, caller, &[], recorder.mask(), Some(&mut recorder))
+    .run(
+        execution_tape::callable::Callable::function(
+            Arc::new(execution_tape::verifier::VerifiedProgram::clone(&p)),
+            caller,
+        )
+        .expect("verified entry"),
+        &[],
+        execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
+    )
     .unwrap();
     let record = recorder.finish();
     let mut view = View::new(&record);
@@ -839,8 +858,16 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
         },
         Limits::default(),
     );
-    vm.run(&program, root, &[], recorder.mask(), Some(&mut recorder))
-        .unwrap();
+    vm.run(
+        execution_tape::callable::Callable::function(
+            Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            root,
+        )
+        .expect("verified entry"),
+        &[],
+        execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
+    )
+    .unwrap();
     let record = recorder.finish();
     let mut view = View::with_options(&record, None, true);
     press(&mut view, KeyCode::Down);
@@ -855,7 +882,7 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
 
 fn callback_recording(exit: bool) -> Recording {
     use execution_tape::recording::InstructionCapture;
-    use execution_tape::vm::{InvocationOptions, RunStatus};
+    use execution_tape::vm::{RunStatus, TurnOptions};
     use std::{cell::RefCell, rc::Rc};
     let mut b = ProgramBuilder::new();
     let sig = FunctionSig {
@@ -897,12 +924,15 @@ fn callback_recording(exit: bool) -> Recording {
             &program,
             root,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace_owned(recorder.mask(), recorder.clone()),
         )
         .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(100).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
@@ -912,7 +942,10 @@ fn callback_recording(exit: bool) -> Recording {
         request.call_guest(callee, arguments)
     }
     .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(100).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let mut request = run.pending_host_call().unwrap();
     let mut returned = request.take_callback_results().unwrap();
     if exit {

@@ -3,6 +3,10 @@
 
 //! Borrowed boundary observations through ordinary public execution and retention APIs.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::aggregates::{AggError, ValueSnapshot};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
@@ -212,7 +216,7 @@ fn value_delivery_is_independent_of_metadata_masks() {
     ] {
         let mut sink = Observe::default();
         assert_eq!(
-            vm.run(
+            vm.run_values(
                 &program,
                 FuncId(0),
                 &[Value::I64(42)],
@@ -237,14 +241,13 @@ fn value_delivery_is_independent_of_metadata_masks() {
 fn entry_values_and_limits_precede_rejected_invocation_validation() {
     let program = identity();
     let cases = [
-        (FuncId(99), vec![Value::I64(7)], Limits::default()),
         (FuncId(0), vec![], Limits::default()),
         (FuncId(0), vec![Value::Bool(true)], Limits::default()),
         (
             FuncId(0),
             vec![Value::I64(7)],
             Limits {
-                max_call_depth: 0,
+                max_frames: 0,
                 ..Limits::default()
             },
         ),
@@ -260,7 +263,7 @@ fn entry_values_and_limits_precede_rejected_invocation_validation() {
     for (entry, args, limits) in cases {
         let mut vm = Vm::new(NeverHost, limits.clone());
         let mut sink = Observe::default();
-        vm.run(&program, entry, &args, sink.mask(), Some(&mut sink))
+        vm.run_values(&program, entry, &args, sink.mask(), Some(&mut sink))
             .unwrap_err();
         assert_eq!(sink.order, ["run_start", "entry", "run_end"]);
         let observed = sink.entry.unwrap();
@@ -268,7 +271,7 @@ fn entry_values_and_limits_precede_rejected_invocation_validation() {
         assert_eq!(observed.1, args);
         assert_eq!(observed.2, 0);
         assert_eq!(observed.3.fuel, limits.fuel);
-        assert_eq!(observed.3.max_call_depth, limits.max_call_depth);
+        assert_eq!(observed.3.max_frames, limits.max_frames);
         assert!(sink.outcome.unwrap().is_err());
     }
 }
@@ -310,7 +313,7 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
             Limits::default(),
         );
         let mut sink = Observe::default();
-        let result = vm.run(
+        let result = vm.run_values(
             &program,
             FuncId(0),
             &[Value::I64(7)],
@@ -358,7 +361,7 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
         Limits::default(),
     );
     let mut sink = Observe::default();
-    vm.run(
+    vm.run_values(
         &program,
         FuncId(0),
         &[Value::I64(7)],
@@ -382,7 +385,7 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
     );
     let mut sink = Observe::default();
     let error = vm
-        .run(
+        .run_values(
             &program,
             FuncId(0),
             &[Value::I64(7)],
@@ -415,7 +418,7 @@ fn borrowed_host_failure_can_be_retained_without_flattening_its_typed_payload() 
     );
     let mut sink = Observe::default();
     let failure = vm
-        .run(&program, FuncId(0), &[], sink.mask(), Some(&mut sink))
+        .run_values(&program, FuncId(0), &[], sink.mask(), Some(&mut sink))
         .unwrap_err();
     drop(vm);
     let Trap::HostCallFailed {
@@ -478,7 +481,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
     let program = host_program(&[ValueType::Str], ValueType::Str);
     let mut vm = Vm::new(EchoHost, Limits::default());
     assert_eq!(
-        vm.run(
+        vm.run_values(
             &program,
             FuncId(0),
             &args,
@@ -649,7 +652,7 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
         .unwrap();
     live.host_mut().values[0] = Value::Agg(root);
     let mut capture = Observe::default();
-    live.run(&program, FuncId(0), &[], capture.mask(), Some(&mut capture))
+    live.run_values(&program, FuncId(0), &[], capture.mask(), Some(&mut capture))
         .unwrap();
     assert_eq!(capture.entry.unwrap().2, 2);
     let snapshot = capture.host_returns.pop().unwrap().4.unwrap();
@@ -667,7 +670,7 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
     );
     replay.host_mut().values = replay.aggregate_builder().import(&snapshot).unwrap();
     let outputs = replay
-        .run(&program, FuncId(0), &[], TraceMask::NONE, None)
+        .run_values(&program, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     let Value::Agg(restored) = outputs[0] else {
         panic!("replayed graph");
@@ -717,7 +720,7 @@ fn nested_function_returns_do_not_emit_root_candidates() {
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(NeverHost, Limits::default());
     let mut sink = Observe::default();
-    vm.run(
+    vm.run_values(
         &program,
         entry,
         &[Value::I64(42)],

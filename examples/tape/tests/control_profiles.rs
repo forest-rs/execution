@@ -155,6 +155,20 @@ impl TraceSink for Profiles {
         self.footfall.run_end(context, outcome);
         self.check();
     }
+    fn stack_context(
+        &mut self,
+        context: TraceContext<'_>,
+        snapshot: execution_tape::trace::StackSnapshot<'_>,
+    ) {
+        self.footfall.stack_context(context, snapshot);
+        self.tracy.stack_context(context, snapshot);
+        self.check();
+    }
+    fn stack_release(&mut self, context: TraceContext<'_>) {
+        self.footfall.stack_release(context);
+        self.tracy.stack_release(context);
+        self.check();
+    }
     fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
         let id = context.stack().unwrap().clone();
         match activity {
@@ -219,11 +233,17 @@ fn tail_attachment_and_parked_sibling_cancellation_preserve_physical_scope_owner
         let cursor = runtime.cursor();
         let mut profiles = Profiles::new();
         let mut vm = Vm::new(NoHost, Limits::default());
-        assert_eq!(
-            vm.run(&program, entry, &[], mask, Some(&mut profiles))
-                .unwrap(),
-            [Value::I64(42)]
-        );
+        let function = vm.function(&program, entry).unwrap();
+        let roots = vm
+            .run(
+                function,
+                [],
+                execution_tape::vm::TurnOptions::default().trace(mask, &mut profiles),
+            )
+            .unwrap()
+            .into_returned()
+            .unwrap();
+        assert_eq!(vm.resolve(&roots).unwrap().values(), &[Value::I64(42)]);
         profiles.check();
         assert_eq!(profiles.parked.len(), 2);
         assert_eq!(profiles.attached, profiles.parked[..1]);
@@ -293,12 +313,13 @@ fn tail_attachment_and_parked_sibling_cancellation_preserve_physical_scope_owner
             );
         }
     }
+    native_turn_observers(runtime);
 }
 
 #[test]
 #[cfg(panic = "unwind")]
 fn interrupted_park_or_attachment_cannot_repeat_a_control_transfer() {
-    use execution_tape::vm::{InvocationOptions, Trap};
+    use execution_tape::vm::{Trap, TurnOptions};
     use std::{cell::Cell, rc::Rc};
     struct Interrupt {
         park: bool,
@@ -321,7 +342,7 @@ fn interrupted_park_or_attachment_cannot_repeat_a_control_transfer() {
                 &program,
                 entry,
                 &[],
-                InvocationOptions::default().trace_owned(
+                TurnOptions::default().trace_owned(
                     TraceMask::RUN,
                     Interrupt {
                         park,
@@ -349,5 +370,103 @@ fn interrupted_park_or_attachment_cannot_repeat_a_control_transfer() {
             "interrupted transition is never retried"
         );
         assert_eq!(vm.aggregates().len_u32(), 0);
+    }
+}
+
+fn native_turn_observers(runtime: &Runtime) {
+    use execution_tape::vm::{RunStatus, TurnOptions, TurnOutcome};
+    let mut builder = ProgramBuilder::new();
+    let protocol = FunctionSig {
+        arg_types: vec![],
+        ret_types: vec![ValueType::I64],
+    };
+    let tag = builder
+        .control_tag("supply-number", protocol.clone())
+        .unwrap();
+    let signature = builder.call_sig(protocol.clone()).unwrap();
+    let root = builder.declare_function(protocol).unwrap();
+    let mut body = builder.function_asm(root).unwrap();
+    let operation = body.alloc_register(ValueType::Tag);
+    body.const_tag(operation, tag);
+    let response = builder
+        .emit_suspend(&mut body, operation, signature, &[])
+        .unwrap()[0];
+    body.ret(0, &[response]);
+    builder.define_function(root, body).unwrap();
+    let program = builder.build_verified().unwrap();
+    for mask in [
+        TraceMask::RUN,
+        TraceMask::CALL,
+        TraceMask::HOST,
+        TraceMask::INSTR,
+        TraceMask::RUN | TraceMask::CALL | TraceMask::HOST,
+    ] {
+        let cursor = runtime.cursor();
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let function = vm.function(&program, root).unwrap();
+        let mut profiles = Profiles::new();
+        let mut turn = vm
+            .turn(TurnOptions::default().trace(mask, &mut profiles))
+            .unwrap();
+        turn.start(function, []).unwrap();
+        assert_eq!(turn.drive(1).unwrap(), RunStatus::Suspended);
+        assert!(matches!(turn.finish().unwrap(), TurnOutcome::Paused));
+        profiles.check();
+        assert!(
+            profiles.ended.is_empty(),
+            "releasing an observer is not a guest return"
+        );
+
+        let mut profiles = Profiles::new();
+        let mut turn = vm
+            .turn(TurnOptions::default().trace(mask, &mut profiles))
+            .unwrap();
+        while turn.drive(1).unwrap() == RunStatus::Suspended {}
+        let effect = match turn.finish().unwrap() {
+            TurnOutcome::Effect(effect) => effect,
+            _ => panic!("typed effect"),
+        };
+        profiles.check();
+        assert!(
+            profiles.started.is_empty(),
+            "joining context cannot invent run starts"
+        );
+        assert!(profiles.ended.is_empty());
+
+        vm.collect().unwrap();
+        let mut profiles = Profiles::new();
+        let mut turn = vm
+            .turn(TurnOptions::default().trace(mask, &mut profiles))
+            .unwrap();
+        turn.resume_continuation(&effect.continuation, [Value::I64(42)])
+            .unwrap();
+        while turn.drive(1).unwrap() == RunStatus::Suspended {}
+        let output = match turn.finish().unwrap() {
+            TurnOutcome::Returned(output) => output,
+            _ => panic!("returned number"),
+        };
+        profiles.check();
+        assert!(profiles.started.is_empty());
+        assert_eq!(
+            profiles.ended.len(),
+            usize::from(mask.contains(TraceMask::RUN))
+        );
+        assert_eq!(vm.resolve(&output).unwrap().values(), &[Value::I64(42)]);
+        drop(profiles);
+        let snapshot = runtime.snapshot_since(cursor);
+        assert_eq!(snapshot.window().missed(), 0);
+        let mut scopes = vec![];
+        for event in snapshot.events() {
+            match event.observation() {
+                Observation::ScopeBegin { token, .. } => scopes.push(*token),
+                Observation::ScopeEnd { token } => assert_eq!(
+                    scopes.pop(),
+                    Some(*token),
+                    "turn handoff must preserve physical LIFO"
+                ),
+                _ => {}
+            }
+        }
+        assert!(scopes.is_empty(), "every turn releases its physical scopes");
     }
 }

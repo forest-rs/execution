@@ -12,7 +12,7 @@ use execution_tape::{
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{AggHandle, Closure, FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, ObjectRootOrigin, RunStatus, Trap, Vm},
+    vm::{Limits, ObjectRootOrigin, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -152,8 +152,8 @@ fn fixture() -> Fixture {
         closure,
     }
 }
-fn options<'a>() -> InvocationOptions<'a> {
-    InvocationOptions::default().yield_host_calls()
+fn options<'a>() -> TurnOptions<'a> {
+    TurnOptions::default().yield_host_calls()
 }
 
 #[test]
@@ -162,7 +162,10 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     let args = [Value::I64(40)];
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let before: Vec<_> = run.inspect().frames().collect();
     assert_eq!(
         before
@@ -185,7 +188,10 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
         run.pending_host_call().is_none(),
         "callback has not executed its host call yet"
     );
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     assert_eq!(run.pending_host_call().unwrap().symbol(), "lookup");
     let nested: Vec<_> = run.inspect().frames().collect();
     assert_eq!(nested.len(), 3);
@@ -210,14 +216,20 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
         request.call_guest(callee, arguments)
     }
     .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let mut inner = run.pending_host_call().unwrap();
     assert_eq!(inner.symbol(), "lookup");
     let mut result = inner.take_callback_results().unwrap();
     assert_eq!(result, [Value::I64(41)]);
     assert!(inner.take_callback_results().is_none());
     inner.complete(&mut result, Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     assert!(
         run.result().is_none(),
         "callback completion is not invocation completion"
@@ -255,7 +267,10 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
         request.call_guest(callee, arguments)
     }
     .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     let mut host = run.pending_host_call().unwrap();
     let returned = host.take_callback_results().unwrap();
     let [Value::Agg(wrapped)] = returned.as_slice() else {
@@ -323,7 +338,10 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
         request.call_guest(callee, arguments)
     }
     .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert!(matches!(
+        run.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost(_)
+    ));
     assert_eq!(
         run.pending_host_call().unwrap().take_callback_results(),
         Some(vec![Value::I64(42)])
@@ -391,7 +409,7 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
         ),
         (
             Limits {
-                max_call_depth: 2,
+                max_frames: 2,
                 ..Limits::default()
             },
             "depth",
@@ -441,7 +459,7 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
         };
         assert!(match expected {
             "fuel" => matches!(error.trap, Trap::FuelExceeded),
-            "depth" => matches!(error.trap, Trap::CallDepthExceeded),
+            "depth" => matches!(error.trap, Trap::FrameLimitExceeded { .. }),
             "host" => matches!(error.trap, Trap::HostCallLimitExceeded),
             "payload" => matches!(error.trap, Trap::PayloadWorkExceeded { .. }),
             _ => unreachable!(),

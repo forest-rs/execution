@@ -44,27 +44,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mask = sink.mask() | TraceMask::INSTR;
     for (condition, expected) in [(true, 42), (false, 0)] {
         let result = vm.run(
-            &program,
-            ENTRY,
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
             &[Value::Bool(condition), Value::I64(41)],
-            mask,
-            Some(&mut sink),
+            execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
         )?;
-        assert_eq!(result, [Value::I64(expected)]);
+        let roots = result.into_returned().expect("demo returns synchronously");
+        assert_eq!(vm.resolve(&roots)?.values(), &[Value::I64(expected)]);
     }
     for behavior in [Behavior::Failure, Behavior::InvalidReturn] {
         vm.host_mut().behavior = behavior;
         vm.run(
-            &program,
-            ENTRY,
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                ENTRY,
+            )
+            .expect("verified entry"),
             &[Value::Bool(true), Value::I64(41)],
-            mask,
-            Some(&mut sink),
+            execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
         )
         .expect_err("intentional host failure");
     }
-    vm.run(&program, GUEST_TRAP, &[], mask, Some(&mut sink))
-        .expect_err("intentional guest failure");
+    vm.run(
+        execution_tape::callable::Callable::function(
+            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+            GUEST_TRAP,
+        )
+        .expect("verified entry"),
+        &[],
+        execution_tape::vm::TurnOptions::default().trace(mask, &mut sink),
+    )
+    .expect_err("intentional guest failure");
     drop(sink);
 
     let snapshot = runtime.snapshot();

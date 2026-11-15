@@ -8,7 +8,7 @@ mod workload;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
-use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::trace::TraceSink;
 use execution_tape::value::FuncId;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -18,19 +18,36 @@ fn recording(c: &mut Criterion) {
         let program = workload::program(calls);
         let (mut vm, args) = workload::fixture(256, 65_536);
         let expected = vm
-            .run(&program, FuncId(0), &args, TraceMask::NONE, None)
+            .run(
+                execution_tape::callable::Callable::function(
+                    std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                    FuncId(0),
+                )
+                .expect("verified entry"),
+                &args,
+                execution_tape::vm::TurnOptions::default(),
+            )
             .unwrap();
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
         let actual = vm
             .run(
-                &program,
-                FuncId(0),
+                execution_tape::callable::Callable::function(
+                    std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                    FuncId(0),
+                )
+                .expect("verified entry"),
                 &args,
-                recorder.mask(),
-                Some(&mut recorder),
+                execution_tape::vm::TurnOptions::default().trace(recorder.mask(), &mut recorder),
             )
             .unwrap();
-        assert_eq!(actual, expected);
+        assert_eq!(
+            vm.resolve(&actual.into_returned().unwrap())
+                .unwrap()
+                .values(),
+            vm.resolve(&expected.into_returned().unwrap())
+                .unwrap()
+                .values()
+        );
         let record = recorder.finish();
         record.status().unwrap();
         let ReplayOutcome::Returned(result) = record.replay().unwrap() else {
@@ -44,7 +61,17 @@ fn recording(c: &mut Criterion) {
         group.bench_function("live", |b| {
             b.iter(|| {
                 let result = vm
-                    .run(&program, FuncId(0), black_box(&args), TraceMask::NONE, None)
+                    .run(
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                &program,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
+                        black_box(&args),
+                        execution_tape::vm::TurnOptions::default(),
+                    )
                     .unwrap();
                 black_box(result);
             })
@@ -54,11 +81,16 @@ fn recording(c: &mut Criterion) {
                 let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
                 let result = vm
                     .run(
-                        &program,
-                        FuncId(0),
+                        execution_tape::callable::Callable::function(
+                            std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(
+                                &program,
+                            )),
+                            FuncId(0),
+                        )
+                        .expect("verified entry"),
                         black_box(&args),
-                        recorder.mask(),
-                        Some(&mut recorder),
+                        execution_tape::vm::TurnOptions::default()
+                            .trace(recorder.mask(), &mut recorder),
                     )
                     .unwrap();
                 let record = recorder.finish();

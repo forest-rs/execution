@@ -14,7 +14,7 @@ use execution_tape::{
     trace::TraceSink,
     value::{Closure, FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{DataWork, InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{DataWork, Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -83,7 +83,7 @@ fn escaped() -> Callable {
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(40)];
     let mut invocation = factory
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), TurnOptions::default())
         .unwrap();
     invocation.resume(u64::MAX).unwrap();
     invocation.retain_callable(0).unwrap()
@@ -97,7 +97,7 @@ fn raw_entries_keep_code_after_the_compiler_handle_is_dropped() {
         let (program, factory) = maker();
         let original_owner = Arc::downgrade(&program);
         let invocation = vm
-            .start(&program, factory, &args, InvocationOptions::default())
+            .start(&program, factory, &args, TurnOptions::default())
             .unwrap();
         (invocation, original_owner)
     };
@@ -129,7 +129,7 @@ fn function_identity_follows_the_verified_definition_across_outer_handles() {
 fn finish(callable: &Callable, args: &[Value]) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut invocation = callable
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), TurnOptions::default())
         .unwrap();
     while invocation.resume(1).unwrap() == RunStatus::Suspended {}
     invocation.take_outputs().unwrap()
@@ -180,7 +180,7 @@ fn invocation_imports_are_transactional_and_do_not_accumulate_in_a_long_lived_vm
     for cancel in [true, false, false, true] {
         let args = [Value::I64(2)];
         let mut invocation = callable
-            .start(&mut vm, args.to_vec(), InvocationOptions::default())
+            .start(&mut vm, args.to_vec(), TurnOptions::default())
             .unwrap();
         assert_eq!(invocation.aggregates().len_u32(), 2);
         if !cancel {
@@ -212,7 +212,7 @@ fn capture_import_work_is_admitted_before_allocation_and_preserved_in_replay() {
         let result = callable.start(
             &mut vm,
             args.to_vec(),
-            InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+            TurnOptions::default().trace(recorder.mask(), &mut recorder),
         );
         if limit == 1 {
             let error = result.unwrap_err();
@@ -286,7 +286,7 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
             .start(
                 &mut vm,
                 vec![],
-                InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+                TurnOptions::default().trace(recorder.mask(), &mut recorder),
             )
             .unwrap();
         let result = invocation.resume(1);
@@ -345,7 +345,7 @@ fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocatio
     let args = [Value::I64(2)];
     let mut vm = Vm::new(NoHost, Limits::default());
     let error = bad
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), TurnOptions::default())
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ContractMismatch { .. }));
     assert_eq!(vm.aggregates().len_u32(), 0);
@@ -391,7 +391,7 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
         let started = callable.start(
             &mut vm,
             args.to_vec(),
-            InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+            TurnOptions::default().trace(recorder.mask(), &mut recorder),
         );
         if limit == 1 {
             assert!(matches!(
@@ -484,7 +484,7 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
     drop(heap);
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = callable
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, vec![], TurnOptions::default())
         .unwrap();
     let mut inspection = run.inspect();
     let root = inspection.frames().next().unwrap().activation;
@@ -547,7 +547,7 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     drop(heap);
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = outer
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, vec![], TurnOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     let inner = run.retain_callable(0).unwrap();
@@ -564,7 +564,7 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
     let args = [Value::I64(40)];
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = bound
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), TurnOptions::default())
         .unwrap();
     assert_eq!(
         run.retain_callable(0).unwrap_err(),
@@ -579,7 +579,7 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
     drop(run);
     let args = [Value::I64(2)];
     let mut run = closure
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), TurnOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     assert_eq!(
@@ -590,14 +590,14 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
     );
     drop(run);
     let mut run = vm
-        .start(&program, factory, &args, InvocationOptions::default())
+        .start(&program, factory, &args, TurnOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     let retained = run.retain_callable(0).unwrap();
     assert!(retained.program().shares_definition_with(&program));
     drop(run);
     let mut run = retained
-        .start(&mut vm, vec![Value::I64(40)], InvocationOptions::default())
+        .start(&mut vm, vec![Value::I64(40)], TurnOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(42)]);
@@ -644,7 +644,7 @@ fn an_owned_invocation_outlives_a_discarded_or_temporary_lookup_handle() {
     let lookup = escaped();
     let weak = Arc::downgrade(lookup.program());
     let mut invocation = lookup
-        .start(&mut vm, vec![Value::I64(2)], InvocationOptions::default())
+        .start(&mut vm, vec![Value::I64(2)], TurnOptions::default())
         .unwrap();
     drop(lookup);
     assert!(
@@ -659,7 +659,7 @@ fn an_owned_invocation_outlives_a_discarded_or_temporary_lookup_handle() {
         "completion alone does not leave a hidden code owner in the VM"
     );
     let mut invocation = escaped()
-        .start(&mut vm, vec![Value::I64(3)], InvocationOptions::default())
+        .start(&mut vm, vec![Value::I64(3)], TurnOptions::default())
         .unwrap();
     invocation.resume(u64::MAX).unwrap();
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(43)]);
@@ -725,8 +725,7 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
         .start(
             &mut vm,
             vec![Value::Str(payload)],
-            InvocationOptions::default()
-                .trace(execution_tape::trace::TraceMask::VALUES, &mut probe),
+            TurnOptions::default().trace(execution_tape::trace::TraceMask::VALUES, &mut probe),
         )
         .unwrap();
     assert_eq!(invocation.data_work(), callable.capture_work());

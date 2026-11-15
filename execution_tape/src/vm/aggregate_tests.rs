@@ -159,7 +159,7 @@ fn aggregate_budget_is_shared_by_guest_calls_and_checked_replay() {
             },
         );
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-        let result = vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder));
+        let result = vm.run_values(&program, entry, &[], recorder.mask(), Some(&mut recorder));
         let recording = recorder.finish();
         drop(vm);
         if limit == 2 {
@@ -230,7 +230,7 @@ fn borrowed_nested_aggregates_charge_only_new_immediate_fields() {
         .tuple_new(vec![Value::I64(7); 4096])
         .unwrap();
     let output = vm
-        .run(&program, entry, &[Value::Agg(input)], TraceMask::NONE, None)
+        .run_values(&program, entry, &[Value::Agg(input)], TraceMask::NONE, None)
         .unwrap();
     let Value::Agg(root) = output[0] else {
         panic!("aggregate result")
@@ -301,12 +301,15 @@ fn reserved_uninitialized_aggregate_is_rejected_before_guest_or_host_admission()
                     &program,
                     entry,
                     &args,
-                    InvocationOptions::default().yield_host_calls(),
+                    TurnOptions::default().yield_host_calls(),
                 );
                 let error = match run.as_mut() {
                     Err(error) => error.clone(),
                     Ok(run) => {
-                        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+                        assert!(matches!(
+                            run.resume(100).unwrap(),
+                            RunStatus::AwaitingHost(_)
+                        ));
                         run.pending_host_call()
                             .unwrap()
                             .complete(&mut [Value::Agg(AggHandle(u32::MAX))], Ok(0))
@@ -316,7 +319,7 @@ fn reserved_uninitialized_aggregate_is_rejected_before_guest_or_host_admission()
                 assert!(matches!(error.trap, Trap::AggError(AggError::BadHandle)));
             } else {
                 let error = vm
-                    .run(&program, entry, &args, TraceMask::NONE, None)
+                    .run_values(&program, entry, &args, TraceMask::NONE, None)
                     .unwrap_err();
                 assert!(matches!(error.trap, Trap::AggError(AggError::BadHandle)));
             }

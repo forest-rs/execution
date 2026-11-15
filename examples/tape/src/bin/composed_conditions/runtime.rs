@@ -13,7 +13,7 @@ use execution_tape::{
     recording::{InstructionCapture, RecordLimits, Recorder, ReplayOutcome},
     trace::TraceSink,
     value::{FuncId, Value},
-    vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{ActivationId, Invocation, Limits, RunStatus, TurnOptions, Vm},
 };
 use execution_tape_observatory::{LiveExplorer, RecordingExplorer};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -124,7 +124,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
             &programs.main.code,
             programs.main.entry,
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace_owned(mask, recorder.clone()),
         )?;
@@ -325,6 +325,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                 .resume(128)?;
             match status {
                 RunStatus::Suspended => {}
+                RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
                 RunStatus::Complete => {
                     let run = self.invocation.as_mut().expect("execution owner");
                     println!(
@@ -339,7 +340,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                     self.replay()?;
                     return Ok(());
                 }
-                RunStatus::AwaitingHost => {
+                RunStatus::AwaitingHost(_) => {
                     let symbol = self
                         .invocation
                         .as_mut()

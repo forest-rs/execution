@@ -299,7 +299,6 @@ fn requiring_a_block_checks_a_dynamic_payload_before_typed_invocation() {
         asm::{FunctionSig, ProgramBuilder},
         host::HostSig,
         program::ValueType,
-        trace::TraceMask,
     };
     let mut program = ProgramBuilder::new();
     let entry = program
@@ -326,11 +325,20 @@ fn requiring_a_block_checks_a_dynamic_payload_before_typed_invocation() {
     program.define_function(entry, body).unwrap();
     let program = program.build_verified().unwrap();
     let failure = Vm::new(Cells::default(), Limits::default())
-        .run(&program, entry, &[], TraceMask::NONE, None)
+        .run(
+            execution_tape::callable::Callable::function(
+                std::sync::Arc::new(execution_tape::verifier::VerifiedProgram::clone(&program)),
+                entry,
+            )
+            .expect("verified entry"),
+            &[],
+            execution_tape::vm::TurnOptions::default(),
+        )
         .unwrap_err();
     assert!(
-        matches!(failure.trap, Trap::HostCallFailed { symbol, error: HostError::SignatureMismatch, .. }
-        if symbol.as_ref() == "Object.requireBlock")
+        matches!(failure, execution_tape::vm::ControlError::Trapped(execution_tape::vm::TrapInfo {
+            trap: Trap::HostCallFailed { symbol, error: HostError::SignatureMismatch, .. }, ..
+        }) if symbol.as_ref() == "Object.requireBlock")
     );
 }
 

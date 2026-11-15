@@ -1,0 +1,44 @@
+// Copyright 2026 the Execution Tape Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Value-oriented assertions resolve the ordinary durable execution outcome.
+
+use super::*;
+use crate::callable::Callable;
+use alloc::sync::Arc;
+
+impl<H: Host> Vm<H> {
+    pub(crate) fn run_values(
+        &mut self,
+        program: &VerifiedProgram,
+        entry: FuncId,
+        arguments: &[Value],
+        mask: TraceMask,
+        sink: Option<&mut dyn TraceSink>,
+    ) -> Result<Vec<Value>, TrapInfo> {
+        let fail = |trap| TrapInfo {
+            func: entry,
+            pc: 0,
+            span_id: None,
+            trap,
+        };
+        let callable = Callable::function(Arc::new(program.clone()), entry)
+            .map_err(|_| fail(Trap::InvalidPc))?;
+        let mut options = TurnOptions::default();
+        if let Some(sink) = sink {
+            options = options.trace(mask, sink);
+        }
+        match self.run(callable, arguments, options) {
+            Ok(TurnOutcome::Returned(values)) => Ok(self
+                .resolve(&values)
+                .expect("published test result")
+                .values()
+                .to_vec()),
+            Ok(other) => panic!("value assertion expected a return, got {other:?}"),
+            Err(ControlError::Trapped(error)) => Err(error),
+            Err(ControlError::Input(trap)) => Err(fail(trap)),
+            Err(ControlError::Retention(error)) => Err(fail(Trap::ValueRoot(Box::new(error)))),
+            Err(error) => panic!("invalid value assertion setup: {error}"),
+        }
+    }
+}

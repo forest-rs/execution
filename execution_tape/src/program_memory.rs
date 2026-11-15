@@ -13,6 +13,11 @@ use crate::value::Value;
 /// Private boundary between retained nodes and the current run's allocations.
 #[derive(Clone, Copy)]
 pub(crate) struct Checkpoint(u32);
+impl Checkpoint {
+    pub(crate) fn index(self) -> u32 {
+        self.0
+    }
+}
 
 /// Shared runtime memory for program execution.
 #[derive(Clone, Debug, Default)]

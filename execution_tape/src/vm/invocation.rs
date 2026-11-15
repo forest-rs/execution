@@ -21,36 +21,38 @@ pub use host_request::PendingHostCall;
 use super::continuation::CodeOwner;
 
 /// Progress after executing an invocation's scheduling quantum.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunStatus {
+    /// An unmatched typed effect is available at this turn's native boundary.
+    AwaitingEffect,
     /// A safe instruction boundary was reached with the invocation still active.
     Suspended,
     /// An admitted host instruction is waiting for embedding-supplied completion.
     /// Query [`Invocation::pending_host_call`]; resuming alone does not invoke the host.
     /// A guest callback return restores its original request in this same state; take the
     /// callback results before choosing and completing the host outcome.
-    AwaitingHost,
+    AwaitingHost(HostRequestId),
     /// The root returned and its results were committed.
     Complete,
 }
 
-/// Optional borrowed or owned observers of one logical invocation.
+/// Scheduling policy and optional borrowed or owned observers for one execution turn.
 ///
 /// Scheduling does not change the VM's hard resource limits. Logical trace scopes retain their
 /// identities across suspension. Profiling adapters measure attached-chain elapsed intervals:
 /// capture parking closes physical spans, but scheduling pauses and host waiting still count.
 /// Those intervals measure elapsed latency, not active CPU time.
 #[derive(Default)]
-pub struct InvocationOptions<'a> {
+pub struct TurnOptions<'a> {
     pub(super) yield_host_calls: bool,
     pub(super) mask: Option<TraceMask>,
     pub(super) trace: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
     pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
 }
 
-impl fmt::Debug for InvocationOptions<'_> {
+impl fmt::Debug for TurnOptions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InvocationOptions")
+        f.debug_struct("TurnOptions")
             .field("mask", &self.mask)
             .field("yield_host_calls", &self.yield_host_calls)
             .field("access_recording", &self.access.is_some())
@@ -58,7 +60,7 @@ impl fmt::Debug for InvocationOptions<'_> {
     }
 }
 
-impl<'a> InvocationOptions<'a> {
+impl<'a> TurnOptions<'a> {
     /// Yields admitted host calls for the embedding to complete or dispatch explicitly.
     ///
     /// This preserves the ordinary host ABI and adds no async runtime. A pending request
@@ -84,7 +86,7 @@ impl<'a> InvocationOptions<'a> {
         self
     }
 
-    /// Owns a trace observer for an independently stored invocation.
+    /// Owns a trace observer for this turn. Durable saved stacks retain no observer borrow.
     /// Shared `Rc<RefCell<S>>` sinks can retain captured evidence after invocation retirement.
     #[must_use]
     pub fn trace_owned(mut self, mask: TraceMask, sink: impl TraceSink + 'a) -> Self {
@@ -93,7 +95,7 @@ impl<'a> InvocationOptions<'a> {
         self
     }
 
-    /// Owns an access observer across suspension. No graph access borrow is retained.
+    /// Owns an access observer for this turn. No graph access borrow is retained.
     /// Shared `Rc<RefCell<S>>` sinks can collect accesses for a task's next graph poll.
     #[must_use]
     pub fn access_owned(mut self, sink: impl AccessSink + 'a) -> Self {
@@ -138,6 +140,8 @@ pub(super) struct Running<'request, 'state, H: Host> {
     pub(super) continuation: &'request mut continuation::Continuation<'state>,
     pub(super) parents: &'request mut Vec<continuation::Continuation<'state>>,
     pub(super) checkpoint: Checkpoint,
+    pub(super) epoch: u64,
+    pub(super) defer_publication: bool,
     pub(super) budget: &'request mut Budget,
     pub(super) next_segment: &'request mut u64,
     pub(super) resumptions: &'request mut Resumptions<delimited::Saved>,
@@ -149,7 +153,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         program: &VerifiedProgram,
         entry: FuncId,
         args: &'a [Value],
-        mut options: InvocationOptions<'a>,
+        mut options: TurnOptions<'a>,
         mut scratch: ExecutionContext,
         outputs: Vec<Value>,
     ) -> Self {
@@ -216,6 +220,8 @@ impl<'a, H: Host> Invocation<'a, H> {
             resumptions: &mut self.resumptions,
             budget: &mut self.budget,
             checkpoint: self.checkpoint,
+            epoch: 0,
+            defer_publication: false,
         }
     }
 }
@@ -242,7 +248,7 @@ impl<H: Host> Vm<H> {
         program: &VerifiedProgram,
         entry: FuncId,
         args: &'a [Value],
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         self.start_prepaid(program, entry, args, options, DataWork::default())
     }
@@ -252,7 +258,7 @@ impl<H: Host> Vm<H> {
         program: &VerifiedProgram,
         entry: FuncId,
         args: &'a [Value],
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
         work: DataWork,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         let checkpoint = self.memory.checkpoint();
@@ -271,7 +277,7 @@ impl<H: Host> Vm<H> {
         program: CodeOwner,
         entry: FuncId,
         args: Cow<'a, [Value]>,
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
@@ -293,7 +299,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         program: CodeOwner,
         entry: FuncId,
         args: Cow<'a, [Value]>,
-        mut options: InvocationOptions<'a>,
+        mut options: TurnOptions<'a>,
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
@@ -349,89 +355,7 @@ impl<H: Host> Invocation<'_, H> {
         &mut self,
         quantum: u64,
     ) -> Result<RunStatus, TrapInfo> {
-        if let Some(outcome) = &self.continuation.outcome {
-            return if outcome.is_ok() && !self.parents.is_empty() {
-                self.running().restore_after_return()
-            } else {
-                outcome.clone().map(|()| RunStatus::Complete)
-            };
-        }
-        if let Some(location) = self.continuation.control.waiting.interrupted() {
-            let error = self.continuation.ctx.trap(
-                location.func,
-                location.pc,
-                None,
-                Trap::GuestTransferAbandoned,
-            );
-            self.running().finish(Err(error.clone()));
-            return Err(error);
-        }
-        if let Some(pending) = self.continuation.control.waiting.host() {
-            if pending.abandoned {
-                return Err(self.running().finish_abandoned_host(pending));
-            }
-            return Ok(RunStatus::AwaitingHost);
-        }
-        let result = self
-            .continuation
-            .advance_mode::<H, COOPERATIVE>(
-                &mut self.vm,
-                &mut self.budget,
-                quantum,
-                &mut self.observers,
-            )
-            .and_then(|progress| match progress {
-                Progress::Suspended => Ok(RunStatus::Suspended),
-                Progress::Control {
-                    location,
-                    instruction,
-                } => self.running().dispatch_control(location, instruction),
-                Progress::AwaitingHost => Ok(RunStatus::AwaitingHost),
-                Progress::GuestCall {
-                    target,
-                    environment,
-                    args,
-                } => self.enter_guest(target, environment, args),
-                Progress::Returned(site) if !self.parents.is_empty() => {
-                    self.running().finish_segment_return(site)?;
-                    self.running().restore_after_return()
-                }
-                Progress::Returned(site) => {
-                    self.running().check_root_tail_result(site)?;
-                    self.running().prepare_root_return(site.location);
-                    let continuation = &mut self.continuation;
-                    if continuation.trace.active() {
-                        self.vm.commit_return::<WithTracePolicy>(
-                            &mut continuation.ctx,
-                            &mut self.budget,
-                            continuation.program.program(),
-                            self.checkpoint,
-                            &mut continuation.outputs[continuation.output_start..],
-                            &mut continuation.trace.observe(&mut self.observers),
-                            site,
-                        )?;
-                    } else {
-                        self.vm.commit_return::<NoTracePolicy>(
-                            &mut continuation.ctx,
-                            &mut self.budget,
-                            continuation.program.program(),
-                            self.checkpoint,
-                            &mut continuation.outputs[continuation.output_start..],
-                            &mut continuation.trace.observe(&mut self.observers),
-                            site,
-                        )?;
-                    }
-                    Ok(RunStatus::Complete)
-                }
-            });
-        match &result {
-            Ok(RunStatus::Suspended | RunStatus::AwaitingHost) => {}
-            Ok(RunStatus::Complete) => self.running().finish(Ok(())),
-            Err(error) => {
-                self.running().finish(Err(error.clone()));
-            }
-        }
-        result
+        self.running().drive::<COOPERATIVE>(quantum)
     }
 
     /// Borrows the committed outputs or terminal trap; `None` means execution is suspended.
@@ -617,6 +541,125 @@ impl<H: Host> Invocation<'_, H> {
 }
 
 impl<H: Host> Running<'_, '_, H> {
+    pub(in crate::vm) fn host_status(&self) -> RunStatus {
+        let pending = self
+            .continuation
+            .control
+            .waiting
+            .host()
+            .expect("admitted host boundary");
+        RunStatus::AwaitingHost(self.continuation.control.host_request_id(pending))
+    }
+
+    pub(in crate::vm) fn drive<const COOPERATIVE: bool>(
+        &mut self,
+        quantum: u64,
+    ) -> Result<RunStatus, TrapInfo> {
+        if self.continuation.pending_return.is_some() {
+            return Ok(RunStatus::Complete);
+        }
+        if let Some(outcome) = &self.continuation.outcome {
+            return if outcome.is_ok() && !self.parents.is_empty() {
+                self.restore_after_return()
+            } else {
+                outcome.clone().map(|()| RunStatus::Complete)
+            };
+        }
+        if let Some(location) = self.continuation.control.waiting.interrupted() {
+            let error = self.continuation.ctx.trap(
+                location.func,
+                location.pc,
+                None,
+                Trap::GuestTransferAbandoned,
+            );
+            self.finish(Err(error.clone()));
+            return Err(error);
+        }
+        if let Some(pending) = self.continuation.control.waiting.host() {
+            if pending.abandoned {
+                return Err(self.finish_abandoned_host(pending));
+            }
+            return Ok(self.host_status());
+        }
+        let result = self
+            .continuation
+            .advance_mode::<H, COOPERATIVE>(self.vm, self.budget, quantum, self.observers)
+            .and_then(|progress| match progress {
+                Progress::Suspended => Ok(RunStatus::Suspended),
+                Progress::Control {
+                    location,
+                    instruction,
+                } => self.dispatch_control(location, instruction),
+                Progress::AwaitingHost => Ok(self.host_status()),
+                Progress::GuestCall {
+                    target,
+                    environment,
+                    args,
+                } => {
+                    let callee = match environment {
+                        Some(env) => Value::Closure(Closure { func: target, env }),
+                        None => Value::Func(target),
+                    };
+                    self.enter_segment(callee, args, crate::trace::EntryOrigin::GuestCall)?;
+                    self.parents
+                        .last_mut()
+                        .expect("guest caller retained")
+                        .control
+                        .waiting
+                        .guest_mut()
+                        .expect("pending guest call")
+                        .abandoned = false;
+                    Ok(RunStatus::Suspended)
+                }
+                Progress::Returned(site) if !self.parents.is_empty() => {
+                    self.finish_segment_return(site)?;
+                    self.restore_after_return()
+                }
+                Progress::Returned(site) => {
+                    self.check_root_tail_result(site)?;
+                    if self.defer_publication {
+                        self.continuation.pending_return = Some(site);
+                        return Ok(RunStatus::Complete);
+                    }
+                    self.prepare_root_return(site.location);
+                    let continuation = &mut self.continuation;
+                    if continuation.trace.active() {
+                        self.vm.commit_return::<WithTracePolicy>(
+                            &mut continuation.ctx,
+                            self.budget,
+                            continuation.program.program(),
+                            self.checkpoint,
+                            &mut continuation.outputs[continuation.output_start..],
+                            &mut continuation.trace.observe(self.observers),
+                            site,
+                        )?;
+                    } else {
+                        self.vm.commit_return::<NoTracePolicy>(
+                            &mut continuation.ctx,
+                            self.budget,
+                            continuation.program.program(),
+                            self.checkpoint,
+                            &mut continuation.outputs[continuation.output_start..],
+                            &mut continuation.trace.observe(self.observers),
+                            site,
+                        )?;
+                    }
+                    Ok(RunStatus::Complete)
+                }
+            });
+        match &result {
+            Ok(RunStatus::Suspended | RunStatus::AwaitingHost(_) | RunStatus::AwaitingEffect) => {}
+            Ok(RunStatus::Complete) if !self.defer_publication => self.finish(Ok(())),
+            Ok(RunStatus::Complete) => {}
+            Err(error) => {
+                self.finish(Err(error.clone()));
+            }
+        }
+        result
+    }
+}
+
+impl<H: Host> Running<'_, '_, H> {
     /// Retire all execution-local control state before root publication can compact storage.
     fn prepare_root_return(&mut self, location: TraceLocation) {
         self.continuation.control.waiting = Waiting::Transition(location);
@@ -624,7 +667,7 @@ impl<H: Host> Running<'_, '_, H> {
         self.budget.contract_scratch.clear_proofs();
     }
 
-    fn finish(&mut self, result: Result<(), TrapInfo>) {
+    pub(in crate::vm) fn finish(&mut self, result: Result<(), TrapInfo>) {
         self.finish_outcome(result, false);
     }
 
@@ -639,7 +682,7 @@ impl<H: Host> Running<'_, '_, H> {
             .clone()
             .expect("terminal outcome installed");
         if let Err(error) = &result {
-            let saved = self.retire_saved();
+            let saved = self.retire_epoch();
             self.budget.frames -= self.continuation.ctx.frames.len();
             self.budget.contract_scratch.clear_proofs();
             {
@@ -759,7 +802,7 @@ fn cancel_continuation<H: Host>(
         .run_end(continuation.program.program(), TraceOutcome::Cancelled);
 }
 
-fn finish_control_trace(
+pub(super) fn finish_control_trace(
     continuation: &mut continuation::Continuation<'_>,
     outcome: TraceOutcome<'_>,
     observers: &mut Observers<'_>,
@@ -829,7 +872,7 @@ impl Callable {
         &self,
         vm: &'a mut Vm<H>,
         args: Vec<Value>,
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         let (checkpoint, args, work, owner) = self.prepare_inputs(vm, args)?;
         vm.start_with_inputs(
@@ -846,7 +889,7 @@ impl Callable {
     ///
     /// Transfer this invocation into a task or scheduler without borrowing VM storage or using
     /// self-references. It uses the same interpreter, limits, tracing and cancellation as `start`.
-    /// Supply owned observers in `InvocationOptions` when the invocation must be `'static`.
+    /// Supply owned observers in `TurnOptions` when the invocation must be `'static`.
     /// A host can still borrow external data when that data outlives the returned invocation.
     /// Dropping the invocation releases its VM and cancels unfinished guest work; external host
     /// effects remain real. Raw result handles still belong to that VM: explicitly snapshot or
@@ -855,7 +898,7 @@ impl Callable {
         &self,
         mut vm: Vm<H>,
         args: Vec<Value>,
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         let (checkpoint, args, work, owner) = self.prepare_inputs(&mut vm, args)?;
         Invocation::prepare(

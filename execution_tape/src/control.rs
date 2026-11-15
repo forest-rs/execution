@@ -233,6 +233,10 @@ pub struct ContinuationId {
     revision: u64,
 }
 impl ContinuationId {
+    pub(crate) fn belongs_to(&self, owner: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.owner, owner)
+    }
+
     /// Display slot local to one execution. Reuse preserves a different revision witness.
     #[must_use]
     pub fn ordinal(&self) -> u32 {
@@ -471,7 +475,7 @@ mod tests {
             let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
             let mask = recorder.mask();
             assert_eq!(
-                vm.run(&program, entry, &args, mask, Some(&mut recorder))
+                vm.run_values(&program, entry, &args, mask, Some(&mut recorder))
                     .unwrap(),
                 [Value::Tag(second), Value::Tag(first)]
             );

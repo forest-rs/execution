@@ -261,7 +261,7 @@ fn retaining_outputs_uses_the_actual_tail_result_owner_and_preserves_denied_resu
         let inputs = [Value::Func(target_function)];
         let roots = {
             let mut run = vm
-                .start(&caller, root, &inputs, InvocationOptions::default())
+                .start(&caller, root, &inputs, TurnOptions::default())
                 .unwrap();
             while run.resume(100).unwrap() != RunStatus::Complete {}
             if limit == 0 {
@@ -325,7 +325,10 @@ fn failed_execution_rolls_back_its_suffix_without_losing_older_roots() {
     let roots = vm
         .retain_values(&instance, vec![Value::Agg(tuple)])
         .unwrap();
-    assert!(vm.run(&program, entry, &[], TraceMask::NONE, None).is_err());
+    assert!(
+        vm.run_values(&program, entry, &[], TraceMask::NONE, None)
+            .is_err()
+    );
     assert_eq!(vm.aggregates().len_u32(), 1);
     assert_eq!(vm.collect().unwrap().nodes_after, 1);
     let view = vm.resolve(&roots).unwrap();

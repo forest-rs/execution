@@ -82,6 +82,54 @@ pub enum StackActivity<'a> {
     },
 }
 
+/// One live activation when an observer joins existing execution.
+#[derive(Clone, Debug)]
+pub struct FrameSnapshot {
+    /// Exact live activation, independent of function or code revision.
+    pub activation: ActivationId,
+    /// Current or pending instruction in this stack's definition.
+    pub location: TraceLocation,
+}
+
+/// A currently open scope, without claiming its historical entry was observed.
+#[derive(Clone, Copy, Debug)]
+pub struct ScopeSnapshot {
+    /// Guest frame or admitted host operation.
+    pub kind: ScopeKind,
+    /// Logical guest frame depth within this stack.
+    pub depth: usize,
+    /// Source used to describe the scope, not an inferred historical timestamp.
+    pub location: TraceLocation,
+    /// Optional authored span at that source.
+    pub span: Option<u64>,
+}
+
+/// Bounded context supplied when a turn's observer joins an existing computation.
+///
+/// This is a present-state inventory, not fabricated entry events. An observer can describe
+/// live frames and open physical profiling intervals without claiming to have witnessed the
+/// computation's creation, previous instructions, or effects. Borrowed slices expire when
+/// the callback returns. Only explicitly selected scopes are included.
+#[derive(Clone, Copy, Debug)]
+pub struct StackSnapshot<'a> {
+    /// Actual subscription selected for this turn.
+    pub mask: TraceMask,
+    /// Original entry of this logical stack.
+    pub entry: FuncId,
+    /// Original argument count, including a closure's hidden environment.
+    pub arg_count: usize,
+    /// Current live resumer, if any. Detached roots have no live parent.
+    pub parent: Option<&'a ActivationId>,
+    /// Live guest activations from root to leaf.
+    pub frames: &'a [FrameSnapshot],
+    /// Open scopes selected by this turn's mask, from outermost to innermost.
+    pub scopes: &'a [ScopeSnapshot],
+    /// Pending admitted instruction, if this stack is waiting for a result.
+    pub pending: Option<TraceLocation>,
+    /// Whether this stack is detached from the current active chain.
+    pub parked: bool,
+}
+
 /// What caused entry into another code instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryOrigin {
@@ -618,6 +666,15 @@ pub trait TraceSink {
     /// Scheduler quantum expiry and waiting for a host do not themselves park a stack.
     fn stack_activity(&mut self, _context: TraceContext<'_>, _activity: StackActivity<'_>) {}
 
+    /// Joins an existing stack at a turn boundary, before this observer receives its events.
+    /// Delivered for any nonempty mask. This is context, not a replayable historical start.
+    fn stack_context(&mut self, _context: TraceContext<'_>, _snapshot: StackSnapshot<'_>) {}
+
+    /// Releases this observer's view without ending the logical computation.
+    /// Active stacks release leaf first; parked descriptors are also released. Profilers close
+    /// physical intervals and forget these descriptions. A later turn imports fresh context.
+    fn stack_release(&mut self, _context: TraceContext<'_>) {}
+
     /// Borrows values at an execution boundary without changing execution or retaining data.
     ///
     /// Enabled only by [`TraceMask::VALUES`]. `Entry` follows `run_start` when both are enabled;
@@ -762,6 +819,12 @@ impl<S: TraceSink + ?Sized> TraceSink for &mut S {
     fn run_start(&mut self, context: TraceContext<'_>, entry: FuncId, arg_count: usize) {
         (**self).run_start(context, entry, arg_count);
     }
+    fn stack_context(&mut self, context: TraceContext<'_>, snapshot: StackSnapshot<'_>) {
+        (**self).stack_context(context, snapshot);
+    }
+    fn stack_release(&mut self, context: TraceContext<'_>) {
+        (**self).stack_release(context);
+    }
     fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
         (**self).stack_activity(context, activity);
     }
@@ -843,6 +906,12 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
         self.as_ref()
             .borrow_mut()
             .run_start(context, entry, arg_count);
+    }
+    fn stack_context(&mut self, context: TraceContext<'_>, snapshot: StackSnapshot<'_>) {
+        self.borrow_mut().stack_context(context, snapshot);
+    }
+    fn stack_release(&mut self, context: TraceContext<'_>) {
+        self.borrow_mut().stack_release(context);
     }
     fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
         self.as_ref().borrow_mut().stack_activity(context, activity);

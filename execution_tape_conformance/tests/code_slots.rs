@@ -12,7 +12,7 @@ use execution_tape::{
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{StructTypeDef, ValueType},
     value::Value,
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{collections::HashSet, sync::Arc};
 
@@ -46,7 +46,7 @@ fn constant(number: i64) -> Callable {
 fn run(callable: &Callable) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut invocation = callable
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, vec![], TurnOptions::default())
         .unwrap();
     invocation.resume(u64::MAX).unwrap();
     invocation.take_outputs().unwrap()
@@ -61,7 +61,7 @@ fn lookup_update_does_not_patch_a_paused_frame_or_a_retained_old_target() {
     let mut paused = slot
         .current()
         .callable()
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, vec![], TurnOptions::default())
         .unwrap();
     assert_eq!(paused.resume(1).unwrap(), RunStatus::Suspended);
     let update = slot.replace(constant(99)).unwrap();

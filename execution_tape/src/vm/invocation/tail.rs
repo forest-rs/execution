@@ -112,7 +112,7 @@ impl<'a, H: Host> Running<'_, 'a, H> {
                     true,
                 )?;
                 let structural_results = !code.shares_definition_with(program);
-                let control = self.new_control();
+                let control = self.new_control()?;
                 let child = self.segment(&target, environment, args, control, location);
                 Ok(Replacement {
                     stacks: vec![child],

@@ -3,6 +3,10 @@
 
 //! Cooperative quanta preserve the ordinary VM's execution and ownership contracts.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
@@ -11,7 +15,7 @@ use execution_tape::{
     trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink},
     value::{FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -88,7 +92,7 @@ fn every_instruction_boundary_preserves_values_sharing_recording_and_host_effect
     for quantum in [1, 2, 7, u64::MAX] {
         let mut vm = Vm::new(Echo::default(), Limits::default());
         let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
-        let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
+        let options = TurnOptions::default().trace(recorder.mask(), &mut recorder);
         let mut invocation = vm.start(&p, entry, &args, options).unwrap();
         assert_eq!(invocation.resume(0).unwrap(), RunStatus::Suspended);
         assert_eq!(invocation.host().calls, 0);
@@ -175,7 +179,7 @@ fn cancellation_rolls_back_only_new_aggregates_without_undoing_host_effects() {
         .unwrap();
     let mut events = Events::default();
     {
-        let options = InvocationOptions::default().trace(
+        let options = TurnOptions::default().trace(
             TraceMask::RUN | TraceMask::CALL | TraceMask::HOST,
             &mut events,
         );
@@ -194,7 +198,10 @@ fn cancellation_rolls_back_only_new_aggregates_without_undoing_host_effects() {
     assert_eq!(events.cancelled_scopes, 2);
     assert_eq!(events.cancelled_runs, 1);
     assert_eq!(events.entered, 3); // one completed host scope, two cancelled guest frames
-    assert!(vm.run(&p, entry, &args, TraceMask::NONE, None).is_ok());
+    assert!(
+        vm.run_values(&p, entry, &args, TraceMask::NONE, None)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -204,7 +211,7 @@ fn dropping_a_partial_recording_is_explicitly_incomplete_and_not_replayable() {
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
     {
-        let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
+        let options = TurnOptions::default().trace(recorder.mask(), &mut recorder);
         let mut invocation = vm.start(&p, entry, &args, options).unwrap();
         invocation.resume(3).unwrap();
     }
@@ -226,7 +233,7 @@ fn hard_limits_accumulate_across_resumes_and_terminal_traps_do_not_repeat_effect
             ..Limits::default()
         },
         Limits {
-            max_call_depth: 1,
+            max_frames: 1,
             ..Limits::default()
         },
         Limits {
@@ -245,19 +252,20 @@ fn hard_limits_accumulate_across_resumes_and_terminal_traps_do_not_repeat_effect
     for limits in cases {
         let mut uninterrupted = Vm::new(Echo::default(), limits.clone());
         let expected = uninterrupted
-            .run(&p, entry, &args, TraceMask::NONE, None)
+            .run_values(&p, entry, &args, TraceMask::NONE, None)
             .unwrap_err();
         for quantum in [1, 2, 7] {
             let mut vm = Vm::new(Echo::default(), limits.clone());
-            let mut invocation = vm
-                .start(&p, entry, &args, InvocationOptions::default())
-                .unwrap();
+            let mut invocation = vm.start(&p, entry, &args, TurnOptions::default()).unwrap();
             let actual = loop {
                 match invocation.resume(quantum) {
                     Err(error) => break error,
                     Ok(RunStatus::Suspended) => {}
-                    Ok(RunStatus::AwaitingHost) => {
+                    Ok(RunStatus::AwaitingHost(_)) => {
                         panic!("default invocations dispatch their host synchronously")
+                    }
+                    Ok(RunStatus::AwaitingEffect) => {
+                        panic!("fixture has no escaping native effect")
                     }
                     Ok(RunStatus::Complete) => panic!("expected the same hard limit"),
                 }
@@ -286,7 +294,7 @@ fn rejected_entry_emits_its_trap_without_a_cancellation_or_host_call() {
             &p,
             entry,
             &[],
-            InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+            TurnOptions::default().trace(recorder.mask(), &mut recorder),
         )
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ArityMismatch));
@@ -314,7 +322,7 @@ fn host_panic_unwinding_cancels_scopes_and_restores_the_vm() {
     );
     let mut events = Events::default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let options = InvocationOptions::default().trace(
+        let options = TurnOptions::default().trace(
             TraceMask::RUN | TraceMask::CALL | TraceMask::HOST,
             &mut events,
         );
@@ -326,7 +334,10 @@ fn host_panic_unwinding_cancels_scopes_and_restores_the_vm() {
     assert_eq!(events.cancelled_runs, 1);
     assert_eq!(vm.aggregates().len_u32(), 0);
     vm.host_mut().panic = false;
-    assert!(vm.run(&p, entry, &args, TraceMask::NONE, None).is_ok());
+    assert!(
+        vm.run_values(&p, entry, &args, TraceMask::NONE, None)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -398,7 +409,7 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
                         &program,
                         entry,
                         &[],
-                        InvocationOptions::default()
+                        TurnOptions::default()
                             .trace(TraceMask::CALL | TraceMask::INSTR, &mut observer),
                     )
                     .unwrap();
@@ -412,7 +423,10 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
             vm.aggregates().tuple_get(retained, 0).unwrap(),
             Value::I64(99)
         );
-        assert!(vm.run(&program, entry, &[], TraceMask::NONE, None).is_ok());
+        assert!(
+            vm.run_values(&program, entry, &[], TraceMask::NONE, None)
+                .is_ok()
+        );
     }
 }
 
@@ -457,15 +471,14 @@ fn contract_proof_work_and_successful_proofs_survive_suspension() {
         .tuple_new(vec![Value::I64(42)])
         .unwrap();
     let args = [Value::Agg(root)];
-    let mut invocation = vm
-        .start(&p, entry, &args, InvocationOptions::default())
-        .unwrap();
+    let mut invocation = vm.start(&p, entry, &args, TurnOptions::default()).unwrap();
     let error = loop {
         match invocation.resume(1) {
             Ok(RunStatus::Suspended) => {}
-            Ok(RunStatus::AwaitingHost) => {
+            Ok(RunStatus::AwaitingHost(_)) => {
                 panic!("default invocations dispatch their host synchronously")
             }
+            Ok(RunStatus::AwaitingEffect) => panic!("fixture has no escaping native effect"),
             Ok(RunStatus::Complete) => {
                 panic!("the second cached visit must still consume contract work")
             }
@@ -496,12 +509,7 @@ fn resource_observer_is_retained_across_quanta() {
     let mut reads = Reads::default();
     {
         let mut invocation = vm
-            .start(
-                &p,
-                entry,
-                &args,
-                InvocationOptions::default().access(&mut reads),
-            )
+            .start(&p, entry, &args, TurnOptions::default().access(&mut reads))
             .unwrap();
         while invocation.resume(1).unwrap() == RunStatus::Suspended {}
     }

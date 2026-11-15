@@ -205,6 +205,48 @@ impl TraceSink for FootfallSink {
         footfall::message_with(kind, self.context_for(program), "transfer", &args);
     }
 
+    fn stack_context(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        snapshot: execution_tape::trace::StackSnapshot<'_>,
+    ) {
+        let handle = self.context_for(context.program());
+        let mut args = Args::none()
+            .with("entry", snapshot.entry.0)
+            .with("arg_count", snapshot.arg_count as u64);
+        if let Some(stack) = context.stack() {
+            args = args
+                .with("segment", stack.segment_ordinal())
+                .with("activation", stack.ordinal());
+        }
+        let run = snapshot
+            .mask
+            .contains(TraceMask::RUN)
+            .then(|| Scope::new(&RUN, handle, args));
+        let scopes = snapshot
+            .scopes
+            .iter()
+            .map(|scope| {
+                let args = Args::none()
+                    .with("func", scope.location.func.0)
+                    .with("pc", scope.location.pc)
+                    .with("depth", scope.depth as u64);
+                let (desc, args) = match scope.kind {
+                    ScopeKind::CallFrame { .. } => (&CALL, args),
+                    ScopeKind::HostCall { host_sig, .. } => {
+                        (&HOST, args.with("host_sig", host_sig.0))
+                    }
+                };
+                Scope::new(desc, handle, args)
+            })
+            .collect();
+        self.scopes
+            .import(context.stack(), run, scopes, snapshot.parked);
+    }
+    fn stack_release(&mut self, context: execution_tape::trace::TraceContext<'_>) {
+        self.scopes.release(context.stack());
+    }
+
     fn stack_activity(
         &mut self,
         context: execution_tape::trace::TraceContext<'_>,

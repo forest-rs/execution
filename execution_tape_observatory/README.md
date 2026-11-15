@@ -43,7 +43,7 @@ source. Focus uses a green double border. `Enter` opens the first visible value'
 closure environment, or follows a host object through an attached inspector; `Backspace` goes up.
 The `▸` row in Values is the value Enter will open. Values and source scroll with arrows or `j`/`k`.
 
-Invocations started with `InvocationOptions::yield_host_calls()` show **AWAITING HOST** at an
+Invocations started with `TurnOptions::yield_host_calls()` show **AWAITING HOST** at an
 admitted request. Stepping/continuing does not silently invoke it. `h` explicitly dispatches
 through the embedding's existing host and finishes that instruction, including its real effects.
 Composed instance calls expose their actual suspended parents in the live stack. Each frame

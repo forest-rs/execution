@@ -14,7 +14,7 @@ use execution_tape::{
     recording::{InstructionCapture, RecordLimits, Recorder, RegisterWatch},
     trace::{TraceLocation, TraceSink},
     value::{Obj, ObjHandle, Value},
-    vm::{Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Invocation, Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{
     cell::RefCell,
@@ -94,7 +94,7 @@ impl Guest {
             .start_owned(
                 Vm::new(NoHost, Limits::default()),
                 vec![Value::Str(path.clone())],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(mask, capture.clone()),
             )
@@ -126,8 +126,9 @@ impl Guest {
     ) -> Result<Poll<()>, SceneError> {
         let invocation = self.invocation.as_mut().expect("active task");
         match invocation.resume(u64::MAX).map_err(SceneError::Vm)? {
-            RunStatus::AwaitingHost => {}
+            RunStatus::AwaitingHost(_) => {}
             RunStatus::Suspended => unreachable!("unbounded quantum"),
+            RunStatus::AwaitingEffect => panic!("fixture has no escaping native effect"),
             RunStatus::Complete => return Err(SceneError::Expected("asset request before result")),
         }
         if self.request.is_none() {

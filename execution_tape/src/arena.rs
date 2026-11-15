@@ -7,6 +7,9 @@
 //! Source indices carry no borrowed pointers and are resolved only against that run's inputs,
 //! program, and VM heap. Reset discards all indices before another run can use the context.
 
+mod collection;
+pub(crate) use collection::PayloadPlan;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 

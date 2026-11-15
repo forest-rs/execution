@@ -3,6 +3,10 @@
 
 //! Deterministic guest generation, an independent expression model, and failure shrinking.
 
+#[path = "support/run.rs"]
+mod run_support;
+use run_support::RunValues as _;
+
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -10,7 +14,7 @@ use execution_tape::{
     trace::TraceMask,
     value::{FuncId, Value},
     verifier::{VerifyConfig, verify_program_owned},
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 
 #[derive(Clone, Debug)]
@@ -251,7 +255,7 @@ fn check(expr: &Expr, input: i64) -> Result<(), String> {
         let verified = verify_program_owned(program, &VerifyConfig::default())
             .map_err(|e| format!("verify: {e:?}"))?;
         let output = Vm::new(NoHost, Limits::default())
-            .run(
+            .run_values(
                 &verified,
                 FuncId(0),
                 &[Value::I64(input)],
@@ -263,7 +267,7 @@ fn check(expr: &Expr, input: i64) -> Result<(), String> {
             let mut vm = Vm::new(NoHost, Limits::default());
             let args = [Value::I64(input)];
             let mut invocation = vm
-                .start(&verified, FuncId(0), &args, InvocationOptions::default())
+                .start(&verified, FuncId(0), &args, TurnOptions::default())
                 .map_err(|e| format!("start: {e:?}"))?;
             while invocation
                 .resume(quantum)
