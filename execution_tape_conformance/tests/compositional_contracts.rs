@@ -3,7 +3,7 @@
 
 //! Public consumer checks for compositional guest contracts.
 
-use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::contract::{Contract, ContractId, ContractMismatch, ContractPosition};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
@@ -52,10 +52,10 @@ fn nested_result_survives_codec_call_and_aliased_projections() {
         ValueType::Agg,
         ValueType::Agg,
     ]);
-    make.const_i64(1, 42)
-        .tuple_new(2, &[1])
-        .tuple_new(3, &[2])
-        .ret(0, &[3]);
+    make.const_i64(Reg(1), 42)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_new(Reg(3), &[Reg(2)])
+        .ret(Reg(0), &[Reg(3)]);
     let make = builder
         .push_function_checked(
             make,
@@ -66,10 +66,10 @@ fn nested_result_survives_codec_call_and_aliased_projections() {
         )
         .unwrap();
     let mut main = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    main.call(0, make, 0, &[], &[1])
-        .tuple_get(1, 1, 0)
-        .tuple_get(2, 1, 0)
-        .ret(0, &[2]);
+    main.call(Reg(0), make, Reg(0), &[], &[Reg(1)])
+        .tuple_get(Reg(1), Reg(1), 0)
+        .tuple_get(Reg(2), Reg(1), 0)
+        .ret(Reg(0), &[Reg(2)]);
     let entry = builder
         .push_function_checked(
             main,
@@ -108,12 +108,12 @@ fn local_nested_values_need_no_extra_annotations() {
         ValueType::Agg,
         ValueType::I64,
     ]);
-    main.const_i64(1, 42)
-        .tuple_new(2, &[1])
-        .tuple_new(3, &[2])
-        .tuple_get(3, 3, 0)
-        .tuple_get(4, 3, 0)
-        .ret(0, &[4]);
+    main.const_i64(Reg(1), 42)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_new(Reg(3), &[Reg(2)])
+        .tuple_get(Reg(3), Reg(3), 0)
+        .tuple_get(Reg(4), Reg(3), 0)
+        .ret(Reg(0), &[Reg(4)]);
     let entry = builder
         .push_function_checked(
             main,
@@ -145,10 +145,10 @@ fn statically_wrong_nested_result_reports_member_path() {
         ValueType::Agg,
         ValueType::Agg,
     ]);
-    make.const_bool(1, true)
-        .tuple_new(2, &[1])
-        .tuple_new(3, &[2])
-        .ret(0, &[3]);
+    make.const_bool(Reg(1), true)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .tuple_new(Reg(3), &[Reg(2)])
+        .ret(Reg(0), &[Reg(3)]);
     builder
         .push_function_checked(
             make,
@@ -201,7 +201,8 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
         },
     );
     let mut make = body(&[ValueType::Unit, ValueType::Agg]);
-    make.host_call(0, import, 0, &[], &[1]).ret(0, &[1]);
+    make.host_call(Reg(0), import, Reg(0), &[], &[Reg(1)])
+        .ret(Reg(0), &[Reg(1)]);
     let entry = builder
         .push_function_checked(
             make,
@@ -282,7 +283,7 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
         contract = tuple(&mut builder, &[Some(contract), Some(contract)]);
     }
     let mut main = body(&[ValueType::Unit, ValueType::Agg]);
-    main.ret(0, &[]);
+    main.ret(Reg(0), &[]);
     let entry = builder
         .push_function_checked(
             main,
@@ -331,7 +332,7 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
 
 #[test]
 fn absent_signature_ids_are_rejected_before_any_kind_is_interned() {
-    use execution_tape::asm::{AsmError, ContractRef};
+    use execution_tape::asm::{AsmError, ContractRef, Reg};
     use execution_tape::contract::ContractBuildError;
     for position in 0..3 {
         let mut builder = ProgramBuilder::new();
@@ -344,7 +345,7 @@ fn absent_signature_ids_are_rejected_before_any_kind_is_interned() {
             ),
         };
         let mut asm = body(&[ValueType::Unit]);
-        asm.ret(0, &[]);
+        asm.ret(Reg(0), &[]);
         assert!(matches!(
             builder.push_function_checked(asm, FunctionAbi { args, rets }),
             Err(AsmError::Contract(ContractBuildError::UnknownChild(
@@ -356,7 +357,7 @@ fn absent_signature_ids_are_rejected_before_any_kind_is_interned() {
             ContractId(0)
         );
         let mut asm = body(&[ValueType::Unit]);
-        asm.ret(0, &[]);
+        asm.ret(Reg(0), &[]);
         assert_eq!(
             builder
                 .push_function_checked(
@@ -389,20 +390,21 @@ fn branches_and_aliased_selects_keep_common_nested_structure() {
             ValueType::Agg,
             ValueType::U64,
         ]);
-        asm.const_i64(2, 42)
-            .tuple_new(3, &[2])
-            .tuple_new(4, &[1])
-            .tuple_new(5, &[3])
-            .tuple_new(6, &[4]);
+        asm.const_i64(Reg(2), 42)
+            .tuple_new(Reg(3), &[Reg(2)])
+            .tuple_new(Reg(4), &[Reg(1)])
+            .tuple_new(Reg(5), &[Reg(3)])
+            .tuple_new(Reg(6), &[Reg(4)]);
         if select {
-            asm.select(5, 1, 5, 6).tuple_get(7, 5, 0);
+            asm.select(Reg(5), Reg(1), Reg(5), Reg(6))
+                .tuple_get(Reg(7), Reg(5), 0);
         } else {
-            let join = asm.block(&[7]);
-            asm.br(1, join.with_args(&[5]), join.with_args(&[6]));
+            let join = asm.block(&[Reg(7)]);
+            asm.br(Reg(1), join.with_args(&[Reg(5)]), join.with_args(&[Reg(6)]));
             asm.place(join).unwrap();
-            asm.tuple_get(7, 7, 0);
+            asm.tuple_get(Reg(7), Reg(7), 0);
         }
-        asm.tuple_len(8, 7).ret(0, &[8]);
+        asm.tuple_len(Reg(8), Reg(7)).ret(Reg(0), &[Reg(8)]);
         let entry = builder
             .push_function_checked(
                 asm,
@@ -438,7 +440,7 @@ fn one_handle_must_satisfy_each_distinct_contract() {
     let ints = tuple(&mut builder, &[Some(integer)]);
     let bools = tuple(&mut builder, &[Some(boolean)]);
     let mut asm = body(&[ValueType::Unit, ValueType::Agg, ValueType::Agg]);
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let entry = builder
         .push_function_checked(
             asm,
@@ -475,7 +477,7 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
     let integer = integer(&mut builder);
     let tuple = tuple(&mut builder, &[Some(integer)]);
     let mut asm = body(&[ValueType::Unit, ValueType::Agg]);
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let entry = builder
         .push_function_checked(
             asm,
@@ -577,9 +579,9 @@ fn rejected_root_candidate_is_retained_and_checked_during_replay() {
         },
     );
     let mut asm = body(&[ValueType::Unit, ValueType::Agg, ValueType::Agg]);
-    asm.host_call(0, import, 0, &[], &[1])
-        .tuple_new(2, &[1])
-        .ret(0, &[2]);
+    asm.host_call(Reg(0), import, Reg(0), &[], &[Reg(1)])
+        .tuple_new(Reg(2), &[Reg(1)])
+        .ret(Reg(0), &[Reg(2)]);
     let entry = builder
         .push_function_checked(
             asm,
@@ -671,10 +673,10 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
         } else {
             &[ValueType::Unit, ValueType::Agg]
         });
-        let result = if mode == 2 { 2 } else { 1 };
+        let result = Reg(if mode == 2 { 2 } else { 1 });
         producer
-            .host_call(0, import, 0, &[], &[result])
-            .ret(0, &[result]);
+            .host_call(Reg(0), import, Reg(0), &[], &[result])
+            .ret(Reg(0), &[result]);
         let target = builder
             .push_function_checked(
                 producer,
@@ -695,13 +697,14 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             ValueType::Closure,
             ValueType::Agg,
         ]);
-        main.const_func(1, target);
+        main.const_func(Reg(1), target);
         if mode == 2 {
-            main.tuple_new(2, &[]).closure_new(3, 1, 2);
+            main.tuple_new(Reg(2), &[])
+                .closure_new(Reg(3), Reg(1), Reg(2));
         }
         let call_pc = main.pc();
         if mode == 0 {
-            main.call(0, target, 0, &[], &[4]);
+            main.call(Reg(0), target, Reg(0), &[], &[Reg(4)]);
         } else {
             let sig = builder
                 .call_sig(FunctionAbi {
@@ -709,9 +712,16 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
                     rets: vec![required.into()],
                 })
                 .unwrap();
-            main.call_indirect(0, sig, if mode == 2 { 3 } else { 1 }, 0, &[], &[4]);
+            main.call_indirect(
+                Reg(0),
+                sig,
+                if mode == 2 { Reg(3) } else { Reg(1) },
+                Reg(0),
+                &[],
+                &[Reg(4)],
+            );
         }
-        main.ret(0, &[4]);
+        main.ret(Reg(0), &[Reg(4)]);
         let entry = builder
             .push_function_checked(
                 main,
@@ -795,7 +805,7 @@ fn contract_work_limit_has_exact_accounting_and_boundary_context() {
     let integer = integer(&mut builder);
     let required = tuple(&mut builder, &[Some(integer)]);
     let mut asm = body(&[ValueType::Unit, ValueType::Agg, ValueType::Agg]);
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let entry = builder
         .push_function_checked(
             asm,
@@ -856,7 +866,7 @@ fn wire_contracts_normalize_duplicates_and_reject_invalid_topology() {
     let integer = integer(&mut builder);
     let required = tuple(&mut builder, &[Some(integer)]);
     let mut asm = body(&[ValueType::Unit, ValueType::Agg]);
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     builder
         .push_function_checked(
             asm,
@@ -921,11 +931,11 @@ fn nested_struct_and_array_results_propagate_without_retaining_temporaries() {
         ValueType::Agg,
         ValueType::Agg,
     ]);
-    make.const_i64(1, 42)
-        .tuple_new(2, &[1])
-        .struct_new(3, struct_id, &[2])
-        .array_new(4, elem_id, &[3])
-        .ret(0, &[4]);
+    make.const_i64(Reg(1), 42)
+        .tuple_new(Reg(2), &[Reg(1)])
+        .struct_new(Reg(3), struct_id, &[Reg(2)])
+        .array_new(Reg(4), elem_id, &[Reg(3)])
+        .ret(Reg(0), &[Reg(4)]);
     let make = b
         .push_function_checked(
             make,
@@ -936,11 +946,11 @@ fn nested_struct_and_array_results_propagate_without_retaining_temporaries() {
         )
         .unwrap();
     let mut main = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    main.call(0, make, 0, &[], &[1])
-        .array_get_imm(1, 1, 0)
-        .struct_get(1, 1, 0)
-        .tuple_get(2, 1, 0)
-        .ret(0, &[2]);
+    main.call(Reg(0), make, Reg(0), &[], &[Reg(1)])
+        .array_get_imm(Reg(1), Reg(1), 0)
+        .struct_get(Reg(1), Reg(1), 0)
+        .tuple_get(Reg(2), Reg(1), 0)
+        .ret(Reg(0), &[Reg(2)]);
     let entry = b
         .push_function_checked(
             main,
@@ -988,14 +998,18 @@ fn recursive_functions_use_declared_finite_result_contracts() {
     ]);
     let base = asm.label();
     let recursive = asm.label();
-    asm.const_u64(2, 0).u64_eq(3, 1, 2).br(3, base, recursive);
+    asm.const_u64(Reg(2), 0)
+        .u64_eq(Reg(3), Reg(1), Reg(2))
+        .br(Reg(3), base, recursive);
     asm.place(base).unwrap();
-    asm.const_i64(6, 42).tuple_new(5, &[6]).ret(0, &[5]);
+    asm.const_i64(Reg(6), 42)
+        .tuple_new(Reg(5), &[Reg(6)])
+        .ret(Reg(0), &[Reg(5)]);
     asm.place(recursive).unwrap();
-    asm.const_u64(2, 1)
-        .u64_sub(4, 1, 2)
-        .call(0, entry, 0, &[4], &[5])
-        .ret(0, &[5]);
+    asm.const_u64(Reg(2), 1)
+        .u64_sub(Reg(4), Reg(1), Reg(2))
+        .call(Reg(0), entry, Reg(0), &[Reg(4)], &[Reg(5)])
+        .ret(Reg(0), &[Reg(5)]);
     b.define_function(entry, asm).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
@@ -1039,7 +1053,7 @@ fn struct_and_array_identity_is_structural_and_empty_arrays_are_vacuous() {
         })
         .unwrap();
     let mut asm = body(&[ValueType::Unit, ValueType::Agg]);
-    asm.ret(0, &[]);
+    asm.ret(Reg(0), &[]);
     let check_struct = b
         .push_function_checked(
             asm.clone(),
@@ -1122,7 +1136,7 @@ fn opaque_calls_erase_previous_projection_facts() {
     for mode in 0..3 {
         let mut b = ProgramBuilder::new();
         let mut producer = body(&[ValueType::Unit, ValueType::Agg]);
-        producer.tuple_new(1, &[]).ret(0, &[1]);
+        producer.tuple_new(Reg(1), &[]).ret(Reg(0), &[Reg(1)]);
         let target = b
             .push_function_checked(
                 producer,
@@ -1151,21 +1165,27 @@ fn opaque_calls_erase_previous_projection_facts() {
             ValueType::Agg,
             ValueType::Func,
         ]);
-        main.const_i64(1, 42).tuple_new(2, &[1]);
+        main.const_i64(Reg(1), 42).tuple_new(Reg(2), &[Reg(1)]);
         match mode {
             0 => {
-                main.call(0, target, 0, &[], &[2]);
+                main.call(Reg(0), target, Reg(0), &[], &[Reg(2)]);
             }
             1 => {
-                main.host_call(0, host, 0, &[], &[2]);
+                main.host_call(Reg(0), host, Reg(0), &[], &[Reg(2)]);
             }
             _ => {
-                main.const_func(3, target)
-                    .call_indirect(0, call, 3, 0, &[], &[2]);
+                main.const_func(Reg(3), target).call_indirect(
+                    Reg(0),
+                    call,
+                    Reg(3),
+                    Reg(0),
+                    &[],
+                    &[Reg(2)],
+                );
             }
         }
         let projection = main.pc();
-        main.tuple_get(1, 2, 0).ret(0, &[1]);
+        main.tuple_get(Reg(1), Reg(2), 0).ret(Reg(0), &[Reg(1)]);
         let entry = b
             .push_function_checked(
                 main,
@@ -1176,7 +1196,7 @@ fn opaque_calls_erase_previous_projection_facts() {
             )
             .unwrap();
         assert!(
-            matches!(b.build_verified(),Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(rejected.error, VerifyError::UnknownAggregateShape{func,pc,reg:2} if func==entry.0&&pc==projection))
+            matches!(b.build_verified(),Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(rejected.error, VerifyError::UnknownAggregateShape{func,pc,reg:Reg(2)} if func==entry.0&&pc==projection))
         );
     }
 }
@@ -1187,9 +1207,9 @@ fn aliased_opaque_member_does_not_inherit_its_containers_shape() {
     let opaque = b.contract(Contract::Kind(ValueType::Agg)).unwrap();
     let outer = tuple(&mut b, &[Some(opaque)]);
     let mut main = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    main.tuple_get(1, 1, 0);
+    main.tuple_get(Reg(1), Reg(1), 0);
     let projection = main.pc();
-    main.tuple_get(2, 1, 0).ret(0, &[2]);
+    main.tuple_get(Reg(2), Reg(1), 0).ret(Reg(0), &[Reg(2)]);
     let entry = b
         .push_function_checked(
             main,
@@ -1203,7 +1223,7 @@ fn aliased_opaque_member_does_not_inherit_its_containers_shape() {
         b.build_verified(),
         Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(
             rejected.error,
-            VerifyError::UnknownAggregateShape { func, pc, reg: 1 } if func == entry.0 && pc == projection
+            VerifyError::UnknownAggregateShape { func, pc, reg: Reg(1) } if func == entry.0 && pc == projection
         )
     ));
 }

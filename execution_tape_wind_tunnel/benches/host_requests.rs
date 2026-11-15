@@ -6,7 +6,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::ValueType,
     trace::TraceMask,
@@ -74,9 +74,9 @@ fn host_requests(c: &mut Criterion) {
         let payload = asm.alloc_register(ValueType::Str);
         asm.const_i64(sum, 0).const_pool(payload, text);
         for _ in 0..100 {
-            asm.host_call_sig_id(0, import, 0, &[sum, payload], &[sum]);
+            asm.host_call_sig_id(Reg(0), import, Reg(0), &[sum, payload], &[sum]);
         }
-        asm.ret(0, &[sum]);
+        asm.ret(Reg(0), &[sum]);
         builder.define_function(entry, asm).unwrap();
         let program = builder.build_verified().unwrap();
         for (name, mode) in [
@@ -187,9 +187,9 @@ fn host_aggregate_results(c: &mut Criterion) {
     let mut a = b.function_asm(entry).unwrap();
     let root = a.alloc_register(ValueType::Agg);
     let count = a.alloc_register(ValueType::U64);
-    a.host_call_sig_id(0, import, 0, &[], &[root])
+    a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[root])
         .tuple_len(count, root)
-        .ret(0, &[count]);
+        .ret(Reg(0), &[count]);
     b.define_function(entry, a).unwrap();
     let program = b.build_verified().unwrap();
     let mut group = c.benchmark_group("host_aggregate_result");

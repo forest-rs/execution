@@ -12,7 +12,7 @@
 
 use super::language::{Class, Policy, RESTART_TOKEN, RestartMode};
 use execution_tape::{
-    asm::{Asm, CallTarget, Catch, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder},
+    asm::{Asm, CallTarget, Catch, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder, Reg},
     contract::{Contract, ContractId},
     host::HostSig,
     program::{HostSigId, TagId, ValueType},
@@ -173,10 +173,10 @@ enum Kind {
 }
 #[derive(Clone, Copy)]
 struct Context {
-    capture: u32,
-    class: u32,
-    payload: u32,
-    argument: u32,
+    capture: Reg,
+    class: Reg,
+    payload: Reg,
+    argument: Reg,
 }
 #[derive(Clone, Copy)]
 struct Services {
@@ -277,7 +277,7 @@ impl Compiler {
     fn mark(&self, body: &mut Asm, range: &Range<usize>) {
         body.source(SourceId(0), range.clone());
     }
-    fn integer(a: &mut Asm, value: i64) -> u32 {
+    fn integer(a: &mut Asm, value: i64) -> Reg {
         let register = a.alloc_register(ValueType::I64);
         a.const_i64(register, value);
         register
@@ -307,7 +307,7 @@ impl Compiler {
             argument,
         })
     }
-    fn environment(a: &mut Asm, context: Context) -> u32 {
+    fn environment(a: &mut Asm, context: Context) -> Reg {
         let env = a.alloc_register(ValueType::Agg);
         a.tuple_new(
             env,
@@ -320,7 +320,7 @@ impl Compiler {
         );
         env
     }
-    fn closure(&self, body: &mut Asm, context: Context, function: FuncId) -> Result<u32> {
+    fn closure(&self, body: &mut Asm, context: Context, function: FuncId) -> Result<Reg> {
         Ok(self.closures[&function.0].instantiate(
             body,
             &[
@@ -378,20 +378,20 @@ impl Compiler {
             Kind::Handler { accepted } => {
                 let accept = a.alloc_register(ValueType::Bool);
                 a.const_bool(accept, accepted)
-                    .ret(0, &[accept, value, flag]);
+                    .ret(Reg(0), &[accept, value, flag]);
             }
             Kind::Cleanup => {
-                a.ret(0, &[]);
+                a.ret(Reg(0), &[]);
             }
             _ => {
-                a.ret(0, &[value, flag]);
+                a.ret(Reg(0), &[value, flag]);
             }
         }
         self.mappings.extend(a.source_mappings(function));
         self.builder.define_function(function, a)?;
         Ok(function)
     }
-    fn term(a: &mut Asm, context: Context, term: &Term) -> u32 {
+    fn term(a: &mut Asm, context: Context, term: &Term) -> Reg {
         match term {
             Term::Constant(value) => Self::integer(a, *value),
             Term::Capture => context.capture,
@@ -412,7 +412,7 @@ impl Compiler {
         context: Context,
         name: i64,
         range: &Range<usize>,
-    ) -> Result<u32> {
+    ) -> Result<Reg> {
         let name = Self::integer(body, name);
         self.mark(body, range);
         let [_found, token] = self.builder.emit_call(
@@ -426,9 +426,9 @@ impl Compiler {
         &self,
         body: &mut Asm,
         target: impl Into<CallTarget>,
-        args: &[u32],
+        args: &[Reg],
         range: &Range<usize>,
-    ) -> Result<(u32, u32)> {
+    ) -> Result<(Reg, Reg)> {
         self.mark(body, range);
         let [value, flag] = self.builder.emit_call(body, target, args)?;
         Ok((value, flag))
@@ -444,10 +444,10 @@ impl Compiler {
         context: Context,
         inner: &Expr,
         indent: usize,
-        scope: u32,
+        scope: Reg,
         range: &Range<usize>,
         exits: bool,
-    ) -> Result<(u32, u32)> {
+    ) -> Result<(Reg, Reg)> {
         let answer = body.alloc_register(ValueType::I64);
         let flag = body.alloc_register(ValueType::Bool);
         let join = body.block(&[answer, flag]);
@@ -473,7 +473,7 @@ impl Compiler {
         body.jmp(join.with_args(&[value, result_flag]));
         body.place(popped)?;
         let [] = self.builder.emit_call(body, self.services.pop, &[scope])?;
-        body.throw_ref(0, unwound);
+        body.throw_ref(Reg(0), unwound);
         if let Some((label, target, value, exit_flag, other)) = exit {
             body.place(label)?;
             let [] = self.builder.emit_call(body, self.services.pop, &[scope])?;
@@ -483,12 +483,12 @@ impl Compiler {
             body.place(here)?;
             body.jmp(join.with_args(&[value, exit_flag]));
             body.place(onward)?;
-            body.throw_ref(0, other);
+            body.throw_ref(Reg(0), other);
         }
         body.place(join)?;
         Ok((answer, flag))
     }
-    fn value_pair(body: &mut Asm, value: u32, flag: bool) -> (u32, u32) {
+    fn value_pair(body: &mut Asm, value: Reg, flag: bool) -> (Reg, Reg) {
         let result_flag = body.alloc_register(ValueType::Bool);
         body.const_bool(result_flag, flag);
         (value, result_flag)
@@ -499,7 +499,7 @@ impl Compiler {
         context: Context,
         expr: &Expr,
         indent: usize,
-    ) -> Result<(u32, u32)> {
+    ) -> Result<(Reg, Reg)> {
         let range = self.line(indent, &expr.label());
         self.mark(body, &range);
         match expr {
@@ -603,7 +603,7 @@ impl Compiler {
                 body.place(handler)?;
                 let environment = Self::environment(body, context);
                 let [] = self.builder.emit_call(body, cleanup, &[environment])?;
-                body.throw_ref(0, unwound);
+                body.throw_ref(Reg(0), unwound);
                 body.place(join)?;
                 Ok((answer, flag))
             }

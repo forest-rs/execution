@@ -3,7 +3,7 @@
 
 //! Owned guest stack observations through the ordinary interpreter and recorder.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::recording::{
@@ -66,14 +66,17 @@ fn recursive() -> Arc<VerifiedProgram> {
     ]);
     let descend = a.label();
     let observe = a.label();
-    a.const_i64(2, 0).i64_gt(3, 1, 2).br(3, descend, observe);
+    a.const_i64(Reg(2), 0)
+        .i64_gt(Reg(3), Reg(1), Reg(2))
+        .br(Reg(3), descend, observe);
     a.place(descend).unwrap();
-    a.const_i64(2, 1)
-        .i64_sub(4, 1, 2)
-        .call(0, f, 0, &[4], &[5])
+    a.const_i64(Reg(2), 1)
+        .i64_sub(Reg(4), Reg(1), Reg(2))
+        .call(Reg(0), f, Reg(0), &[Reg(4)], &[Reg(5)])
         .jmp(observe);
     a.place(observe).unwrap();
-    a.host_call_sig_id(0, h, 0, &[1], &[5]).ret(0, &[5]);
+    a.host_call_sig_id(Reg(0), h, Reg(0), &[Reg(1)], &[Reg(5)])
+        .ret(Reg(0), &[Reg(5)]);
     b.define_function(f, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }

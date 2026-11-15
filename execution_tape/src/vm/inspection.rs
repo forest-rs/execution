@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::analysis::bitset::BitSet;
+use crate::program::Reg;
 use crate::value::Obj;
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::hash::{Hash, Hasher};
@@ -170,7 +171,7 @@ pub struct PausedFrame {
 #[derive(Clone, Copy, Debug)]
 pub struct RegisterValue<'a> {
     /// Function-local virtual register number.
-    pub register: u32,
+    pub register: Reg,
     /// Fixed declared kind, including for unavailable values.
     pub storage_kind: ValueType,
     /// Borrowed value only when definite initialization is established at this boundary.
@@ -190,7 +191,7 @@ pub enum ObjectRootOrigin {
         /// Activation containing the register.
         activation: ActivationId,
         /// Source register number.
-        register: u32,
+        register: Reg,
     },
     /// One of the invocation's borrowed entry arguments.
     Argument {
@@ -221,7 +222,7 @@ pub enum ObjectRootOrigin {
         /// Where the frame waits: its `suspend` or pending call, or an unstarted frame's entry.
         location: TraceLocation,
         /// Source register number.
-        register: u32,
+        register: Reg,
     },
     /// An immediate field of a retained or temporary VM aggregate.
     Aggregate {
@@ -465,14 +466,14 @@ impl<'a> InvocationInspection<'a> {
     /// continuation and absent registers return `None`. A known declaration without definite
     /// initialization returns a value with `None`. Waiting callers use facts before their pending
     /// call, never hypothetical returned values.
-    pub fn register(&mut self, id: &ActivationId, register: u32) -> Option<RegisterValue<'a>> {
+    pub fn register(&mut self, id: &ActivationId, register: Reg) -> Option<RegisterValue<'a>> {
         let index = self.index(id)?;
         let location = self.control.paused_location(self.ctx, index);
         let base = self.ctx.frames[index].base;
         let storage_kind = self.register_types(location).get(register)?;
         let (registers, initialized) = self.facts(location, true);
-        let initialized = initialized?.get(register as usize);
-        let vreg = *registers.get(register as usize)?;
+        let initialized = initialized?.get(register.0 as usize);
+        let vreg = *registers.get(register.0 as usize)?;
         Some(RegisterValue {
             register,
             storage_kind,
@@ -502,8 +503,8 @@ impl<'a> InvocationInspection<'a> {
             (0_u32..)
                 .zip(registers)
                 .map(move |(register, &vreg)| RegisterValue {
-                    register,
-                    storage_kind: kinds.get(register).expect("verified register"),
+                    register: Reg(register),
+                    storage_kind: kinds.get(Reg(register)).expect("verified register"),
                     value: if initialized.get(register as usize) {
                         live.read(base, vreg)
                     } else {
@@ -546,7 +547,7 @@ impl<'a> InvocationInspection<'a> {
                 registers,
                 |register| ObjectRootOrigin::Register {
                     activation: frame.activation.clone(),
-                    register,
+                    register: Reg(register),
                 },
                 &mut visit,
             );
@@ -560,7 +561,7 @@ impl<'a> InvocationInspection<'a> {
                     |register| ObjectRootOrigin::Continuation {
                         activation: activation.clone(),
                         location,
-                        register,
+                        register: Reg(register),
                     },
                     &mut visit,
                 );

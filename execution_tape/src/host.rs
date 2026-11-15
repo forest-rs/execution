@@ -75,7 +75,7 @@ use crate::value::Value;
 /// use alloc::vec;
 /// use alloc::vec::Vec;
 ///
-/// use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+/// use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 /// use execution_tape::host::{
 ///     sig_hash, AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash,
 ///     ValueRef,
@@ -179,12 +179,12 @@ use crate::value::Value;
 ///     ValueType::Unit, ValueType::U64, ValueType::I64,
 ///     ValueType::I64, ValueType::I64, ValueType::Unit,
 /// ]);
-/// a.const_u64(1, 42); // r1 = 42
-/// a.host_call(0, get_host, 0, &[1], &[2]); // r2 = kv.get(r1)
-/// a.const_i64(3, 1); // r3 = 1
-/// a.i64_add(4, 2, 3); // r4 = r2 + r3
-/// a.host_call(0, set_host, 0, &[1, 4], &[5]); // r5 = kv.set(r1, r4)
-/// a.ret(0, &[4]); // return r4
+/// a.const_u64(Reg(1), 42); // r1 = 42
+/// a.host_call(Reg(0), get_host, Reg(0), &[Reg(1)], &[Reg(2)]); // r2 = kv.get(r1)
+/// a.const_i64(Reg(3), 1); // r3 = 1
+/// a.i64_add(Reg(4), Reg(2), Reg(3)); // r4 = r2 + r3
+/// a.host_call(Reg(0), set_host, Reg(0), &[Reg(1), Reg(4)], &[Reg(5)]); // r5 = kv.set(r1, r4)
+/// a.ret(Reg(0), &[Reg(4)]); // return r4
 ///
 /// pb.push_function_checked(
 ///     a,
@@ -379,11 +379,11 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     /// let mut pb = ProgramBuilder::new();
     /// let [add, log] = SURFACE.map(|import| pb.host_import(import));
     /// let entry = pb.declare_function(FunctionSig { arg_types: vec![I64], ret_types: vec![I64] })?;
-    /// let n = Reg(pb.argument(entry, 0)?);
+    /// let n = pb.argument(entry, 0)?;
     /// let mut body = pb.function_asm(entry)?;
     /// let [] = pb.emit_call_with(&mut body, log, ("adding",))?;
     /// let [total] = pb.emit_call_with(&mut body, add, (n,))?;
-    /// body.ret(0, &[total.0]);
+    /// body.ret(Reg(0), &[total]);
     /// pb.define_function(entry, body)?;
     /// let program = pb.build_verified()?;
     /// program.check_host_calls(&SURFACE, |_| Ok::<(), &str>(()))?;

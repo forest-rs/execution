@@ -7,7 +7,7 @@ use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{HostTypeId, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
@@ -48,7 +48,7 @@ fn calls() -> (VerifiedProgram, FuncId, u32, u32) {
         .unwrap();
     let mut a = b.function_asm(child).unwrap();
     let result = a.alloc_register(ValueType::I64);
-    a.const_i64(result, 7).ret(0, &[result]);
+    a.const_i64(result, 7).ret(Reg(0), &[result]);
     b.define_function(child, a).unwrap();
     let entry = b
         .declare_function(FunctionSig {
@@ -62,11 +62,11 @@ fn calls() -> (VerifiedProgram, FuncId, u32, u32) {
     let old = a.alloc_register(ValueType::I64); // r4 has a value before the second call
     a.const_i64(old, 99);
     let first = a.pc();
-    a.call(0, child, 0, &[1], &[result]);
+    a.call(Reg(0), child, Reg(0), &[Reg(1)], &[result]);
     let second = a.pc();
-    a.call(0, child, 0, &[1], &[old])
+    a.call(Reg(0), child, Reg(0), &[Reg(1)], &[old])
         .i64_add(result, result, old)
-        .ret(0, &[result]);
+        .ret(Reg(0), &[result]);
     b.define_function(entry, a).unwrap();
     (b.build_verified().unwrap(), entry, first, second)
 }
@@ -102,39 +102,39 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
         );
         assert_eq!(frames[0].caller, Some(frames[1].location));
         assert!(!frames[0].waiting_for_return);
-        assert!(inspection.register(&root, 2).unwrap().value.is_none());
-        assert!(inspection.register(&root, 3).unwrap().value.is_none());
+        assert!(inspection.register(&root, Reg(2)).unwrap().value.is_none());
+        assert!(inspection.register(&root, Reg(3)).unwrap().value.is_none());
         assert_eq!(
-            inspection.register(&root, 4).unwrap().value,
+            inspection.register(&root, Reg(4)).unwrap().value,
             Some(ValueRef::I64(99))
         );
         assert!(
             inspection
-                .register(&frames[0].activation, 2)
+                .register(&frames[0].activation, Reg(2))
                 .unwrap()
                 .value
                 .is_none()
         );
         assert_eq!(
-            inspection.register(&root, 0).unwrap().value,
+            inspection.register(&root, Reg(0)).unwrap().value,
             Some(ValueRef::Unit)
         );
         frames[0].activation.clone()
     };
     run.resume(1).unwrap(); // child defines result
     assert_eq!(
-        run.inspect().register(&child, 2).unwrap().value,
+        run.inspect().register(&child, Reg(2)).unwrap().value,
         Some(ValueRef::I64(7))
     );
     run.resume(1).unwrap(); // return to root
     {
         let mut inspection = run.inspect();
         assert!(
-            inspection.register(&child, 2).is_none(),
+            inspection.register(&child, Reg(2)).is_none(),
             "returned activation is retired"
         );
         assert_eq!(
-            inspection.register(&root, 2).unwrap().value,
+            inspection.register(&root, Reg(2)).unwrap().value,
             Some(ValueRef::I64(7))
         );
         assert_eq!(inspection.frames().next().unwrap().location.pc, second);
@@ -144,17 +144,17 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
         let mut inspection = run.inspect();
         let replacement = inspection.frames().next().unwrap();
         assert_ne!(replacement.activation, child);
-        assert!(inspection.register(&child, 2).is_none());
+        assert!(inspection.register(&child, Reg(2)).is_none());
         assert!(
             inspection
-                .register(&replacement.activation, 2)
+                .register(&replacement.activation, Reg(2))
                 .unwrap()
                 .value
                 .is_none(),
             "bank reuse must not fabricate initialization"
         );
         assert_eq!(
-            inspection.register(&root, 4).unwrap().value,
+            inspection.register(&root, Reg(4)).unwrap().value,
             Some(ValueRef::I64(99)),
             "pending result must not replace the old value"
         );
@@ -162,7 +162,7 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.take_outputs().unwrap(), [Value::I64(14)]);
     assert_eq!(run.inspect().frames().len(), 0);
-    assert!(run.inspect().register(&root, 2).is_none());
+    assert!(run.inspect().register(&root, Reg(2)).is_none());
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn activation_ids_reject_other_invocations_and_remain_stable_across_large_quanta
     let other = right.inspect().frames().next().unwrap().activation;
     assert_eq!(old.ordinal(), other.ordinal());
     assert_ne!(old, other);
-    assert!(right.inspect().register(&old, 1).is_none());
+    assert!(right.inspect().register(&old, Reg(1)).is_none());
     left.resume(4).unwrap(); // first child entered and retired before this suspension
     assert_eq!(left.inspect().frames().next().unwrap().activation, old);
     left.resume(1).unwrap();
@@ -309,13 +309,13 @@ fn conservative_roots_support_a_real_host_collection_between_quanta() {
     let tuple = a.alloc_register(ValueType::Agg);
     let result = a.alloc_register(ValueType::I64);
     let _unused = a.alloc_register(ValueType::Obj(OBJECT));
-    a.host_call_sig_id(0, new, 0, &[], &[temp])
+    a.host_call_sig_id(Reg(0), new, Reg(0), &[], &[temp])
         .tuple_new(tuple, &[temp])
-        .mov(temp, 1)
-        .host_call_sig_id(0, check, 0, &[1], &[result])
+        .mov(temp, Reg(1))
+        .host_call_sig_id(Reg(0), check, Reg(0), &[Reg(1)], &[result])
         .tuple_get(temp, tuple, 0)
-        .host_call_sig_id(0, check, 0, &[temp], &[result])
-        .ret(0, &[result]);
+        .host_call_sig_id(Reg(0), check, Reg(0), &[temp], &[result])
+        .ret(Reg(0), &[result]);
     b.define_function(entry, a).unwrap();
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(
@@ -390,7 +390,7 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
             .unwrap();
         let mut a = b.function_asm(child).unwrap();
         let result = a.alloc_register(ValueType::I64);
-        a.const_i64(result, 7).ret(0, &[result]);
+        a.const_i64(result, 7).ret(Reg(0), &[result]);
         b.define_function(child, a).unwrap();
         let signature = b
             .call_sig(FunctionSig {
@@ -414,7 +414,8 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
         let callee = if closure {
             let env = a.alloc_register(ValueType::Agg);
             let value = a.alloc_register(ValueType::Closure);
-            a.tuple_new(env, &[1]).closure_new(value, function, env);
+            a.tuple_new(env, &[Reg(1)])
+                .closure_new(value, function, env);
             value
         } else {
             function
@@ -422,14 +423,14 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
         let result = a.alloc_register(ValueType::I64);
         let call_pc = a.pc();
         a.call_indirect(
-            0,
+            Reg(0),
             signature,
             callee,
-            0,
-            if closure { &[] } else { &[1] },
+            Reg(0),
+            if closure { &[] } else { &[Reg(1)] },
             &[result],
         )
-        .ret(0, &[result]);
+        .ret(Reg(0), &[result]);
         b.define_function(entry, a).unwrap();
         let p = b.build_verified().unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
@@ -459,7 +460,7 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
                 })
             );
             assert!(
-                view.register(&frames[0].activation, 2)
+                view.register(&frames[0].activation, Reg(2))
                     .unwrap()
                     .value
                     .is_none()
@@ -469,7 +470,7 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
             assert!(roots.iter().all(|root| root.object == object(42)));
             if closure {
                 assert!(matches!(
-                    view.register(&frames[0].activation, 1).unwrap().value,
+                    view.register(&frames[0].activation, Reg(1)).unwrap().value,
                     Some(ValueRef::Agg(_))
                 ));
                 assert!(

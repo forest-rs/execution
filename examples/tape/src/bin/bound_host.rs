@@ -5,7 +5,7 @@
 //!
 //! `cargo run -p execution_tape_examples --bin bound_host`
 
-use execution_tape::asm::{FunctionSig, ProgramBuilder};
+use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
 use execution_tape::host_binding::HostFunctions;
 use execution_tape::program::ValueType;
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut body = builder.function_asm(entry)?;
     let addend = builder.argument(entry, 0)?;
     let [total] = builder.emit_call(&mut body, import, &[addend])?;
-    body.ret(0, &[total]);
+    body.ret(Reg(0), &[total]);
     builder.define_function(entry, body)?;
     let program = Arc::new(builder.build_verified()?);
 

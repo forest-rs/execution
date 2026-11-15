@@ -167,7 +167,7 @@ fn step_description(
                     .iter()
                     .find_map(|(reg, value)| match value {
                         RecordedValue::Bool(value) if Some(reg) == condition => Some(format!(
-                            "took {} arm · r{reg} = {value}",
+                            "took {} arm · {reg} = {value}",
                             if *value { "true" } else { "false" }
                         )),
                         _ => None,

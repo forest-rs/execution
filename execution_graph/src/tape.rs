@@ -557,7 +557,7 @@ impl From<ResourceKeyRef<'_>> for ResourceKey {
 mod memory_tests {
     use super::*;
     use alloc::vec;
-    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use execution_tape::program::ValueType;
 
     struct NoHost;
@@ -579,7 +579,7 @@ mod memory_tests {
         let mut builder = ProgramBuilder::new();
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit]);
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         let empty = builder
             .push_function_checked(
                 body,
@@ -591,7 +591,7 @@ mod memory_tests {
             .unwrap();
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit]);
-        body.ret(0, &[0]);
+        body.ret(Reg(0), &[Reg(0)]);
         let unit = builder
             .push_function_checked(
                 body,
@@ -650,7 +650,8 @@ mod memory_tests {
         );
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-        body.host_call_sig_id(0, host, 0, &[], &[]).ret(0, &[1]);
+        body.host_call_sig_id(Reg(0), host, Reg(0), &[], &[])
+            .ret(Reg(0), &[Reg(1)]);
         let entry = builder
             .push_function_checked(
                 body,
@@ -750,8 +751,8 @@ mod memory_tests {
         );
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        body.host_call_sig_id(0, import, 0, &[], &[1]);
-        body.ret(0, &[1]);
+        body.host_call_sig_id(Reg(0), import, Reg(0), &[], &[Reg(1)]);
+        body.ret(Reg(0), &[Reg(1)]);
         let entry = pb
             .push_function_checked(
                 body,
@@ -788,9 +789,9 @@ mod memory_tests {
             ValueType::Agg,
             ValueType::Agg,
         ]);
-        producer.tuple_new(2, &[1]);
-        producer.tuple_new(3, &[2]); // Unreachable wrapper.
-        producer.ret(0, &[2]);
+        producer.tuple_new(Reg(2), &[Reg(1)]);
+        producer.tuple_new(Reg(3), &[Reg(2)]); // Unreachable wrapper.
+        producer.ret(Reg(0), &[Reg(2)]);
         let producer = pb
             .push_function_checked(
                 producer,
@@ -807,9 +808,9 @@ mod memory_tests {
             ValueType::Agg,
             ValueType::I64,
         ]);
-        reader.tuple_new(2, &[1]); // Unreachable wrapper around a retained input.
-        reader.tuple_get(3, 1, 0);
-        reader.ret(0, &[3]);
+        reader.tuple_new(Reg(2), &[Reg(1)]); // Unreachable wrapper around a retained input.
+        reader.tuple_get(Reg(3), Reg(1), 0);
+        reader.ret(Reg(0), &[Reg(3)]);
         let integer = pb
             .contract(execution_tape::contract::Contract::Kind(ValueType::I64))
             .unwrap();

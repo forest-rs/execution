@@ -8,9 +8,11 @@ use crate::{
     render::{panel, too_small},
     syntax,
 };
-use execution_tape::disasm::{CallTarget, FunctionDisassembly, InputIndex, InstrView, Operands};
+use execution_tape::disasm::{
+    CallTarget, FunctionDisassembly, InputIndex, InstrView, Operands, RegList,
+};
 use execution_tape::opcode::Opcode;
-use execution_tape::program::{ConstEntry, ConstId, HostSigId, Program};
+use execution_tape::program::{ConstEntry, ConstId, HostSigId, Program, Reg};
 use execution_tape::verifier::{FactOrigin, InstructionFacts, ValueFact};
 use ratatui::{
     Frame,
@@ -177,8 +179,12 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                         .register_type(reg)
                         .map_or_else(|| "invalid / unavailable".into(), describe::type_name);
                     lines.push(format!(
-                        "  r{reg}: {kind}{}",
-                        if reg == 0 { " · effect token" } else { "" }
+                        "  {reg}: {kind}{}",
+                        if reg == Reg(0) {
+                            " · effect token"
+                        } else {
+                            ""
+                        }
                     ));
                 }
                 if truncated || registers.len() > 64 {
@@ -247,7 +253,7 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
 
 // Keep destinations visible even when a wide instruction has more than 64 inputs. Counts are
 // exact for an untruncated sample; otherwise explicitly disclose the operand scan limit.
-fn operand_registers(instruction: InstrView<'_>) -> (Vec<u32>, bool) {
+fn operand_registers(instruction: InstrView<'_>) -> (Vec<Reg>, bool) {
     let mut writes = instruction.writes();
     let mut reads = instruction.reads();
     let mut seen = std::collections::BTreeSet::new();
@@ -292,7 +298,7 @@ pub(super) fn facts(
     let mut lines = vec!["Verifier facts · before → after local instruction:".into()];
     let mut unknown_members = false;
     let (registers, truncated) = operand_registers(instruction);
-    let registers: Vec<_> = registers.into_iter().filter(|&reg| reg != 0).collect();
+    let registers: Vec<_> = registers.into_iter().filter(|&reg| reg != Reg(0)).collect();
     for &reg in registers.iter().take(4) {
         let Some(fact) = facts.register(reg) else {
             continue;
@@ -300,7 +306,7 @@ pub(super) fn facts(
         let before = value_fact(facts.contracts(), fact.before);
         let after = value_fact(facts.contracts(), fact.after);
         unknown_members |= before.contains('?') || after.contains('?');
-        lines.push(format!("  r{reg}: {before} → {after}"));
+        lines.push(format!("  {reg}: {before} → {after}"));
         if fact.before != fact.after {
             let origin = match fact.origin_before {
                 Some(FactOrigin::Argument { index }) => {
@@ -336,19 +342,19 @@ pub(super) fn facts(
         _ => None,
     };
     let why = match (instruction.opcode(), first_read, index) {
-        (Opcode::TupleGet, Some(reg), Some(index)) => Some(format!(
-            "project tuple element {index} from incoming r{reg}"
-        )),
+        (Opcode::TupleGet, Some(reg), Some(index)) => {
+            Some(format!("project tuple element {index} from incoming {reg}"))
+        }
         (Opcode::StructGet, Some(reg), Some(index)) => {
-            Some(format!("project field {index} from incoming r{reg}"))
+            Some(format!("project field {index} from incoming {reg}"))
         }
         (Opcode::ArrayGet | Opcode::ArrayGetImm, Some(reg), _) => {
-            Some(format!("project an element from incoming r{reg}"))
+            Some(format!("project an element from incoming {reg}"))
         }
         (Opcode::BrArgs | Opcode::JmpArgs, _, _) => {
             Some("edge bindings are applied at the target, after this local state".into())
         }
-        (Opcode::Mov, Some(reg), _) => Some(format!("copy incoming r{reg}")),
+        (Opcode::Mov, Some(reg), _) => Some(format!("copy incoming {reg}")),
         (Opcode::Select, _, _) => Some("keep contracts common to both alternatives".into()),
         (Opcode::TupleLen, _, _) => {
             Some("read tuple length; element types are not required".into())
@@ -389,7 +395,7 @@ pub(super) fn facts(
             if edge.bindings().len() > 0 {
                 for binding in edge.bindings().take(4) {
                     lines.push(format!(
-                        "    r{} ← r{}: {}",
+                        "    {} ← {}: {}",
                         binding.parameter,
                         binding.argument,
                         value_fact(facts.contracts(), binding.value)
@@ -402,7 +408,7 @@ pub(super) fn facts(
                 for &reg in registers.iter().take(4) {
                     if let Some(value) = edge.register(reg) {
                         lines.push(format!(
-                            "    r{reg}: {}",
+                            "    {reg}: {}",
                             value_fact(facts.contracts(), value)
                         ));
                     }
@@ -422,7 +428,7 @@ pub(super) fn facts(
 fn result_contracts(
     lines: &mut Vec<String>,
     program: &Program,
-    registers: &[u32],
+    registers: RegList<'_>,
     range: execution_tape::program::ByteRange,
     title: &str,
 ) {
@@ -440,9 +446,9 @@ fn result_contracts(
         lines.push("  <malformed result contract range>".into());
         return;
     };
-    for (&register, &id) in registers.iter().zip(ids).take(4) {
+    for (register, &id) in registers.iter().zip(ids).take(4) {
         lines.push(format!(
-            "  r{register}: {}",
+            "  {register}: {}",
             describe::contract(&program.contracts, id)
         ));
     }

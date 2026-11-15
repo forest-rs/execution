@@ -9,7 +9,7 @@
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
-    asm::{BuildError, FunctionSig, ProgramBuilder, TagBuildError},
+    asm::{BuildError, FunctionSig, ProgramBuilder, Reg, TagBuildError},
     contract::{Contract, ContractId, ContractPosition},
     disasm::disassemble,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -80,7 +80,7 @@ fn fixture() -> Fixture {
     let text = body.alloc_register(ValueType::Str);
     body.const_pool(text, boom);
     let [result] = b.emit_call(&mut body, raise, &[code, text]).unwrap();
-    body.ret(0, &[result]);
+    body.ret(Reg(0), &[result]);
     b.define_function(entry, body).unwrap();
 
     let mut body = b.function_asm(raise).unwrap();
@@ -212,7 +212,7 @@ fn an_exception_escaping_a_guest_callback_ends_the_whole_invocation() {
     let raise = b.declare_function(sig(&[ValueType::I64], &[])).unwrap();
     let mut body = b.function_asm(outer).unwrap();
     let [] = b.emit_call(&mut body, wait, &[]).unwrap();
-    body.ret(0, &[]);
+    body.ret(Reg(0), &[]);
     b.define_function(outer, body).unwrap();
     let mut body = b.function_asm(raise).unwrap();
     let code = b.argument(raise, 0).unwrap();
@@ -513,8 +513,8 @@ fn builder_rejects_invalid_tags_and_throws_without_mutation() {
         })
     );
     assert_eq!(
-        b.emit_throw(&mut body, failed, &[7]),
-        Err(TagBuildError::Register(7))
+        b.emit_throw(&mut body, failed, &[Reg(7)]),
+        Err(TagBuildError::Register(Reg(7)))
     );
     assert_eq!(body.pc(), pc, "rejected throws emit nothing");
 }
@@ -532,7 +532,7 @@ fn verifier_names_the_tag_in_throw_diagnostics() {
     let mut cases = Vec::new();
     for (tag, payload) in [(TagId(5), vec![]), (failed, vec![]), (failed, vec![flag])] {
         let mut body = b.function_asm(function).unwrap();
-        body.throw(0, tag, &payload);
+        body.throw(Reg(0), tag, &payload);
         let mut builder = b.clone();
         builder.define_function(function, body).unwrap();
         cases.push(verify_program(&builder.build(), &cfg).unwrap_err());

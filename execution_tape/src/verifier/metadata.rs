@@ -186,7 +186,7 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use crate::program::{
         ByteRange, Const, FunctionNameEntry, HostSymbol, LabelNameEntry, StructTypeDef,
         TypeTableDef, ValueType,
@@ -314,7 +314,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.ret(0, &[1]);
+        a.ret(Reg(0), &[Reg(1)]);
         pb.push_function_checked(
             a,
             FunctionSig {

@@ -6,7 +6,7 @@
 #[path = "observatory/cli.rs"]
 mod cli;
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
 use execution_tape::host_binding::HostFunctions;
 use execution_tape::program::ValueType;
@@ -91,8 +91,11 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
         ValueType::I64,
         ValueType::I64,
     ]);
-    sample.host_call_sig_id(0, read, 0, &[1], &[2]);
-    sample.const_i64(3, 2).i64_mul(4, 2, 3).ret(0, &[2, 4]);
+    sample.host_call_sig_id(Reg(0), read, Reg(0), &[Reg(1)], &[Reg(2)]);
+    sample
+        .const_i64(Reg(3), 2)
+        .i64_mul(Reg(4), Reg(2), Reg(3))
+        .ret(Reg(0), &[Reg(2), Reg(4)]);
     let sample = builder.push_function_checked(
         sample,
         FunctionSig {
@@ -118,25 +121,25 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
     let accepted = body.label();
     let rejected = body.label();
     let done = body.label();
-    body.const_i64(1, 0)
-        .const_i64(2, 3)
-        .const_i64(7, 0)
-        .const_i64(9, 1)
+    body.const_i64(Reg(1), 0)
+        .const_i64(Reg(2), 3)
+        .const_i64(Reg(7), 0)
+        .const_i64(Reg(9), 1)
         .jmp(head);
     body.place(head)?;
-    body.call(0, sample, 0, &[1], &[3, 4])
-        .tuple_new(5, &[1, 3, 4]);
-    body.host_call_sig_id(0, store, 0, &[5], &[6])
-        .br(6, accepted, rejected);
+    body.call(Reg(0), sample, Reg(0), &[Reg(1)], &[Reg(3), Reg(4)])
+        .tuple_new(Reg(5), &[Reg(1), Reg(3), Reg(4)]);
+    body.host_call_sig_id(Reg(0), store, Reg(0), &[Reg(5)], &[Reg(6)])
+        .br(Reg(6), accepted, rejected);
     body.place(accepted)?;
-    body.i64_add(7, 7, 4)
-        .i64_add(1, 1, 9)
-        .i64_lt(8, 1, 2)
-        .br(8, head, done);
+    body.i64_add(Reg(7), Reg(7), Reg(4))
+        .i64_add(Reg(1), Reg(1), Reg(9))
+        .i64_lt(Reg(8), Reg(1), Reg(2))
+        .br(Reg(8), head, done);
     body.place(rejected)?;
     body.trap(1);
     body.place(done)?;
-    body.ret(0, &[7]);
+    body.ret(Reg(0), &[Reg(7)]);
     let entry = builder.push_function_checked(
         body,
         FunctionSig {
@@ -161,7 +164,7 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
                     registers: i
                         .reads()
                         .chain(i.writes())
-                        .filter(|&reg| reg != 0)
+                        .filter(|&reg| reg != Reg(0))
                         .collect(),
                 })
                 .collect::<Vec<_>>()

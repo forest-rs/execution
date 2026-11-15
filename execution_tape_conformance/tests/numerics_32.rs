@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use execution_tape::asm::{FunctionSig, ProgramBuilder};
+use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash_slices,
 };
@@ -60,22 +60,22 @@ fn program() -> Arc<VerifiedProgram> {
         })
         .unwrap();
     let mut body = builder.function_asm(id).unwrap();
-    let echoed: Vec<u32> = W32.iter().map(|&t| body.alloc_register(t)).collect();
+    let echoed: Vec<Reg> = W32.iter().map(|&t| body.alloc_register(t)).collect();
     let tuple = body.alloc_register(ValueType::Agg);
-    let projected: Vec<u32> = W32.iter().map(|&t| body.alloc_register(t)).collect();
-    let selected: Vec<u32> = W32.iter().map(|&t| body.alloc_register(t)).collect();
-    let moved: Vec<u32> = W32.iter().map(|&t| body.alloc_register(t)).collect();
-    body.host_call_sig_id(0, echo, 0, &[2, 3, 4], &echoed);
+    let projected: Vec<Reg> = W32.iter().map(|&t| body.alloc_register(t)).collect();
+    let selected: Vec<Reg> = W32.iter().map(|&t| body.alloc_register(t)).collect();
+    let moved: Vec<Reg> = W32.iter().map(|&t| body.alloc_register(t)).collect();
+    body.host_call_sig_id(Reg(0), echo, Reg(0), &[Reg(2), Reg(3), Reg(4)], &echoed);
     body.tuple_new(tuple, &echoed);
     for (index, &dst) in (0..).zip(&projected) {
         body.tuple_get(dst, tuple, index);
     }
     for i in 0..3 {
         // Both arms hold the same value, so either choice of `cond` must preserve it.
-        body.select(selected[i], 1, projected[i], echoed[i]);
+        body.select(selected[i], Reg(1), projected[i], echoed[i]);
         body.mov(moved[i], selected[i]);
     }
-    body.ret(0, &moved);
+    body.ret(Reg(0), &moved);
     builder.define_function(id, body).unwrap();
     let bytes = builder.build().encode();
     let program = Program::decode(&bytes).unwrap();

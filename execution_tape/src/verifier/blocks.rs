@@ -17,14 +17,14 @@ pub enum BlockDeclarationError {
         /// Parameter index.
         index: usize,
         /// Register number.
-        reg: u32,
+        reg: Reg,
     },
     /// A register is declared more than once.
     DuplicateRegister {
         /// Parameter index.
         index: usize,
         /// Register number.
-        reg: u32,
+        reg: Reg,
     },
 }
 
@@ -51,7 +51,7 @@ pub enum BlockEdgeError {
         /// Argument index within this edge.
         index: usize,
         /// Source register.
-        reg: u32,
+        reg: Reg,
         /// Declared parameter type.
         expected: ValueType,
         /// Definite source type, if known.
@@ -94,14 +94,17 @@ pub(super) fn validate_structure(
                     .enumerate()
                     .find(|&(_, &reg)| reg == 0 || reg >= reg_count);
                 if let Some((index, &reg)) = bad {
-                    Some(BlockDeclarationError::InvalidRegister { index, reg })
+                    Some(BlockDeclarationError::InvalidRegister {
+                        index,
+                        reg: Reg(reg),
+                    })
                 } else {
                     sorted
                         .windows(2)
                         .find(|pair| pair[0].1 == pair[1].1)
                         .map(|pair| BlockDeclarationError::DuplicateRegister {
                             index: pair[1].0,
-                            reg: pair[1].1,
+                            reg: Reg(pair[1].1),
                         })
                 }
             };
@@ -182,7 +185,7 @@ pub(super) fn validate_initialized(
             continue;
         };
         for (index, (&reg, &param)) in args.iter().zip(params).enumerate() {
-            let expected = types.get(param).expect("validated parameter register");
+            let expected = types.get(Reg(param)).expect("validated parameter register");
             if !state.get(reg as usize) {
                 return Err(VerifyError::BlockEdge {
                     func,
@@ -191,7 +194,7 @@ pub(super) fn validate_initialized(
                     target,
                     error: BlockEdgeError::Type {
                         index,
-                        reg,
+                        reg: Reg(reg),
                         expected,
                         actual: None,
                     },
@@ -217,8 +220,8 @@ pub(super) fn validate_types(
             continue;
         };
         for (index, (&reg, &param)) in args.iter().zip(params).enumerate() {
-            let expected = types.get(param).expect("validated parameter register");
-            let actual = types.get(reg);
+            let expected = types.get(Reg(param)).expect("validated parameter register");
+            let actual = types.get(Reg(reg));
             if actual != Some(expected) {
                 return Err(VerifyError::BlockEdge {
                     func,
@@ -227,7 +230,7 @@ pub(super) fn validate_types(
                     target,
                     error: BlockEdgeError::Type {
                         index,
-                        reg,
+                        reg: Reg(reg),
                         expected,
                         actual,
                     },

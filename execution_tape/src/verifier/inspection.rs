@@ -246,7 +246,7 @@ fn register_bytes(counts: RegCounts) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use crate::disasm::disassemble_function;
     use crate::program::HostTypeId;
     use alloc::{format, vec, vec::Vec};
@@ -257,7 +257,7 @@ mod tests {
         let mut body = Asm::new();
         // Effect token, argument, and unused declaration remain visible without a payload bank.
         body.set_register_types(vec![ValueType::Unit; 3]);
-        body.ret(0, &[1]);
+        body.ret(Reg(0), &[Reg(1)]);
         let mut builder = ProgramBuilder::new();
         let id = builder
             .push_function_checked(
@@ -309,8 +309,10 @@ mod tests {
             ValueType::Closure,
         ]);
         body.ret(
-            0,
-            &(1..=u32::try_from(types.len()).unwrap()).collect::<Vec<_>>(),
+            Reg(0),
+            &(1..=u32::try_from(types.len()).unwrap())
+                .map(Reg)
+                .collect::<Vec<_>>(),
         );
         let mut pb = ProgramBuilder::new();
         let id = pb
@@ -324,7 +326,7 @@ mod tests {
             .unwrap();
         let mut unrelated = Asm::new();
         unrelated.set_register_types(vec![ValueType::Unit]);
-        unrelated.ret(0, &[]);
+        unrelated.ret(Reg(0), &[]);
         let other = pb
             .push_function_checked(
                 unrelated,
@@ -370,7 +372,7 @@ mod tests {
 
     #[test]
     fn contract_views_borrow_only_the_selected_signature() {
-        use crate::asm::FunctionAbi;
+        use crate::asm::{FunctionAbi, Reg};
         use crate::contract::Contract;
         let mut pb = ProgramBuilder::new();
         let integer = pb.contract(Contract::Kind(ValueType::I64)).unwrap();
@@ -384,7 +386,7 @@ mod tests {
             ValueType::Agg,
             ValueType::Agg,
         ]);
-        body.ret(0, &[1]);
+        body.ret(Reg(0), &[Reg(1)]);
         let id = pb
             .push_function_checked(
                 body,
@@ -396,7 +398,7 @@ mod tests {
             .unwrap();
         let mut unrelated = Asm::new();
         unrelated.set_register_types(vec![ValueType::Unit]);
-        unrelated.ret(0, &[]);
+        unrelated.ret(Reg(0), &[]);
         pb.push_function_checked(
             unrelated,
             FunctionSig {
@@ -423,14 +425,14 @@ mod tests {
         body.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
         let yes = body.label();
         let no = body.label();
-        body.const_bool(1, true);
+        body.const_bool(Reg(1), true);
         body.span(first_span);
-        body.br(1, yes, no);
+        body.br(Reg(1), yes, no);
         body.place(yes).unwrap();
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         body.place(no).unwrap();
         body.span(last_span);
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         let mut pb = ProgramBuilder::new();
         let id = pb
             .push_function_checked(

@@ -8,7 +8,7 @@
 //! unknown bytes after an assigned prefix and a prefix cut off by the end of the function are all
 //! rejected, by every decoder, with the offending code and location.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::codec::{
     DecodeError as CodecError, Operand, canonicalize, decode_all, decode_instruction,
     encode_instruction,
@@ -189,15 +189,15 @@ fn bit_program() -> VerifiedProgram {
         })
         .unwrap();
     let mut body = builder.function_asm(id).unwrap();
-    let rets: Vec<u32> = (0..5)
+    let rets: Vec<Reg> = (0..5)
         .map(|_| body.alloc_register(ValueType::U64))
         .collect();
-    body.u64_clz(rets[0], 1)
-        .u64_ctz(rets[1], 1)
-        .u64_popcnt(rets[2], 1)
-        .u64_rotl(rets[3], 1, 2)
-        .u64_rotr(rets[4], 1, 2)
-        .ret(0, &rets);
+    body.u64_clz(rets[0], Reg(1))
+        .u64_ctz(rets[1], Reg(1))
+        .u64_popcnt(rets[2], Reg(1))
+        .u64_rotl(rets[3], Reg(1), Reg(2))
+        .u64_rotr(rets[4], Reg(1), Reg(2))
+        .ret(Reg(0), &rets);
     builder.define_function(id, body).unwrap();
     let bytes = builder.build().encode();
     verify_program_owned(Program::decode(&bytes).unwrap(), &VerifyConfig::default()).unwrap()
@@ -222,7 +222,11 @@ fn prefixed_instructions_round_trip_through_every_decoder() {
     let mut encoded = Vec::new();
     encode_instruction(
         Opcode::U64Rotl,
-        &[Operand::Reg(6), Operand::Reg(1), Operand::Reg(2)],
+        &[
+            Operand::Reg(Reg(6)),
+            Operand::Reg(Reg(1)),
+            Operand::Reg(Reg(2)),
+        ],
         &mut encoded,
     )
     .unwrap();
@@ -307,16 +311,16 @@ fn bit_ops_match_rust_and_trace_by_code() {
 fn verifier_requires_u64_operands_for_bit_ops() {
     for emit in [
         (|a: &mut Asm| {
-            a.u64_popcnt(2, 1);
+            a.u64_popcnt(Reg(2), Reg(1));
         }) as fn(&mut Asm),
         |a| {
-            a.u64_rotl(2, 1, 1);
+            a.u64_rotl(Reg(2), Reg(1), Reg(1));
         },
     ] {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::U64]);
         emit(&mut a);
-        a.ret(0, &[]);
+        a.ret(Reg(0), &[]);
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
             a,

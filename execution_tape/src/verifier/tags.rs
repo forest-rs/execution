@@ -13,7 +13,7 @@ use alloc::collections::BTreeMap;
 use super::VerifyError;
 use super::metadata::MetadataTable;
 use crate::format::DecodeError;
-use crate::program::{Program, RegisterTypes, TagId};
+use crate::program::{Program, Reg, RegisterTypes, TagId};
 
 fn malformed(tag: usize, error: DecodeError) -> VerifyError {
     VerifyError::InvalidMetadata {
@@ -112,9 +112,11 @@ pub(super) fn check_throw_payload(
         .expect("validated by verify_id_operands_in_bounds");
     let payload = program.tag_payload(entry).expect("validated tag payload");
     for (index, (&reg, &expected)) in args.iter().zip(payload.iter()).enumerate() {
-        let actual = types
-            .get(reg)
-            .ok_or(VerifyError::RegOutOfBounds { func, pc, reg })?;
+        let actual = types.get(Reg(reg)).ok_or(VerifyError::RegOutOfBounds {
+            func,
+            pc,
+            reg: Reg(reg),
+        })?;
         if actual != expected {
             return Err(VerifyError::ThrowPayloadMismatch {
                 func,
@@ -122,7 +124,7 @@ pub(super) fn check_throw_payload(
                 tag: tag.0,
                 name: name(program, tag),
                 index: u32::try_from(index).expect("verified payload arity"),
-                reg,
+                reg: Reg(reg),
                 expected,
                 actual,
             });

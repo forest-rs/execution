@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use execution_tape::asm::{FunctionSig, ProgramBuilder};
+use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
@@ -69,9 +69,9 @@ fn program() -> Arc<VerifiedProgram> {
     let mut asm = builder.function_asm(entry).unwrap();
     let len = asm.alloc_register(ValueType::I64);
     let tuple = asm.alloc_register(ValueType::Agg);
-    asm.host_call_sig_id(0, log, 0, &[1], &[len])
-        .tuple_new(tuple, &[1])
-        .ret(0, &[len, tuple]);
+    asm.host_call_sig_id(Reg(0), log, Reg(0), &[Reg(1)], &[len])
+        .tuple_new(tuple, &[Reg(1)])
+        .ret(Reg(0), &[len, tuple]);
     builder.define_function(entry, asm).unwrap();
     Arc::new(builder.build_verified().unwrap())
 }

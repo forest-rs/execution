@@ -5,7 +5,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::value::FuncRef;
 use std::{hint::black_box, sync::Arc};
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn,
 };
@@ -53,25 +53,25 @@ fn bench_run_memory(c: &mut Criterion) {
                 ValueType::I64,
                 ValueType::Agg,
             ]);
-            asm.const_i64(2, 42);
+            asm.const_i64(Reg(2), 42);
             for i in 0..32 {
                 let field = if mode == "new_chain" {
                     if i == 0 { 1 } else { 3 }
                 } else {
                     2
                 };
-                asm.tuple_new(3, &[field]);
+                asm.tuple_new(Reg(3), &[Reg(field)]);
             }
             if mode == "trap" {
                 asm.trap(7);
             } else {
                 asm.ret(
-                    0,
-                    &[match mode {
+                    Reg(0),
+                    &[Reg(match mode {
                         "scalar" => 2,
                         "new_root" | "new_chain" => 3,
                         _ => 1,
-                    }],
+                    })],
                 );
             }
             let entry = pb
@@ -165,27 +165,27 @@ fn bench_payloads(c: &mut Criterion) {
                                 rets: vec![ty],
                             },
                         );
-                        asm.host_call_sig_id(0, hs, 0, &[], &[1]);
+                        asm.host_call_sig_id(Reg(0), hs, Reg(0), &[], &[Reg(1)]);
                     } else {
                         let id = match &value {
                             Value::Bytes(b) => pb.const_bytes(b),
                             Value::Str(s) => pb.const_str(s),
                             _ => unreachable!(),
                         };
-                        asm.const_pool(1, id);
+                        asm.const_pool(Reg(1), id);
                     }
                     let reg = if source == "tuple" {
-                        asm.tuple_new(2, &[1]);
-                        asm.tuple_get(3, 2, 0);
+                        asm.tuple_new(Reg(2), &[Reg(1)]);
+                        asm.tuple_get(Reg(3), Reg(2), 0);
                         3
                     } else {
                         1
                     };
                     let result = if length_only {
                         if text {
-                            asm.str_len(4, reg);
+                            asm.str_len(Reg(4), Reg(reg));
                         } else {
-                            asm.bytes_len(4, reg);
+                            asm.bytes_len(Reg(4), Reg(reg));
                         }
                         4
                     } else {
@@ -201,7 +201,7 @@ fn bench_payloads(c: &mut Criterion) {
                         kinds[4] = ValueType::U64;
                     }
                     asm.set_register_types(kinds);
-                    asm.ret(0, &[result]);
+                    asm.ret(Reg(0), &[Reg(result)]);
                     let entry = pb
                         .push_function_checked(
                             asm,
@@ -275,10 +275,10 @@ fn bench_run_results(c: &mut Criterion) {
         kinds[0] = ValueType::Unit;
         asm.set_register_types(kinds);
         for reg in 1..=count {
-            asm.const_i64(reg, i64::from(reg));
+            asm.const_i64(Reg(reg), i64::from(reg));
         }
-        let regs: Vec<_> = (1..=count).collect();
-        asm.ret(0, &regs);
+        let regs: Vec<_> = (1..=count).map(Reg).collect();
+        asm.ret(Reg(0), &regs);
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
             asm,
@@ -653,14 +653,14 @@ fn build_i64_add_chain(chain_len: u32) -> execution_tape::verifier::VerifiedProg
     let mut kinds = vec![ValueType::I64; chain_len as usize + 3];
     kinds[0] = ValueType::Unit;
     a.set_register_types(kinds);
-    a.const_i64(1, 1);
-    a.const_i64(2, 2);
+    a.const_i64(Reg(1), 1);
+    a.const_i64(Reg(2), 2);
     let mut cur = 3;
     for _ in 0..chain_len {
-        a.i64_add(cur, cur - 1, 2);
+        a.i64_add(Reg(cur), Reg(cur - 1), Reg(2));
         cur += 1;
     }
-    a.ret(0, &[cur - 1]);
+    a.ret(Reg(0), &[Reg(cur - 1)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -684,8 +684,8 @@ fn build_i64_add_chain_with_spans(
     let mut kinds = vec![ValueType::I64; chain_len as usize + 3];
     kinds[0] = ValueType::Unit;
     a.set_register_types(kinds);
-    a.const_i64(1, 1);
-    a.const_i64(2, 2);
+    a.const_i64(Reg(1), 1);
+    a.const_i64(Reg(2), 2);
     let mut cur = 3;
     let mut next_span_id = 1_u64;
     for i in 0..chain_len {
@@ -693,10 +693,10 @@ fn build_i64_add_chain_with_spans(
             a.span(SpanId::try_from(next_span_id).unwrap());
             next_span_id = next_span_id.saturating_add(1);
         }
-        a.i64_add(cur, cur - 1, 2);
+        a.i64_add(Reg(cur), Reg(cur - 1), Reg(2));
         cur += 1;
     }
-    a.ret(0, &[cur - 1]);
+    a.ret(Reg(0), &[Reg(cur - 1)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -716,9 +716,9 @@ fn build_bytes_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram 
 
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::Bytes, ValueType::U64]);
-    a.const_pool(1, bytes);
-    a.bytes_len(2, 1);
-    a.ret(0, &[2]);
+    a.const_pool(Reg(1), bytes);
+    a.bytes_len(Reg(2), Reg(1));
+    a.ret(Reg(0), &[Reg(2)]);
 
     pb.push_function_checked(
         a,
@@ -737,9 +737,9 @@ fn build_str_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
 
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::Str, ValueType::U64]);
-    a.const_pool(1, s);
-    a.str_len(2, 1);
-    a.ret(0, &[2]);
+    a.const_pool(Reg(1), s);
+    a.str_len(Reg(2), Reg(1));
+    a.ret(Reg(0), &[Reg(2)]);
 
     pb.push_function_checked(
         a,
@@ -774,16 +774,16 @@ fn build_call_overhead() -> execution_tape::verifier::VerifiedProgram {
         ValueType::I64,
         ValueType::I64,
     ]);
-    a1.const_i64(1, 1);
-    a1.const_i64(2, 2);
-    a1.i64_add(3, 1, 2);
-    a1.ret(0, &[3]);
+    a1.const_i64(Reg(1), 1);
+    a1.const_i64(Reg(2), 2);
+    a1.i64_add(Reg(3), Reg(1), Reg(2));
+    a1.ret(Reg(0), &[Reg(3)]);
     pb.define_function(f1, a1).unwrap();
 
     let mut a0 = Asm::new();
     a0.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    a0.call(0, f1, 0, &[], &[1]);
-    a0.ret(0, &[1]);
+    a0.call(Reg(0), f1, Reg(0), &[], &[Reg(1)]);
+    a0.ret(Reg(0), &[Reg(1)]);
     pb.define_function(f0, a0).unwrap();
 
     pb.build_verified().unwrap()
@@ -811,10 +811,10 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
         ValueType::I64,
         ValueType::I64,
     ]);
-    a1.const_i64(1, 1);
-    a1.const_i64(2, 2);
-    a1.i64_add(3, 1, 2);
-    a1.ret(0, &[3]);
+    a1.const_i64(Reg(1), 1);
+    a1.const_i64(Reg(2), 2);
+    a1.i64_add(Reg(3), Reg(1), Reg(2));
+    a1.ret(Reg(0), &[Reg(3)]);
     pb.define_function(f1, a1).unwrap();
 
     // r1: counter, r2: limit, r3: one, r4: sum, r5: cond, r6: tmp (call result)
@@ -832,25 +832,25 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     let l_body = a0.label();
     let l_done = a0.label();
 
-    a0.const_u64(1, 0);
-    a0.const_u64(2, iters);
-    a0.const_u64(3, 1);
-    a0.const_i64(4, 0);
+    a0.const_u64(Reg(1), 0);
+    a0.const_u64(Reg(2), iters);
+    a0.const_u64(Reg(3), 1);
+    a0.const_i64(Reg(4), 0);
 
     a0.jmp(l_loop);
     a0.place(l_loop).unwrap();
-    a0.u64_eq(5, 1, 2);
-    a0.br(5, l_done, l_body);
+    a0.u64_eq(Reg(5), Reg(1), Reg(2));
+    a0.br(Reg(5), l_done, l_body);
 
     // body
     a0.place(l_body).unwrap();
-    a0.call(0, f1, 0, &[], &[6]);
-    a0.i64_add(4, 4, 6);
-    a0.u64_add(1, 1, 3);
+    a0.call(Reg(0), f1, Reg(0), &[], &[Reg(6)]);
+    a0.i64_add(Reg(4), Reg(4), Reg(6));
+    a0.u64_add(Reg(1), Reg(1), Reg(3));
     a0.jmp(l_loop);
 
     a0.place(l_done).unwrap();
-    a0.ret(0, &[4]);
+    a0.ret(Reg(0), &[Reg(4)]);
 
     pb.define_function(f0, a0).unwrap();
     pb.build_verified().unwrap()
@@ -892,7 +892,7 @@ fn build_call_indirect_loop(
         &[ValueType::Unit][..]
     };
     callee.set_register_types(callee_kinds.to_vec());
-    callee.ret(0, &[]);
+    callee.ret(Reg(0), &[]);
     pb.define_function(f1, callee).unwrap();
 
     // r1: counter, r2: limit, r3: one, r4: done?
@@ -926,28 +926,35 @@ fn build_call_indirect_loop(
     let l_body = entry.label();
     let l_done = entry.label();
 
-    entry.const_u64(1, 0);
-    entry.const_u64(2, iters);
-    entry.const_u64(3, 1);
-    entry.const_func(5, f1);
+    entry.const_u64(Reg(1), 0);
+    entry.const_u64(Reg(2), iters);
+    entry.const_u64(Reg(3), 1);
+    entry.const_func(Reg(5), f1);
     if closure_target {
-        entry.const_i64(8, 7);
-        entry.tuple_new(6, &[8]);
-        entry.closure_new(7, 5, 6);
+        entry.const_i64(Reg(8), 7);
+        entry.tuple_new(Reg(6), &[Reg(8)]);
+        entry.closure_new(Reg(7), Reg(5), Reg(6));
     }
 
     entry.jmp(l_loop);
     entry.place(l_loop).unwrap();
-    entry.u64_eq(4, 1, 2);
-    entry.br(4, l_done, l_body);
+    entry.u64_eq(Reg(4), Reg(1), Reg(2));
+    entry.br(Reg(4), l_done, l_body);
 
     entry.place(l_body).unwrap();
-    entry.call_indirect(0, call_sig, if closure_target { 7 } else { 5 }, 0, &[], &[]);
-    entry.u64_add(1, 1, 3);
+    entry.call_indirect(
+        Reg(0),
+        call_sig,
+        if closure_target { Reg(7) } else { Reg(5) },
+        Reg(0),
+        &[],
+        &[],
+    );
+    entry.u64_add(Reg(1), Reg(1), Reg(3));
     entry.jmp(l_loop);
 
     entry.place(l_done).unwrap();
-    entry.ret(0, &[1]);
+    entry.ret(Reg(0), &[Reg(1)]);
     pb.define_function(f0, entry).unwrap();
 
     pb.build_verified().unwrap()
@@ -976,36 +983,36 @@ fn build_branch_hot_loop(iters: u64) -> execution_tape::verifier::VerifiedProgra
     let l_odd = a.label();
     let l_done = a.label();
 
-    a.const_u64(1, 0);
-    a.const_u64(2, iters);
-    a.const_u64(3, 1);
-    a.const_u64(4, 0);
-    a.const_i64(8, 0);
+    a.const_u64(Reg(1), 0);
+    a.const_u64(Reg(2), iters);
+    a.const_u64(Reg(3), 1);
+    a.const_u64(Reg(4), 0);
+    a.const_i64(Reg(8), 0);
 
     a.jmp(l_loop);
     a.place(l_loop).unwrap();
-    a.u64_eq(5, 1, 2);
-    a.br(5, l_done, l_check);
+    a.u64_eq(Reg(5), Reg(1), Reg(2));
+    a.br(Reg(5), l_done, l_check);
 
     a.place(l_check).unwrap();
-    a.u64_and(6, 1, 3);
-    a.u64_eq(7, 6, 4);
-    a.br(7, l_even, l_odd);
+    a.u64_and(Reg(6), Reg(1), Reg(3));
+    a.u64_eq(Reg(7), Reg(6), Reg(4));
+    a.br(Reg(7), l_even, l_odd);
 
     // Alternate branches hit this on even iterations.
     a.place(l_even).unwrap();
-    a.i64_add(8, 8, 8);
-    a.u64_add(1, 1, 3);
+    a.i64_add(Reg(8), Reg(8), Reg(8));
+    a.u64_add(Reg(1), Reg(1), Reg(3));
     a.jmp(l_loop);
 
     // Alternate branches hit this on odd iterations.
     a.place(l_odd).unwrap();
-    a.i64_sub(8, 8, 8);
-    a.u64_add(1, 1, 3);
+    a.i64_sub(Reg(8), Reg(8), Reg(8));
+    a.u64_add(Reg(1), Reg(1), Reg(3));
     a.jmp(l_loop);
 
     a.place(l_done).unwrap();
-    a.ret(0, &[8]);
+    a.ret(Reg(0), &[Reg(8)]);
 
     pb.push_function_checked(
         a,
@@ -1028,9 +1035,9 @@ fn build_host_call_overhead() -> execution_tape::verifier::VerifiedProgram {
 
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-    a.const_i64(1, 9);
-    a.host_call(0, host_sig, 0, &[1], &[2]);
-    a.ret(0, &[2]);
+    a.const_i64(Reg(1), 9);
+    a.host_call(Reg(0), host_sig, Reg(0), &[Reg(1)], &[Reg(2)]);
+    a.ret(Reg(0), &[Reg(2)]);
     pb.push_function_checked(
         a,
         FunctionSig {
@@ -1065,25 +1072,25 @@ fn build_host_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram
     let l_body = a.label();
     let l_done = a.label();
 
-    a.const_u64(1, 0);
-    a.const_u64(2, iters);
-    a.const_u64(3, 1);
-    a.const_i64(4, 9);
-    a.const_i64(5, 0);
+    a.const_u64(Reg(1), 0);
+    a.const_u64(Reg(2), iters);
+    a.const_u64(Reg(3), 1);
+    a.const_i64(Reg(4), 9);
+    a.const_i64(Reg(5), 0);
 
     a.jmp(l_loop);
     a.place(l_loop).unwrap();
-    a.u64_eq(6, 1, 2);
-    a.br(6, l_done, l_body);
+    a.u64_eq(Reg(6), Reg(1), Reg(2));
+    a.br(Reg(6), l_done, l_body);
 
     // body
     a.place(l_body).unwrap();
-    a.host_call(0, host_sig, 0, &[4], &[5]);
-    a.u64_add(1, 1, 3);
+    a.host_call(Reg(0), host_sig, Reg(0), &[Reg(4)], &[Reg(5)]);
+    a.u64_add(Reg(1), Reg(1), Reg(3));
     a.jmp(l_loop);
 
     a.place(l_done).unwrap();
-    a.ret(0, &[5]);
+    a.ret(Reg(0), &[Reg(5)]);
 
     pb.push_function_checked(
         a,

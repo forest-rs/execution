@@ -108,29 +108,29 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
         (
             FuncId(0),
             &[
-                "callee.host_call_sig_id(0, import, 0, &[1], &[2]);",
-                "callee.ret(0, &[2]);",
+                "callee.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);",
+                "callee.ret(Reg(0), &[Reg(2)]);",
             ],
         ),
         (
             ENTRY,
             &[
-                "body.br(1, yes, no);",
-                "body.call(0, callee, 0, &[2], &[3]);",
-                "body.jmp(join.with_args(&[3]));",
-                "body.const_i64(4, 0);",
-                "body.jmp(join.with_args(&[4]));",
+                "body.br(Reg(1), yes, no);",
+                "body.call(Reg(0), callee, Reg(0), &[Reg(2)], &[Reg(3)]);",
+                "body.jmp(join.with_args(&[Reg(3)]));",
+                "body.const_i64(Reg(4), 0);",
+                "body.jmp(join.with_args(&[Reg(4)]));",
                 "body.place(join).expect(\"fresh join\");",
-                "body.ret(0, &[5]);",
+                "body.ret(Reg(0), &[Reg(5)]);",
             ],
         ),
         (
             GUEST_TRAP,
             &[
-                "trap.const_i64(1, 1);",
-                "trap.const_i64(2, 0);",
-                "trap.i64_div(3, 1, 2);",
-                "trap.ret(0, &[3]);",
+                "trap.const_i64(Reg(1), 1);",
+                "trap.const_i64(Reg(2), 0);",
+                "trap.i64_div(Reg(3), Reg(1), Reg(2));",
+                "trap.ret(Reg(0), &[Reg(3)]);",
             ],
         ),
     ];

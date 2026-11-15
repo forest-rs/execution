@@ -5,7 +5,7 @@
 
 use execution_tape::trace::CodeLocation;
 use execution_tape::{
-    asm::{Asm, FunctionAbi, ProgramBuilder},
+    asm::{Asm, FunctionAbi, ProgramBuilder, Reg},
     callable::Callable,
     contract::Contract,
     host::HostSig,
@@ -63,9 +63,9 @@ pub(super) fn compile() -> Result<Compiled, Box<dyn Error>> {
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::Str, ValueType::Agg]);
     let host_pc = a.pc();
-    a.host_call_sig_id(0, import, 0, &[1], &[2]);
+    a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
     let return_pc = a.pc();
-    a.ret(0, &[2]);
+    a.ret(Reg(0), &[Reg(2)]);
     let entry = b.push_function_checked(
         a,
         FunctionAbi {

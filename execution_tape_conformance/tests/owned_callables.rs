@@ -7,7 +7,7 @@ use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
     aggregates::AggHeap,
-    asm::{FunctionAbi, FunctionSig, ProgramBuilder},
+    asm::{FunctionAbi, FunctionSig, ProgramBuilder, Reg},
     callable::{Callable, CallableError},
     contract::Contract,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -58,9 +58,9 @@ fn maker() -> (Arc<VerifiedProgram>, FuncId) {
     let mut a = b.function_asm(body).unwrap();
     let capture = a.alloc_register(ValueType::I64);
     let answer = a.alloc_register(ValueType::I64);
-    a.tuple_get(capture, 1, 0)
-        .i64_add(answer, capture, 2)
-        .ret(0, &[answer]);
+    a.tuple_get(capture, Reg(1), 0)
+        .i64_add(answer, capture, Reg(2))
+        .ret(Reg(0), &[answer]);
     b.define_function(body, a).unwrap();
     let factory = b
         .declare_function(FunctionAbi {
@@ -72,10 +72,10 @@ fn maker() -> (Arc<VerifiedProgram>, FuncId) {
     let env = a.alloc_register(ValueType::Agg);
     let function = a.alloc_register(ValueType::Func);
     let result = a.alloc_register(ValueType::Closure);
-    a.tuple_new(env, &[1])
+    a.tuple_new(env, &[Reg(1)])
         .const_func(function, body)
         .closure_new(result, function, env)
-        .ret(0, &[result]);
+        .ret(Reg(0), &[result]);
     b.define_function(factory, a).unwrap();
     (Arc::new(b.build_verified().unwrap()), factory)
 }
@@ -224,7 +224,7 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
         .unwrap();
     let mut a = b.function_asm(body).unwrap();
     let result = a.alloc_register(ValueType::Agg);
-    a.tuple_new(result, &[1]).ret(0, &[result]);
+    a.tuple_new(result, &[Reg(1)]).ret(Reg(0), &[result]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -329,7 +329,7 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
         ))
         .unwrap();
     let mut a = b.function_asm(body).unwrap();
-    a.ret(0, &[2]);
+    a.ret(Reg(0), &[Reg(2)]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -423,9 +423,9 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
     let mut a = b.function_asm(body).unwrap();
     let tuple = a.alloc_register(ValueType::Agg);
     let answer = a.alloc_register(ValueType::I64);
-    a.tuple_get(tuple, 1, 0)
+    a.tuple_get(tuple, Reg(1), 0)
         .tuple_get(answer, tuple, 0)
-        .ret(0, &[answer]);
+        .ret(Reg(0), &[answer]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -455,7 +455,7 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
         .unwrap();
     let mut inspection = run.inspect();
     let root = inspection.frames().next().unwrap().activation;
-    let Some(ValueRef::Agg(env)) = inspection.register(&root, 1).unwrap().value else {
+    let Some(ValueRef::Agg(env)) = inspection.register(&root, Reg(1)).unwrap().value else {
         panic!("missing imported environment");
     };
     let first = run.aggregates().tuple_get(env, 0).unwrap();
@@ -480,9 +480,9 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     let mut a = b.function_asm(leaf).unwrap();
     let captured = a.alloc_register(ValueType::I64);
     let answer = a.alloc_register(ValueType::I64);
-    a.tuple_get(captured, 1, 0)
-        .i64_add(answer, captured, 2)
-        .ret(0, &[answer]);
+    a.tuple_get(captured, Reg(1), 0)
+        .i64_add(answer, captured, Reg(2))
+        .ret(Reg(0), &[answer]);
     b.define_function(leaf, a).unwrap();
     let outer = b
         .declare_function(FunctionAbi {
@@ -494,8 +494,8 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     let function = a.alloc_register(ValueType::Func);
     let result = a.alloc_register(ValueType::Closure);
     a.const_func(function, leaf)
-        .closure_new(result, function, 1)
-        .ret(0, &[result]);
+        .closure_new(result, function, Reg(1))
+        .ret(Reg(0), &[result]);
     b.define_function(outer, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -675,7 +675,7 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
         ))
         .unwrap();
     let mut a = b.function_asm(body).unwrap();
-    a.ret(0, &[2]);
+    a.ret(Reg(0), &[Reg(2)]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();

@@ -1779,6 +1779,11 @@ mod tests {
         fs::write(&source,format!(r#"
             #[allow(dead_code, reason="fixture tests generated iteration")]
             #[path={iterator:?}] mod register_operands;
+            #[allow(dead_code, reason="the iterator names registers by this type")]
+            mod program {{
+                #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+                pub struct Reg(pub u32);
+            }}
             mod bytecode {{
                 use crate::register_operands::OperandIter;
                 enum Instr {{

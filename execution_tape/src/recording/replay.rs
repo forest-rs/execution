@@ -1723,7 +1723,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use crate::host::HostSig;
     use crate::program::ValueType;
     use crate::recording::{Call, RecordLimits, Recorder};
@@ -1764,11 +1764,11 @@ mod tests {
                     rets: vec![kind],
                 },
             );
-            body.host_call_sig_id(0, import, 0, &[1], &[2]);
-            body.ret(0, &[2]);
+            body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
+            body.ret(Reg(0), &[Reg(2)]);
         } else {
-            body.const_i64(2, 7);
-            body.ret(0, &[2]);
+            body.const_i64(Reg(2), 7);
+            body.ret(Reg(0), &[Reg(2)]);
         }
         builder
             .push_function_checked(
@@ -1855,15 +1855,15 @@ mod tests {
         );
         let mut a = b.function_asm(root).unwrap();
         let result = a.alloc_register(ValueType::I64);
-        a.host_call_sig_id(0, import, 0, &[1], &[result])
-            .ret(0, &[result]);
+        a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[result])
+            .ret(Reg(0), &[result]);
         b.define_function(root, a).unwrap();
         let mut a = b.function_asm(handler).unwrap();
         let one = a.alloc_register(ValueType::I64);
         let result = a.alloc_register(ValueType::I64);
         a.const_i64(one, 1)
-            .i64_add(result, 1, one)
-            .ret(0, &[result]);
+            .i64_add(result, Reg(1), one)
+            .ret(Reg(0), &[result]);
         b.define_function(handler, a).unwrap();
         let program = Arc::new(b.build_verified().unwrap());
         let recorder = Rc::new(RefCell::new(
@@ -1978,7 +1978,7 @@ mod tests {
             let mut builder = ProgramBuilder::new();
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ValueType::Bytes]);
-            body.ret(0, &[1]);
+            body.ret(Reg(0), &[Reg(1)]);
             builder
                 .push_function_checked(
                     body,
@@ -2140,13 +2140,17 @@ mod tests {
         );
         let head = body.label();
         let exit = body.label();
-        body.const_i64(1, 0).const_i64(2, 1).const_i64(3, 3);
+        body.const_i64(Reg(1), 0)
+            .const_i64(Reg(2), 1)
+            .const_i64(Reg(3), 3);
         body.jmp(head);
         body.place(head).unwrap();
-        body.host_call_sig_id(0, import, 0, &[1], &[1]);
-        body.i64_add(1, 1, 2).i64_lt(4, 1, 3).br(4, head, exit);
+        body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(1)]);
+        body.i64_add(Reg(1), Reg(1), Reg(2))
+            .i64_lt(Reg(4), Reg(1), Reg(3))
+            .br(Reg(4), head, exit);
         body.place(exit).unwrap();
-        body.ret(0, &[1]);
+        body.ret(Reg(0), &[Reg(1)]);
         builder
             .push_function_checked(
                 body,
@@ -2194,7 +2198,7 @@ mod tests {
             })
             .unwrap();
         let mut body = builder.function_asm(function).unwrap();
-        builder.emit_throw(&mut body, failed, &[1]).unwrap();
+        builder.emit_throw(&mut body, failed, &[Reg(1)]).unwrap();
         builder.define_function(function, body).unwrap();
         let program = Arc::new(builder.build_verified().unwrap());
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
@@ -2230,10 +2234,10 @@ mod tests {
             let caught = body.alloc_register(ValueType::I64);
             let handler = body.block(&[caught]);
             body.begin_region(&[crate::asm::Catch::Tag(failed, handler)]);
-            builder.emit_throw(&mut body, failed, &[1]).unwrap();
+            builder.emit_throw(&mut body, failed, &[Reg(1)]).unwrap();
             body.end_region();
             body.place(handler).unwrap();
-            body.ret(0, &[caught]);
+            body.ret(Reg(0), &[caught]);
             builder.define_function(function, body).unwrap();
             let program = Arc::new(builder.build_verified().unwrap());
             let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
@@ -2291,10 +2295,10 @@ mod tests {
             let caught = body.alloc_register(ValueType::Exn);
             let handler = body.block(&[caught]);
             body.begin_region(&[crate::asm::Catch::AllRef(handler)]);
-            builder.emit_throw(&mut body, failed, &[1]).unwrap();
+            builder.emit_throw(&mut body, failed, &[Reg(1)]).unwrap();
             body.end_region();
             body.place(handler).unwrap();
-            body.throw_ref(0, caught);
+            body.throw_ref(Reg(0), caught);
             builder.define_function(function, body).unwrap();
             let program = Arc::new(builder.build_verified().unwrap());
             let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
@@ -2428,9 +2432,9 @@ mod tests {
             let mut a = b.function_asm(entry).unwrap();
             let result = a.alloc_register(ValueType::Agg);
             let wrapper = a.alloc_register(ValueType::Agg);
-            a.host_call_sig_id(0, import, 0, &[], &[result])
+            a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[result])
                 .tuple_new(wrapper, &[result])
-                .ret(0, &[wrapper]);
+                .ret(Reg(0), &[wrapper]);
             b.define_function(entry, a).unwrap();
             let program = Arc::new(b.build_verified().unwrap());
             let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
@@ -2486,8 +2490,8 @@ mod tests {
         let mut asm = b.function_asm(f).unwrap();
         let x = b.argument(f, 0).unwrap();
         let answer = asm.alloc_register(ValueType::I64);
-        asm.suspend(0, ask, 0, &[x], &[answer]);
-        asm.ret(0, &[answer]);
+        asm.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
+        asm.ret(Reg(0), &[answer]);
         b.define_function(f, asm).unwrap();
         let program = Arc::new(b.build_verified().unwrap());
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());

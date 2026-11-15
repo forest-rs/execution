@@ -63,7 +63,7 @@ pub(crate) fn default_host_call_label(host_sig: HostSigId, program: &Program) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use execution_tape::host::HostSig;
     use execution_tape::program::ValueType;
 
@@ -71,7 +71,7 @@ mod tests {
         let mut builder = ProgramBuilder::new();
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit]);
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         let func = builder
             .push_function_checked(
                 body,

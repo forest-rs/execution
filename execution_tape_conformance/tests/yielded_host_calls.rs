@@ -7,7 +7,7 @@ use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
     program::{Program, ValueType},
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
@@ -47,7 +47,7 @@ struct Fixture {
     entry: FuncId,
     child: FuncId,
     pc: u32,
-    result: u32,
+    result: Reg,
     sources: SourceMap,
 }
 fn fixture(calls: usize, nested: bool) -> Fixture {
@@ -67,18 +67,19 @@ fn fixture(calls: usize, nested: bool) -> Fixture {
     let mut a = b.function_asm(child).unwrap();
     let tmp = a.alloc_register(ValueType::Agg);
     let result = a.alloc_register(ValueType::Str);
-    a.tuple_new(tmp, &[1]);
+    a.tuple_new(tmp, &[Reg(1)]);
     let pc = a.pc();
     for _ in 0..calls {
-        a.host_call_sig_id(0, import, 0, &[1], &[result]);
+        a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[result]);
     }
-    a.ret(0, &[result]);
+    a.ret(Reg(0), &[result]);
     b.define_function(child, a).unwrap();
     let entry = if nested {
         let root = b.declare_function(sig).unwrap();
         let mut a = b.function_asm(root).unwrap();
         let result = a.alloc_register(ValueType::Str);
-        a.call(0, child, 0, &[1], &[result]).ret(0, &[result]);
+        a.call(Reg(0), child, Reg(0), &[Reg(1)], &[result])
+            .ret(Reg(0), &[result]);
         b.define_function(root, a).unwrap();
         root
     } else {
@@ -713,9 +714,9 @@ fn empty_and_wide_host_boundaries_use_the_same_request_and_completion_contract()
         let results: Vec<_> = (0..count)
             .map(|_| a.alloc_register(ValueType::I64))
             .collect();
-        let inputs: Vec<_> = (1..=count).collect();
-        a.host_call_sig_id(0, import, 0, &inputs, &results)
-            .ret(0, &results);
+        let inputs: Vec<_> = (1..=count).map(Reg).collect();
+        a.host_call_sig_id(Reg(0), import, Reg(0), &inputs, &results)
+            .ret(Reg(0), &results);
         b.define_function(entry, a).unwrap();
         let p = b.build_verified().unwrap();
         let args: Vec<_> = (0..count).map(|n| Value::I64(i64::from(n))).collect();

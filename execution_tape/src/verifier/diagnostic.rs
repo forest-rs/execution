@@ -3,7 +3,7 @@
 
 use super::{BlockDeclarationError, BlockEdgeError, ExceptionPlace, VerifyError};
 use crate::disasm::disassemble_function;
-use crate::program::Program;
+use crate::program::{Program, Reg};
 use crate::value::FuncId;
 use alloc::string::ToString;
 use core::fmt;
@@ -184,7 +184,7 @@ impl VerifyError {
     /// Like [`Self::function`], the index belongs to the rejected program and may be out of
     /// bounds.
     #[must_use]
-    pub fn register(&self) -> Option<u32> {
+    pub fn register(&self) -> Option<Reg> {
         match self {
             Self::EffectInNotR0 { reg, .. }
             | Self::EffectOutNotR0 { reg, .. }
@@ -250,10 +250,10 @@ impl fmt::Display for InProgram<'_> {
         f.write_str(": ")?;
         error.fmt_message(f)?;
         if let Some(reg) = error.register()
-            && let Some(arg) = reg.checked_sub(1)
+            && let Some(arg) = reg.0.checked_sub(1)
             && let Some(name) = program.function_input_name(func, arg)
         {
-            write!(f, " (r{reg} is input {name:?})")?;
+            write!(f, " ({reg} is input {name:?})")?;
         }
         Ok(())
     }
@@ -406,13 +406,13 @@ mod tests {
         let at = VerifyError::UninitializedRead {
             func: 1,
             pc: 0,
-            reg: 3,
+            reg: Reg(3),
         };
         assert_eq!(at.to_string(), "function #1, pc 0: uninitialized read: r3");
         let signature = VerifyError::RegisterTypeMismatch {
             func: 0,
             pc: None,
-            reg: 1,
+            reg: Reg(1),
             declared: ValueType::U32,
             required: ValueType::F32,
         };
@@ -426,7 +426,7 @@ mod tests {
 
     /// `shade(age: f32, wet: bool) -> f32` multiplies by `wet` after a named label, inside span 7.
     fn mistyped_program() -> Program {
-        use crate::asm::{FunctionSig, ProgramBuilder};
+        use crate::asm::{FunctionSig, ProgramBuilder, Reg};
         use crate::program::SpanId;
 
         let mut builder = ProgramBuilder::new();
@@ -445,9 +445,9 @@ mod tests {
         let weathered = asm.label_named("weathered");
         asm.place(weathered).unwrap();
         asm.span(SpanId::try_from(7_u64).unwrap())
-            .f32_mul(out, 1, out)
-            .f32_mul(out, 2, out)
-            .ret(0, &[out]);
+            .f32_mul(out, Reg(1), out)
+            .f32_mul(out, Reg(2), out)
+            .ret(Reg(0), &[out]);
         builder.define_function(shade, asm).unwrap();
         builder.build()
     }
@@ -456,7 +456,7 @@ mod tests {
     fn display_in_names_the_location_from_program_metadata() {
         let program = mistyped_program();
         let error = verify_program(&program, &VerifyConfig::default()).unwrap_err();
-        assert_eq!(error.register(), Some(2));
+        assert_eq!(error.register(), Some(Reg(2)));
         assert_eq!(
             error.to_string(),
             "function #0, pc 12: r2 declared Bool, required F32"

@@ -303,7 +303,7 @@
 //! use std::sync::Arc;
 //!
 //! use execution_graph::{ExecutionGraph, TapeExecutor, TapeValue};
-//! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+//! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
 //! use execution_tape::value::Value;
@@ -326,9 +326,9 @@
 //!
 //! let mut asm = Asm::new();
 //! asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64, ValueType::I64]);
-//! asm.const_i64(2, 1);
-//! asm.i64_add(3, 1, 2);
-//! asm.ret(0, &[3]);
+//! asm.const_i64(Reg(2), 1);
+//! asm.i64_add(Reg(3), Reg(1), Reg(2));
+//! asm.ret(Reg(0), &[Reg(3)]);
 //!
 //! let mut builder = ProgramBuilder::new();
 //! let entry = builder.push_function_checked(

@@ -662,7 +662,7 @@ impl TraceSink for Recorder {
                 .builder
                 .roots(core::iter::once(value), event.aggregates)
             {
-                Ok(range) => history.registers.push((reg, range.start)),
+                Ok(range) => history.registers.push((reg.0, range.start)),
                 Err(error) => {
                     self.fail_at(error, Some(location));
                     return;

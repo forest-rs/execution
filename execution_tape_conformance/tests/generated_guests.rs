@@ -5,7 +5,7 @@
 
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{Asm, FunctionSig, ProgramBuilder},
+    asm::{Asm, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{Program, ValueType},
     trace::TraceMask,
@@ -153,11 +153,11 @@ impl Random {
     }
 }
 
-fn emit(expr: &Expr, body: &mut Asm, helper: FuncId) -> u32 {
+fn emit(expr: &Expr, body: &mut Asm, helper: FuncId) -> Reg {
     let dst = body.alloc_register(ValueType::I64);
     match expr {
         Expr::Input => {
-            body.mov(dst, 1);
+            body.mov(dst, Reg(1));
         }
         Expr::Literal(n) => {
             body.const_i64(dst, *n);
@@ -199,13 +199,13 @@ fn emit(expr: &Expr, body: &mut Asm, helper: FuncId) -> u32 {
         }
         Expr::Call(a) => {
             let a = emit(a, body, helper);
-            body.call(0, helper, 0, &[a], &[dst]);
+            body.call(Reg(0), helper, Reg(0), &[a], &[dst]);
         }
     }
     dst
 }
 
-fn compile(expr: &Expr) -> (Program, u32) {
+fn compile(expr: &Expr) -> (Program, Reg) {
     let mut builder = ProgramBuilder::new();
     let sig = FunctionSig {
         arg_types: vec![ValueType::I64],
@@ -219,13 +219,13 @@ fn compile(expr: &Expr) -> (Program, u32) {
     let result = body.alloc_register(ValueType::I64);
     body.const_i64(one, 1)
         .const_i64(three, 3)
-        .i64_mul(result, 1, three)
+        .i64_mul(result, Reg(1), three)
         .i64_add(result, result, one)
-        .ret(0, &[result]);
+        .ret(Reg(0), &[result]);
     builder.define_function(helper, body).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let result = emit(expr, &mut body, helper);
-    body.ret(0, &[result]);
+    body.ret(Reg(0), &[result]);
     builder.define_function(entry, body).unwrap();
     (builder.build(), result)
 }
@@ -310,7 +310,7 @@ fn generated_guests_match_model_and_reject_corrupted_declarations() {
         // Change only the result register's declaration, leaving code and ABI intact.
         let wrong_kind = u32::try_from(malformed.value_types.len()).unwrap();
         malformed.value_types.push(ValueType::Bool);
-        let offset = malformed.functions[0].register_types.offset as usize + result as usize;
+        let offset = malformed.functions[0].register_types.offset as usize + result.0 as usize;
         malformed.register_type_ids[offset] = wrong_kind;
         assert!(
             verify_program_owned(malformed, &VerifyConfig::default()).is_err(),
@@ -382,7 +382,7 @@ fn paused_registers_match_the_function_analysis_at_every_step() {
                     assert_eq!(
                         value.value.is_some(),
                         matches!(fact.before, ValueFact::Contract(_)),
-                        "seed={seed}, {location:?}, r{}",
+                        "seed={seed}, {location:?}, {}",
                         value.register
                     );
                     let single = inspection
@@ -393,7 +393,7 @@ fn paused_registers_match_the_function_analysis_at_every_step() {
                 }
                 assert!(
                     inspection
-                        .register(&frame.activation, frame.register_count)
+                        .register(&frame.activation, Reg(frame.register_count))
                         .is_none()
                 );
             }

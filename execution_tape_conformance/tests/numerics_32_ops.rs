@@ -10,6 +10,7 @@
 
 use std::fmt::Write as _;
 
+use execution_tape::asm::Reg;
 use execution_tape::codec::{Operand, encode_instruction};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::{Opcode, OpcodePrefix};
@@ -617,7 +618,7 @@ fn same(a: &Value, b: &Value) -> bool {
 
 /// Builds `f(ins...) -> outs` whose body is the one instruction, via the wire format.
 fn program(case: &Case) -> Program {
-    let regs = |start: u32, n: usize| (start..).take(n).collect::<Vec<u32>>();
+    let regs = |start: u32, n: usize| (start..).take(n).map(Reg).collect::<Vec<_>>();
     let args = regs(1, case.ins.len());
     let outs = regs(1 + u32::try_from(case.ins.len()).unwrap(), case.outs.len());
     let operands: Vec<Operand<'_>> = outs.iter().chain(&args).map(|&r| Operand::Reg(r)).collect();
@@ -625,7 +626,7 @@ fn program(case: &Case) -> Program {
     encode_instruction(case.op, &operands, &mut bytecode).unwrap();
     encode_instruction(
         Opcode::Ret,
-        &[Operand::Reg(0), Operand::RegList(&outs)],
+        &[Operand::Reg(Reg(0)), Operand::RegList(&outs)],
         &mut bytecode,
     )
     .unwrap();
@@ -726,11 +727,11 @@ fn numeric32_layout_is_covered_and_blocked_by_family() {
 fn constants_round_trip_with_exact_bits() {
     let mut asm = execution_tape::asm::Asm::new();
     asm.set_register_types(vec![ValueType::Unit, I32, U32, F32, F32]);
-    asm.const_i32(1, i32::MIN)
-        .const_u32(2, u32::MAX)
-        .const_f32(3, -0.0)
-        .const_f32_bits(4, 0x7FA0_0001)
-        .ret(0, &[1, 2, 3, 4]);
+    asm.const_i32(Reg(1), i32::MIN)
+        .const_u32(Reg(2), u32::MAX)
+        .const_f32(Reg(3), -0.0)
+        .const_f32_bits(Reg(4), 0x7FA0_0001)
+        .ret(Reg(0), &[Reg(1), Reg(2), Reg(3), Reg(4)]);
     let mut builder = execution_tape::asm::ProgramBuilder::new();
     builder
         .push_function_checked(

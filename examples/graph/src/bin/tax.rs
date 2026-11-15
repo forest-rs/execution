@@ -18,7 +18,7 @@ use execution_graph::{
     ExecutionGraph, GraphError, ReportDetailMask, ResourceKey, RunDetailReport, TapeError,
     TapeExecutor,
 };
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
 };
@@ -69,8 +69,8 @@ fn program_price_subtotal() -> (Arc<VerifiedProgram>, FuncId) {
     let mut kinds = vec![ValueType::I64; 4];
     kinds[0] = ValueType::Unit;
     a.set_register_types(kinds);
-    a.i64_mul(3, 1, 2);
-    a.ret(0, &[3]);
+    a.i64_mul(Reg(3), Reg(1), Reg(2));
+    a.ret(Reg(0), &[Reg(3)]);
 
     let f = pb
         .push_function_checked(
@@ -100,11 +100,11 @@ fn program_tax_amount() -> (Arc<VerifiedProgram>, FuncId) {
     let mut kinds = vec![ValueType::I64; 6];
     kinds[0] = ValueType::Unit;
     a.set_register_types(kinds);
-    a.host_call(0, host_sig, 0, &[], &[2]); // rate_bp in r2
-    a.i64_mul(3, 1, 2); // subtotal * rate
-    a.const_i64(4, 10_000);
-    a.i64_div(5, 3, 4);
-    a.ret(0, &[5]);
+    a.host_call(Reg(0), host_sig, Reg(0), &[], &[Reg(2)]); // rate_bp in r2
+    a.i64_mul(Reg(3), Reg(1), Reg(2)); // subtotal * rate
+    a.const_i64(Reg(4), 10_000);
+    a.i64_div(Reg(5), Reg(3), Reg(4));
+    a.ret(Reg(0), &[Reg(5)]);
 
     let f = pb
         .push_function_checked(
@@ -128,8 +128,8 @@ fn program_total() -> (Arc<VerifiedProgram>, FuncId) {
     let mut kinds = vec![ValueType::I64; 4];
     kinds[0] = ValueType::Unit;
     a.set_register_types(kinds);
-    a.i64_add(3, 1, 2);
-    a.ret(0, &[3]);
+    a.i64_add(Reg(3), Reg(1), Reg(2));
+    a.ret(Reg(0), &[Reg(3)]);
 
     let f = pb
         .push_function_checked(

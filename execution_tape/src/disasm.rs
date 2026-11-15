@@ -22,9 +22,9 @@ use crate::bytecode::{BytecodeError, DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
 use crate::program::{
-    CallSigId, ConstId, ElemTypeId, HostSigId, Program, TagId, TypeId, ValueType,
+    CallSigId, ConstId, ElemTypeId, HostSigId, Program, Reg, TagId, TypeId, ValueType,
 };
-pub use crate::register_operands::RegIter;
+pub use crate::register_operands::{RegIter, RegList};
 use crate::value::{Decimal, DecimalRounding, FuncId};
 use crate::verifier::VerifiedProgram;
 
@@ -237,15 +237,15 @@ impl DisasmError {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct CallOperands<'a> {
     /// Effect output register (`eff_out`).
-    pub eff_out: u32,
+    pub eff_out: Reg,
     /// Call target (function or host signature).
     pub callee: CallTarget<'a>,
     /// Effect input register (`eff_in`).
-    pub eff_in: u32,
+    pub eff_in: Reg,
     /// Argument registers.
-    pub args: &'a [u32],
+    pub args: RegList<'a>,
     /// Return registers.
-    pub rets: &'a [u32],
+    pub rets: RegList<'a>,
 }
 
 /// The callee for a call-like instruction.
@@ -260,7 +260,7 @@ pub enum CallTarget<'a> {
         /// Expected call signature table id.
         call_sig: CallSigId,
         /// Register holding the dynamic callee value.
-        callee: u32,
+        callee: Reg,
     },
 }
 
@@ -270,19 +270,19 @@ pub enum Operands<'a> {
     /// Typed parameter declaration; no runtime instruction is emitted.
     Block {
         /// Destination registers in declaration order.
-        params: &'a [u32],
+        params: RegList<'a>,
     },
     /// Jump with simultaneous arguments.
     JmpArgs {
         /// Target header PC.
         pc_target: u32,
         /// Source registers in parameter order.
-        args: &'a [u32],
+        args: RegList<'a>,
     },
     /// Branch argument storage. Use [`InstrView::edge`] for per-arm borrowed views.
     BrArgs {
         /// Condition register.
-        cond: u32,
+        cond: Reg,
         /// True target header PC.
         pc_true: u32,
         /// False target header PC.
@@ -290,14 +290,14 @@ pub enum Operands<'a> {
         /// Number of arguments belonging to the true arm.
         true_arg_count: u32,
         /// True then false arguments (one owned list in the decoded source).
-        args: &'a [u32],
+        args: RegList<'a>,
     },
     /// Most instructions: `dst` + `srcs` + optional immediate/index.
     Simple,
     /// `br cond, pc_true, pc_false`.
     Br {
         /// Condition register.
-        cond: u32,
+        cond: Reg,
         /// Jump target if `cond` is true.
         pc_true: u32,
         /// Jump target if `cond` is false.
@@ -313,27 +313,27 @@ pub enum Operands<'a> {
     /// `ret eff_in, rets...`.
     Ret {
         /// Effect register.
-        eff: u32,
+        eff: Reg,
         /// Return registers.
-        rets: &'a [u32],
+        rets: RegList<'a>,
     },
     /// `throw eff_in, tag, payload...`.
     Throw {
         /// Effect register.
-        eff: u32,
+        eff: Reg,
         /// Raised exception tag.
         tag: TagId,
         /// Best-effort resolved tag name.
         name: Option<&'a str>,
         /// Payload registers in tag order.
-        payload: &'a [u32],
+        payload: RegList<'a>,
     },
     /// `throw_ref eff_in, exn`.
     ThrowRef {
         /// Effect register.
-        eff: u32,
+        eff: Reg,
         /// Exception reference register.
-        exn: u32,
+        exn: Reg,
     },
 }
 
@@ -343,7 +343,7 @@ pub struct BlockEdge<'a> {
     /// Target declaration or unparameterized source PC.
     pub target: u32,
     /// Incoming argument registers in parameter order.
-    pub args: &'a [u32],
+    pub args: RegList<'a>,
 }
 
 /// A table/index-like immediate operand.
@@ -386,7 +386,7 @@ pub struct InstrView<'a> {
 impl<'a> InstrView<'a> {
     /// Returns a virtual register's declared kind, or `None` for malformed or missing metadata.
     #[must_use]
-    pub fn register_type(&self, reg: u32) -> Option<ValueType> {
+    pub fn register_type(&self, reg: Reg) -> Option<ValueType> {
         let function = self.program.functions.get(self.func.0 as usize)?;
         function.register_type(self.program, reg).ok()
     }
@@ -419,8 +419,8 @@ impl<'a> InstrView<'a> {
     ///
     /// Overflow-checked arithmetic also writes a `bool` flag; [`Self::writes`] yields both.
     #[must_use]
-    pub fn dst(&self) -> Option<u32> {
-        self.decoded.instr.writes().next()
+    pub fn dst(&self) -> Option<Reg> {
+        self.decoded.instr.writes().next().map(Reg)
     }
 
     /// Optional index-like immediate operand (const pool, host sig table, type ids, etc.).
@@ -560,11 +560,11 @@ impl<'a> InstrView<'a> {
                     args,
                     rets,
                 } => Operands::Call(CallOperands {
-                    eff_out: *eff_out,
+                    eff_out: Reg(*eff_out),
                     callee: CallTarget::Func(*func_id),
-                    eff_in: *eff_in,
-                    args,
-                    rets,
+                    eff_in: Reg(*eff_in),
+                    args: RegList::new(args),
+                    rets: RegList::new(rets),
                 }),
                 Instr::HostCall {
                     eff_out,
@@ -573,11 +573,11 @@ impl<'a> InstrView<'a> {
                     args,
                     rets,
                 } => Operands::Call(CallOperands {
-                    eff_out: *eff_out,
+                    eff_out: Reg(*eff_out),
                     callee: CallTarget::HostSig(*host_sig, self.host_op_symbol()),
-                    eff_in: *eff_in,
-                    args,
-                    rets,
+                    eff_in: Reg(*eff_in),
+                    args: RegList::new(args),
+                    rets: RegList::new(rets),
                 }),
                 Instr::CallIndirect {
                     eff_out,
@@ -587,25 +587,30 @@ impl<'a> InstrView<'a> {
                     args,
                     rets,
                 } => Operands::Call(CallOperands {
-                    eff_out: *eff_out,
+                    eff_out: Reg(*eff_out),
                     callee: CallTarget::Indirect {
                         call_sig: CallSigId(*call_sig),
-                        callee: *callee,
+                        callee: Reg(*callee),
                     },
-                    eff_in: *eff_in,
-                    args,
-                    rets,
+                    eff_in: Reg(*eff_in),
+                    args: RegList::new(args),
+                    rets: RegList::new(rets),
                 }),
-                Instr::Ret { eff_in, rets } => Operands::Ret { eff: *eff_in, rets },
+                Instr::Ret { eff_in, rets } => Operands::Ret {
+                    eff: Reg(*eff_in),
+                    rets: RegList::new(rets),
+                },
                 _ => Operands::Simple,
             };
         }
 
         match &self.decoded.instr {
-            Instr::Block { params } => Operands::Block { params },
+            Instr::Block { params } => Operands::Block {
+                params: RegList::new(params),
+            },
             Instr::JmpArgs { pc_target, args } => Operands::JmpArgs {
                 pc_target: *pc_target,
-                args,
+                args: RegList::new(args),
             },
             Instr::BrArgs {
                 cond,
@@ -614,18 +619,18 @@ impl<'a> InstrView<'a> {
                 true_arg_count,
                 args,
             } => Operands::BrArgs {
-                cond: *cond,
+                cond: Reg(*cond),
                 pc_true: *pc_true,
                 pc_false: *pc_false,
                 true_arg_count: *true_arg_count,
-                args,
+                args: RegList::new(args),
             },
             Instr::Br {
                 cond,
                 pc_true,
                 pc_false,
             } => Operands::Br {
-                cond: *cond,
+                cond: Reg(*cond),
                 pc_true: *pc_true,
                 pc_false: *pc_false,
             },
@@ -633,14 +638,14 @@ impl<'a> InstrView<'a> {
                 pc_target: *pc_target,
             },
             Instr::Throw { eff_in, tag, args } => Operands::Throw {
-                eff: *eff_in,
+                eff: Reg(*eff_in),
                 tag: TagId(*tag),
                 name: self.program.tag_name(TagId(*tag)),
-                payload: args,
+                payload: RegList::new(args),
             },
             Instr::ThrowRef { eff_in, exn } => Operands::ThrowRef {
-                eff: *eff_in,
-                exn: *exn,
+                eff: Reg(*eff_in),
+                exn: Reg(*exn),
             },
             _ => Operands::Simple,
         }
@@ -654,7 +659,10 @@ impl<'a> InstrView<'a> {
         self.decoded
             .instr
             .edge(arm)
-            .map(|(target, args)| BlockEdge { target, args })
+            .map(|(target, args)| BlockEdge {
+                target,
+                args: RegList::new(args),
+            })
     }
 
     /// Registers read by this instruction (best-effort; intended for tooling/dataflow).
@@ -1111,8 +1119,8 @@ fn const_pool_value<'a>(program: &'a Program, id: ConstId) -> Option<ConstValue<
     }
 }
 
-fn fmt_reg(w: &mut fmt::Formatter<'_>, r: u32) -> fmt::Result {
-    write!(w, "r{}", r)
+fn fmt_reg(w: &mut fmt::Formatter<'_>, r: impl Into<u32>) -> fmt::Result {
+    write!(w, "r{}", r.into())
 }
 
 fn fmt_reg_list(w: &mut fmt::Formatter<'_>, regs: &[u32]) -> fmt::Result {
@@ -1565,7 +1573,7 @@ fn fmt_block(f: &mut fmt::Formatter<'_>, params: &[u32], iv: &InstrView<'_>) -> 
             write!(f, ", ")?;
         }
         write!(f, "r{reg}:")?;
-        if let Some(ty) = iv.register_type(*reg) {
+        if let Some(ty) = iv.register_type(Reg(*reg)) {
             write!(f, "{ty:?}")?;
         } else {
             write!(f, "?")?;
@@ -1601,7 +1609,7 @@ fn fmt_branch_args(
         }
         fmt_label_ref(f, pc, labels)?;
         write!(f, "(")?;
-        fmt_reg_iter(f, RegIter::slice(values))?;
+        fmt_reg_iter(f, RegIter::slice(RegList::new(values)))?;
         write!(f, ")")?;
     }
     Ok(())
@@ -1614,7 +1622,7 @@ fn fmt_instr_with_labels(
 ) -> fmt::Result {
     write!(f, "  {:06}: {}", iv.pc(), iv.opcode().mnemonic())?;
     match iv.operands() {
-        Operands::Block { params } => fmt_block(f, params, iv)?,
+        Operands::Block { params } => fmt_block(f, params.raw(), iv)?,
         Operands::JmpArgs { pc_target, args } => {
             write!(f, " ")?;
             fmt_label_ref(f, pc_target, label_pcs)?;
@@ -1628,7 +1636,15 @@ fn fmt_instr_with_labels(
             pc_false,
             true_arg_count,
             args,
-        } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, label_pcs)?,
+        } => fmt_branch_args(
+            f,
+            cond.0,
+            pc_true,
+            pc_false,
+            true_arg_count,
+            args.raw(),
+            label_pcs,
+        )?,
         Operands::Simple if is_continuation(&iv.decoded.instr) => {
             fmt_continuation(f, iv.program, &iv.decoded.instr)?;
         }
@@ -1712,15 +1728,15 @@ fn fmt_instr_with_labels(
             fmt_reg(f, call.eff_in)?;
             write!(f, ", args=")?;
             if let Some(callee) = callee_func_for_names {
-                fmt_named_arg_list(f, iv.program, callee, call.args)?;
+                fmt_named_arg_list(f, iv.program, callee, call.args.raw())?;
             } else {
-                fmt_reg_list(f, call.args)?;
+                fmt_reg_list(f, call.args.raw())?;
             }
             write!(f, ", rets=")?;
             if let Some(callee) = callee_func_for_names {
-                fmt_named_ret_list(f, iv.program, callee, call.rets)?;
+                fmt_named_ret_list(f, iv.program, callee, call.rets.raw())?;
             } else {
-                fmt_reg_list(f, call.rets)?;
+                fmt_reg_list(f, call.rets.raw())?;
             }
             if let Some(call_sig) = call_sig_for_annotation {
                 fmt_call_sig_annotation(f, iv.program, call_sig)?;
@@ -1730,15 +1746,15 @@ fn fmt_instr_with_labels(
             write!(f, " eff=")?;
             fmt_reg(f, eff)?;
             write!(f, ", rets=")?;
-            fmt_named_ret_list(f, iv.program, iv.func(), rets)?;
+            fmt_named_ret_list(f, iv.program, iv.func(), rets.raw())?;
         }
         Operands::Throw {
             eff,
             tag,
             name,
             payload,
-        } => fmt_throw(f, iv.program, eff, tag, name, payload)?,
-        Operands::ThrowRef { eff, exn } => fmt_throw_ref(f, eff, exn)?,
+        } => fmt_throw(f, iv.program, eff.0, tag, name, payload.raw())?,
+        Operands::ThrowRef { eff, exn } => fmt_throw_ref(f, eff.0, exn.0)?,
     }
     Ok(())
 }
@@ -1793,7 +1809,7 @@ impl fmt::Display for InstrView<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:06}: {}", self.pc(), self.opcode().mnemonic())?;
         match self.operands() {
-            Operands::Block { params } => fmt_block(f, params, self)?,
+            Operands::Block { params } => fmt_block(f, params.raw(), self)?,
             Operands::JmpArgs { pc_target, args } => {
                 write!(f, " @{pc_target:06}(")?;
                 fmt_reg_iter(f, RegIter::slice(args))?;
@@ -1805,7 +1821,15 @@ impl fmt::Display for InstrView<'_> {
                 pc_false,
                 true_arg_count,
                 args,
-            } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, &[])?,
+            } => fmt_branch_args(
+                f,
+                cond.0,
+                pc_true,
+                pc_false,
+                true_arg_count,
+                args.raw(),
+                &[],
+            )?,
             Operands::Simple if is_continuation(&self.decoded.instr) => {
                 fmt_continuation(f, self.program, &self.decoded.instr)?;
             }
@@ -1884,12 +1908,12 @@ impl fmt::Display for InstrView<'_> {
                 write!(f, ", eff_in=")?;
                 fmt_reg(f, call.eff_in)?;
                 write!(f, ", args=")?;
-                fmt_reg_list(f, call.args)?;
+                fmt_reg_list(f, call.args.raw())?;
                 write!(f, ", rets=")?;
                 if let Some(callee) = callee_func_for_names {
-                    fmt_named_ret_list(f, self.program, callee, call.rets)?;
+                    fmt_named_ret_list(f, self.program, callee, call.rets.raw())?;
                 } else {
-                    fmt_reg_list(f, call.rets)?;
+                    fmt_reg_list(f, call.rets.raw())?;
                 }
                 if let Some(call_sig) = call_sig_for_annotation {
                     fmt_call_sig_annotation(f, self.program, call_sig)?;
@@ -1899,15 +1923,15 @@ impl fmt::Display for InstrView<'_> {
                 write!(f, " eff=")?;
                 fmt_reg(f, eff)?;
                 write!(f, ", rets=")?;
-                fmt_named_ret_list(f, self.program, self.func, rets)?;
+                fmt_named_ret_list(f, self.program, self.func, rets.raw())?;
             }
             Operands::Throw {
                 eff,
                 tag,
                 name,
                 payload,
-            } => fmt_throw(f, self.program, eff, tag, name, payload)?,
-            Operands::ThrowRef { eff, exn } => fmt_throw_ref(f, eff, exn)?,
+            } => fmt_throw(f, self.program, eff.0, tag, name, payload.raw())?,
+            Operands::ThrowRef { eff, exn } => fmt_throw_ref(f, eff.0, exn.0)?,
         }
         Ok(())
     }
@@ -1935,7 +1959,7 @@ impl fmt::Display for InputIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use crate::program::ValueType;
     use alloc::string::ToString;
     use alloc::vec;
@@ -1946,14 +1970,14 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label();
         let l_else = a.label();
-        a.const_bool(1, true);
-        a.br(1, l_then, l_else);
+        a.const_bool(Reg(1), true);
+        a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
-        a.const_i64(2, 1);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 1);
+        a.ret(Reg(0), &[Reg(2)]);
         a.place(l_else).unwrap();
-        a.const_i64(2, 2);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 2);
+        a.ret(Reg(0), &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -1978,14 +2002,14 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label_named("then");
         let l_else = a.label_named("else");
-        a.const_bool(1, true);
-        a.br(1, l_then, l_else);
+        a.const_bool(Reg(1), true);
+        a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
-        a.const_i64(2, 1);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 1);
+        a.ret(Reg(0), &[Reg(2)]);
         a.place(l_else).unwrap();
-        a.const_i64(2, 2);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 2);
+        a.ret(Reg(0), &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.set_program_name("my_program");
@@ -2014,7 +2038,7 @@ mod tests {
 
         let mut callee = Asm::new();
         callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee.ret(0, &[1]);
+        callee.ret(Reg(0), &[Reg(1)]);
         let callee_id = pb
             .push_function_checked(
                 callee,
@@ -2029,9 +2053,9 @@ mod tests {
 
         let mut main = Asm::new();
         main.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        main.const_i64(1, 7);
-        main.call(0, callee_id, 0, &[1], &[2]);
-        main.ret(0, &[2]);
+        main.const_i64(Reg(1), 7);
+        main.call(Reg(0), callee_id, Reg(0), &[Reg(1)], &[Reg(2)]);
+        main.ret(Reg(0), &[Reg(2)]);
         let main_id = pb
             .push_function_checked(
                 main,
@@ -2062,7 +2086,7 @@ mod tests {
             ValueType::I64,
         ]);
         // Return argument `a` (r2) so the function verifies without additional setup.
-        a.ret(0, &[2]);
+        a.ret(Reg(0), &[Reg(2)]);
         let func = pb
             .push_function_checked(
                 a,
@@ -2087,14 +2111,14 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label();
         let l_else = a.label();
-        a.const_bool(1, true);
-        a.br(1, l_then, l_else);
+        a.const_bool(Reg(1), true);
+        a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
-        a.const_i64(2, 1);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 1);
+        a.ret(Reg(0), &[Reg(2)]);
         a.place(l_else).unwrap();
-        a.const_i64(2, 2);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 2);
+        a.ret(Reg(0), &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -2131,8 +2155,8 @@ mod tests {
     fn instr_view_is_terminator_matches_opcode() {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.const_i64(1, 7);
-        a.ret(0, &[1]);
+        a.const_i64(Reg(1), 7);
+        a.ret(Reg(0), &[Reg(1)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -2159,7 +2183,7 @@ mod tests {
 
         let mut callee = Asm::new();
         callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee.ret(0, &[1]);
+        callee.ret(Reg(0), &[Reg(1)]);
         let callee_id = pb
             .push_function_checked(
                 callee,
@@ -2183,10 +2207,10 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        caller.const_func(1, callee_id);
-        caller.const_i64(2, 7);
-        caller.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
-        caller.ret(0, &[3]);
+        caller.const_func(Reg(1), callee_id);
+        caller.const_i64(Reg(2), 7);
+        caller.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
+        caller.ret(Reg(0), &[Reg(3)]);
         pb.push_function_checked(
             caller,
             FunctionSig {
@@ -2215,8 +2239,8 @@ mod tests {
             ValueType::Agg,
             ValueType::Closure,
         ]);
-        a.closure_new(3, 1, 2);
-        a.ret(0, &[3]);
+        a.closure_new(Reg(3), Reg(1), Reg(2));
+        a.ret(Reg(0), &[Reg(3)]);
         pb.push_function_checked(
             a,
             FunctionSig {

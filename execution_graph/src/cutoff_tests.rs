@@ -485,7 +485,7 @@ mod tape {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
     use execution_tape::program::ValueType;
     use execution_tape::value::Value;
@@ -558,8 +558,8 @@ mod tape {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        a.const_i64(2, 7);
-        a.ret(0, &[2]);
+        a.const_i64(Reg(2), 7);
+        a.ret(Reg(0), &[Reg(2)]);
         let entry = pb
             .push_function_checked(
                 a,

@@ -62,7 +62,7 @@ impl<'a> RequestOrigin<'a> {
             if let Some(registers) = self.inspection.registers(&frame.activation) {
                 for register in registers.take(256) {
                     values.push(format!(
-                        "r{} · {} = {}",
+                        "{} · {} = {}",
                         register.register,
                         describe::type_name(register.storage_kind),
                         register.value.map_or_else(

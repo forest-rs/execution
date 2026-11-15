@@ -10,7 +10,7 @@
 //! that exception when a block's `^` finds its home still active.
 
 use execution_tape::{
-    asm::{Asm, CallTarget, Catch, ClosureLayout, FunctionAbi, FunctionSig, ProgramBuilder},
+    asm::{Asm, CallTarget, Catch, ClosureLayout, FunctionAbi, FunctionSig, ProgramBuilder, Reg},
     contract::Contract,
     host::HostSig,
     program::{HostSigId, HostTypeId, TagId, ValueType},
@@ -45,14 +45,14 @@ struct Imports {
 #[derive(Clone, Copy)]
 struct HomeRegion {
     label: execution_tape::asm::Label,
-    target: u32,
-    boxed: u32,
-    other: u32,
+    target: Reg,
+    boxed: Reg,
+    other: Reg,
 }
 #[derive(Clone, Copy)]
 struct EnsureRegion {
     label: execution_tape::asm::Label,
-    unwound: u32,
+    unwound: Reg,
 }
 struct Author {
     program: ProgramBuilder,
@@ -90,7 +90,7 @@ impl Author {
         self.program.define_function(function, body)?;
         Ok(())
     }
-    fn integer(body: &mut Asm, value: i64) -> u32 {
+    fn integer(body: &mut Asm, value: i64) -> Reg {
         let register = body.alloc_register(ValueType::I64);
         body.const_i64(register, value);
         register
@@ -127,7 +127,7 @@ impl Author {
         } else {
             value
         };
-        body.ret(0, &[answer]);
+        body.ret(Reg(0), &[answer]);
         self.define(
             block.function(),
             &format!(
@@ -153,7 +153,7 @@ impl Author {
         }
     }
     /// Closes the home region and answers a non-local return addressed to `home`.
-    fn answer_from_home(&mut self, body: &mut Asm, region: HomeRegion, home: u32) -> Result<()> {
+    fn answer_from_home(&mut self, body: &mut Asm, region: HomeRegion, home: Reg) -> Result<()> {
         body.end_region();
         body.place(region.label)?;
         let mine = body.alloc_register(ValueType::Bool);
@@ -161,9 +161,9 @@ impl Author {
         body.i64_eq(mine, region.target, home)
             .br(mine, here, onward);
         body.place(here)?;
-        body.ret(0, &[region.boxed]);
+        body.ret(Reg(0), &[region.boxed]);
         body.place(onward)?;
-        body.throw_ref(0, region.other);
+        body.throw_ref(Reg(0), region.other);
         Ok(())
     }
     /// Opens an `ensure:` region; [`Self::cleanup_on_exit`] closes it.
@@ -179,7 +179,7 @@ impl Author {
         body: &mut Asm,
         region: EnsureRegion,
         layout: &ClosureLayout,
-        cleanup: u32,
+        cleanup: Reg,
     ) -> Result<()> {
         body.end_region();
         let target = CallTarget::Indirect {
@@ -191,7 +191,7 @@ impl Author {
         body.jmp(after);
         body.place(region.label)?;
         let [] = self.program.emit_call(body, target, &[])?;
-        body.throw_ref(0, region.unwound);
+        body.throw_ref(Reg(0), region.unwound);
         body.place(after)?;
         Ok(())
     }
@@ -223,7 +223,7 @@ impl Author {
         let [] = self
             .program
             .emit_call(&mut body, imports.cleaned, &[counter, tag_value])?;
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         self.define(cleanup.function(), &format!("ensure / cleanup {tag}"), body)?;
         Ok(cleanup)
     }
@@ -313,7 +313,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     let [answer] = author
         .program
         .emit_call(&mut body, imports.write, &[counter, total])?;
-    body.ret(0, &[answer]);
+    body.ret(Reg(0), &[answer]);
     author.define(
         increment.function(),
         "makeIncrement: / increment block",
@@ -331,7 +331,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     );
     let counter = author.program.argument(factory, 0)?;
     let block = increment.instantiate(&mut body, &[counter])?;
-    body.ret(0, &[block]);
+    body.ret(Reg(0), &[block]);
     author.define(factory, "makeIncrement:", body)?;
 
     // Both normal and non-local completion pass through the same nested ensure regions.
@@ -386,7 +386,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
         .emit_call(&mut body, imports.after_ensure, &[])?;
     author.at(&mut body, "answerUsing: counter", "^ answer");
     let boxed = body.alloc_register(ValueType::Agg);
-    body.tuple_new(boxed, &[answer]).ret(0, &[boxed]);
+    body.tuple_new(boxed, &[answer]).ret(Reg(0), &[boxed]);
     author.answer_from_home(&mut body, returned, home)?;
     author.define(answer_method, "answerUsing:", body)?;
 
@@ -403,7 +403,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     author.at(&mut body, "makeEscaped: counter", "^ [ ^ counter value ]");
     let block = escaped.instantiate(&mut body, &[home, counter])?;
     let boxed = body.alloc_register(ValueType::Agg);
-    body.tuple_new(boxed, &[block]).ret(0, &[boxed]);
+    body.tuple_new(boxed, &[block]).ret(Reg(0), &[boxed]);
     author.at(&mut body, "makeEscaped: counter", "makeEscaped: counter");
     author.answer_from_home(&mut body, returned, home)?;
     author.define(make_escaped, "makeEscaped:", body)?;
@@ -467,7 +467,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     author.at(&mut body, "run", "^ { first. second. answer. late }");
     let results = body.alloc_register(ValueType::Agg);
     body.tuple_new(results, &[first, second, answer, late])
-        .ret(0, &[results]);
+        .ret(Reg(0), &[results]);
     author.define(entry, "run", body)?;
     let program = Arc::new(author.program.build_verified()?);
     let sources = SourceMap::new(

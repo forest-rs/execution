@@ -9,7 +9,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use execution_tape::asm::{Asm, FunctionAbi, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionAbi, ProgramBuilder, Reg};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
@@ -48,7 +48,7 @@ fn bench_contracts(c: &mut Criterion) {
             }
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-            body.ret(0, &[1]);
+            body.ret(Reg(0), &[Reg(1)]);
             let entry = builder
                 .push_function_checked(
                     body,

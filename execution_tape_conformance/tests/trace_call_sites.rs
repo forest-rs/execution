@@ -3,7 +3,7 @@
 
 //! Actual guest call-site provenance survives ordinary returns and trap unwinding.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
@@ -81,7 +81,7 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
             if traps {
                 leaf.trap(42);
             } else {
-                leaf.ret(0, &[if closure { 2 } else { 1 }]);
+                leaf.ret(Reg(0), &[if closure { Reg(2) } else { Reg(1) }]);
             }
             let leaf = builder
                 .push_function_checked(
@@ -111,17 +111,26 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
                 ValueType::Closure,
                 ValueType::I64,
             ]);
-            caller.const_i64(1, 7);
+            caller.const_i64(Reg(1), 7);
             if mode == 0 {
-                caller.call(0, leaf, 0, &[1], &[5]);
+                caller.call(Reg(0), leaf, Reg(0), &[Reg(1)], &[Reg(5)]);
             } else {
-                caller.const_func(2, leaf);
+                caller.const_func(Reg(2), leaf);
                 if closure {
-                    caller.tuple_new(3, &[]).closure_new(4, 2, 3);
+                    caller
+                        .tuple_new(Reg(3), &[])
+                        .closure_new(Reg(4), Reg(2), Reg(3));
                 }
-                caller.call_indirect(0, sig, if closure { 4 } else { 2 }, 0, &[1], &[5]);
+                caller.call_indirect(
+                    Reg(0),
+                    sig,
+                    if closure { Reg(4) } else { Reg(2) },
+                    Reg(0),
+                    &[Reg(1)],
+                    &[Reg(5)],
+                );
             }
-            caller.ret(0, &[5]);
+            caller.ret(Reg(0), &[Reg(5)]);
             let caller = builder
                 .push_function_checked(
                     caller,

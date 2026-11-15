@@ -461,6 +461,28 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Every public API that names a register now takes or returns `asm::Reg` instead of a raw `u32`,
+  finishing what `emit_call_with` started: a register can no longer be swapped with an immediate
+  or index and still compile, as `asm.const_i32(7, dst)` could. This covers every `Asm`
+  instruction method, `Asm::alloc_register`, `Asm::block` and `Label::with_args`;
+  `ProgramBuilder::argument`, `emit_call` and `emit_throw`; `ClosureLayout::argument`,
+  `load_captures` and `instantiate`; `CallTarget::Indirect` and the registers in
+  `CallBuildError`, `TagBuildError` and `ClosureBuildError`; the registers in `VerifyError`,
+  `VerifyLint`, `BlockDeclarationError`, `BlockEdgeError` and `ExceptionPlace`, and
+  `VerifyError::register`; `Function::register_type` and `RegisterTypes::get`; `RegisterFact`,
+  `EdgeBinding`, `InstructionFacts::register` and `IncomingEdge::register`;
+  `InvocationInspection::register`, `RegisterValue` and `ObjectRootOrigin`;
+  `RegisterValues::iter`, `RegisterWatch::registers` and `RegisterObservations::iter`;
+  disassembly, where `RegIter` yields `Reg` and register lists are the new borrowed
+  `disasm::RegList`; and `codec::Operand` and `DecodedOperand`. Register counts (`reg_count`,
+  `register_count`, `virtual_registers`) stay integers, and the bytecode is unchanged. `Reg` now
+  lives in `program` beside the other program IDs; `asm::Reg` still names it, and diagnostics
+  still print `rN`. Migration: write register literals as `Reg(n)`, as in
+  `asm.mov(Reg(1), Reg(2))`, `asm.const_i32(Reg(1), 7)` and `asm.ret(Reg(0), &[Reg(1)])`;
+  registers from `alloc_register`, `argument` and `emit_call` are already `Reg`s, so drop
+  `Reg(..)` wrappers and `.0` unwraps around them; match `UninitializedRead { reg: Reg(1), .. }`;
+  and read a register's index with `.0`.
+
 - `verify_program_owned` and `verify_program_owned_with_lints` return the rejected program with
   the error, as the new `verifier::RejectedProgram { error, program }`, so the error can be
   rendered with `VerifyError::display_in` without decoding the program again. Its `Display` does

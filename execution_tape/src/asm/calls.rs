@@ -20,7 +20,7 @@ pub enum CallTarget {
         /// Program-local exposed signature; excludes a closure's environment.
         signature: CallSigId,
         /// Function-local register containing a function or closure.
-        callee: u32,
+        callee: Reg,
     },
 }
 impl From<FuncId> for CallTarget {
@@ -59,7 +59,7 @@ pub enum CallBuildError {
         actual: usize,
     },
     /// An argument or indirect callee register is not declared.
-    Register(u32),
+    Register(Reg),
     /// A constant argument's kind disagrees with the signature.
     ConstantKind {
         /// Requested target.
@@ -76,7 +76,7 @@ pub enum CallBuildError {
         /// Requested target.
         target: CallTarget,
         /// Offending source register.
-        register: u32,
+        register: Reg,
         /// Zero-based argument position.
         index: usize,
         /// Signature's required kind.
@@ -111,7 +111,7 @@ impl fmt::Display for CallBuildError {
                 f,
                 "call to {target:?} declares {expected} results, requested {actual}"
             ),
-            Self::Register(register) => write!(f, "call uses undeclared register r{register}"),
+            Self::Register(register) => write!(f, "call uses undeclared register {register}"),
             Self::ArgumentKind {
                 target,
                 register,
@@ -120,7 +120,7 @@ impl fmt::Display for CallBuildError {
                 actual,
             } => write!(
                 f,
-                "call to {target:?}, argument {index} at r{register} requires {expected:?}, register declares {actual:?}"
+                "call to {target:?}, argument {index} at {register} requires {expected:?}, register declares {actual:?}"
             ),
             Self::ConstantKind {
                 target,
@@ -145,28 +145,6 @@ impl fmt::Display for CallBuildError {
     }
 }
 impl core::error::Error for CallBuildError {}
-
-/// A function-local register, as [`ProgramBuilder::emit_call_with`] and
-/// [`ProgramBuilder::emit_const`] take and return it.
-///
-/// A call's arguments mix registers and constants, so a register there is a `Reg` and never a
-/// bare integer: `(handle, "x", 1)` does not compile, rather than silently passing r1. Write
-/// `CallArg::U32(1)` for the constant, or `Reg(1)` for the register. The rest of [`Asm`] takes
-/// registers as `u32`; wrap one with `Reg(r)` and unwrap one with `.0`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Reg(pub u32);
-
-impl From<Reg> for u32 {
-    fn from(register: Reg) -> Self {
-        register.0
-    }
-}
-
-impl fmt::Display for Reg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "r{}", self.0)
-    }
-}
 
 /// One argument of [`ProgramBuilder::emit_call_with`]: a register, or a constant that the call
 /// loads into a fresh register of its kind immediately before it.
@@ -335,7 +313,7 @@ impl ProgramBuilder {
     ///
     /// Use the returned register in this function's [`Self::function_asm`] body. A closure
     /// body's argument zero is its environment.
-    pub fn argument(&self, function: FuncId, index: u32) -> Result<u32, BuildError> {
+    pub fn argument(&self, function: FuncId, index: u32) -> Result<Reg, BuildError> {
         let declaration = self
             .functions
             .get(function.0 as usize)
@@ -347,9 +325,9 @@ impl ProgramBuilder {
                 arg_count: u32::try_from(declaration.args.len()).unwrap_or(u32::MAX),
             });
         }
-        Ok(index
+        Ok(Reg(index
             .checked_add(1)
-            .expect("argument register fits declared function"))
+            .expect("argument register fits declared function")))
     }
 
     /// Emits a call, allocating its result registers from the target's declared signature.
@@ -364,19 +342,19 @@ impl ProgramBuilder {
     /// No signatures, authoring state or additional instructions enter the executable format.
     ///
     /// ```
-    /// use execution_tape::{asm::{FunctionSig, ProgramBuilder}, program::ValueType};
+    /// use execution_tape::{asm::{FunctionSig, ProgramBuilder, Reg}, program::ValueType};
     /// let mut program = ProgramBuilder::new();
     /// let signature = FunctionSig { arg_types: vec![ValueType::I64], ret_types: vec![ValueType::I64] };
     /// let identity = program.declare_function(&signature)?;
     /// let mut body = program.function_asm(identity)?;
     /// let value = program.argument(identity, 0)?;
-    /// body.ret(0, &[value]);
+    /// body.ret(Reg(0), &[value]);
     /// program.define_function(identity, body)?;
     /// let caller = program.declare_function(signature)?;
     /// let mut body = program.function_asm(caller)?;
     /// let input = program.argument(caller, 0)?;
     /// let [answer] = program.emit_call(&mut body, identity, &[input])?;
-    /// body.ret(0, &[answer]);
+    /// body.ret(Reg(0), &[answer]);
     /// program.define_function(caller, body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -385,27 +363,26 @@ impl ProgramBuilder {
         &self,
         body: &mut Asm,
         target: impl Into<CallTarget>,
-        args: &[u32],
-    ) -> Result<[u32; N], CallBuildError> {
+        args: &[Reg],
+    ) -> Result<[Reg; N], CallBuildError> {
         let target = target.into();
         let results = self.check_call(
             body,
             target,
-            args.iter()
-                .map(|&register| CallArg::Register(Reg(register))),
+            args.iter().map(|&register| CallArg::Register(register)),
             N,
             0,
         )?;
         let results = core::array::from_fn(|index| body.alloc_register(results.get(index)));
         match target {
             CallTarget::Function(id) => {
-                body.call(0, id, 0, args, &results);
+                body.call(Reg(0), id, Reg(0), args, &results);
             }
             CallTarget::Host(id) => {
-                body.host_call(0, id, 0, args, &results);
+                body.host_call(Reg(0), id, Reg(0), args, &results);
             }
             CallTarget::Indirect { signature, callee } => {
-                body.call_indirect(0, signature, callee, 0, args, &results);
+                body.call_indirect(Reg(0), signature, callee, Reg(0), args, &results);
             }
         }
         Ok(results)
@@ -432,11 +409,11 @@ impl ProgramBuilder {
     /// );
     /// let entry = program.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
     /// let mut body = program.function_asm(entry)?;
-    /// let value = Reg(program.argument(entry, 0)?);
+    /// let value = program.argument(entry, 0)?;
     /// // A register is a `Reg`; an integer constant is spelled out.
     /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(1), value))?;
     /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(2), 0.5_f32))?;
-    /// body.ret(0, &[]);
+    /// body.ret(Reg(0), &[]);
     /// program.define_function(entry, body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -455,11 +432,11 @@ impl ProgramBuilder {
             .filter(|arg| !matches!(arg, CallArg::Register(_)))
             .count();
         self.check_call(body, target, operands.iter().copied(), N, constants)?;
-        let registers: Vec<u32> = operands
+        let registers: Vec<Reg> = operands
             .into_iter()
-            .map(|arg| self.emit_const(body, arg).0)
+            .map(|arg| self.emit_const(body, arg))
             .collect();
-        Ok(self.emit_call(body, target, &registers)?.map(Reg))
+        self.emit_call(body, target, &registers)
     }
 
     /// Loads a constant into a fresh register of `body` and returns the register, for any number
@@ -490,7 +467,7 @@ impl ProgramBuilder {
     ///     arg_types: vec![ValueType::Bool, ValueType::F32],
     ///     ret_types: vec![],
     /// })?;
-    /// let (wet, value) = (program.argument(entry, 0)?, Reg(program.argument(entry, 1)?));
+    /// let (wet, value) = (program.argument(entry, 0)?, program.argument(entry, 1)?);
     /// let mut body = program.function_asm(entry)?;
     /// // Loaded once, at entry, so it reaches both branches.
     /// let age = program.emit_const(&mut body, "age");
@@ -503,7 +480,7 @@ impl ProgramBuilder {
     /// let [] = program.emit_call_with(&mut body, set, (age, value))?;
     /// body.jmp(done);
     /// body.place(done)?;
-    /// body.ret(0, &[]);
+    /// body.ret(Reg(0), &[]);
     /// program.define_function(entry, body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -531,7 +508,7 @@ impl ProgramBuilder {
             CallArg::Bytes(v) => body.const_pool(dst, self.const_bytes(v)),
             CallArg::Str(v) => body.const_pool(dst, self.const_str(v)),
         };
-        Reg(dst)
+        dst
     }
 
     /// Checks a call before anything is emitted, returning the target's result kinds.
@@ -570,7 +547,7 @@ impl ProgramBuilder {
                     .ok_or(CallBuildError::UnknownTarget(target))?;
                 let kind = body
                     .register_types
-                    .get(callee as usize)
+                    .get(callee.0 as usize)
                     .ok_or(CallBuildError::Register(callee))?;
                 if !matches!(kind, ValueType::Func | ValueType::Closure) {
                     return Err(CallBuildError::CalleeKind(*kind));
@@ -601,10 +578,10 @@ impl ProgramBuilder {
         for (index, arg) in args.enumerate() {
             let expected = parameters.get(index);
             match arg {
-                CallArg::Register(Reg(register)) => {
+                CallArg::Register(register) => {
                     let actual = *body
                         .register_types
-                        .get(register as usize)
+                        .get(register.0 as usize)
                         .ok_or(CallBuildError::Register(register))?;
                     if actual != expected {
                         return Err(CallBuildError::ArgumentKind {
@@ -687,7 +664,7 @@ mod tests {
         let mut body = program.function_asm(leaf).unwrap();
         let argument = program.argument(leaf, 0).unwrap();
         let flag = body.alloc_register(ValueType::Bool);
-        body.const_bool(flag, true).ret(0, &[argument, flag]);
+        body.const_bool(flag, true).ret(Reg(0), &[argument, flag]);
         program.define_function(leaf, body).unwrap();
         let entry = program.declare_function(&signature).unwrap();
         let mut body = program.function_asm(entry).unwrap();
@@ -723,7 +700,7 @@ mod tests {
             )
             .unwrap();
         let [] = program.emit_call(&mut body, notify, &[]).unwrap();
-        body.ret(0, &[answer, flag]);
+        body.ret(Reg(0), &[answer, flag]);
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         let mut vm = Vm::new(Negate::default(), Limits::default());
@@ -766,11 +743,11 @@ mod tests {
         let boolean = body.alloc_register(ValueType::Bool);
         body.const_bool(boolean, true);
         let before = body.clone().finish_parts().unwrap();
-        let attempts: [Result<[u32; 1], _>; 7] = [
-            program.emit_call(&mut body, FuncId(99), &[1]),
-            program.emit_call(&mut body, HostSigId(99), &[1]),
+        let attempts: [Result<[Reg; 1], _>; 7] = [
+            program.emit_call(&mut body, FuncId(99), &[Reg(1)]),
+            program.emit_call(&mut body, HostSigId(99), &[Reg(1)]),
             program.emit_call(&mut body, host, &[]),
-            program.emit_call(&mut body, host, &[99]),
+            program.emit_call(&mut body, host, &[Reg(99)]),
             program.emit_call(&mut body, host, &[boolean]),
             program.emit_call(
                 &mut body,
@@ -790,7 +767,7 @@ mod tests {
             ),
         ];
         assert!(attempts.into_iter().all(|attempt| attempt.is_err()));
-        let wrong_results: Result<[u32; 2], _> = program.emit_call(&mut body, host, &[1]);
+        let wrong_results: Result<[Reg; 2], _> = program.emit_call(&mut body, host, &[Reg(1)]);
         assert!(matches!(
             wrong_results,
             Err(CallBuildError::Results {
@@ -827,7 +804,7 @@ mod tests {
         let mut body = program.function_asm(function).unwrap();
         let unwritten = body.alloc_register(ValueType::I64);
         let [result] = program.emit_call(&mut body, host, &[unwritten]).unwrap();
-        body.ret(0, &[result]);
+        body.ret(Reg(0), &[result]);
         program.define_function(function, body).unwrap();
         assert!(matches!(
             program.build_verified(),
@@ -837,7 +814,7 @@ mod tests {
     }
 
     /// Declares `f(f32)` importing `h(str, u32, f32, bool, i64, bytes, str) -> u32`.
-    fn constant_program() -> (ProgramBuilder, Asm, HostSigId, u32) {
+    fn constant_program() -> (ProgramBuilder, Asm, HostSigId, Reg) {
         let mut program = ProgramBuilder::new();
         let h = program.host_sig_for(
             "h",
@@ -866,7 +843,7 @@ mod tests {
     }
 
     fn finish(mut program: ProgramBuilder, mut body: Asm) -> Program {
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         program.define_function(FuncId(0), body).unwrap();
         program.build_checked().unwrap()
     }
@@ -882,7 +859,7 @@ mod tests {
                     (
                         "name",
                         CallArg::U32(7),
-                        Reg(x),
+                        x,
                         true,
                         CallArg::I64(-3),
                         CallArg::Bytes(b"raw"),
@@ -952,7 +929,7 @@ mod tests {
     }
 
     /// Declares `f(bool)` importing `set(str)`, with its argument and three labels.
-    fn branching_program() -> (ProgramBuilder, Asm, HostSigId, u32, [Label; 3]) {
+    fn branching_program() -> (ProgramBuilder, Asm, HostSigId, Reg, [Label; 3]) {
         let mut program = ProgramBuilder::new();
         let set = program.host_sig_for(
             "set",
@@ -1025,12 +1002,12 @@ mod tests {
         body.jmp(done);
         body.place(done).unwrap();
         let [] = program.emit_call_with(&mut body, set, (name,)).unwrap();
-        body.ret(0, &[]);
+        body.ret(Reg(0), &[]);
         program.define_function(FuncId(0), body).unwrap();
         assert!(matches!(
             program.build_verified(),
             Err(BuildError::Verify(rejected))
-                if matches!(rejected.error, VerifyError::UninitializedRead { reg, .. } if reg == name.0)
+                if matches!(rejected.error, VerifyError::UninitializedRead { reg, .. } if reg == Reg(name.0))
         ));
     }
 
@@ -1041,7 +1018,7 @@ mod tests {
         let args = (
             "fresh",
             7.0_f64,
-            Reg(x),
+            x,
             true,
             CallArg::I64(0),
             CallArg::Bytes(b""),
@@ -1057,7 +1034,7 @@ mod tests {
             })
         );
         assert_eq!(
-            program.emit_call_with::<1>(&mut body, h, ("fresh", Reg(x))),
+            program.emit_call_with::<1>(&mut body, h, ("fresh", x)),
             Err(CallBuildError::Arguments {
                 target: CallTarget::Host(h),
                 expected: 7,

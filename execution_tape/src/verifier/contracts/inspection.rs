@@ -85,7 +85,7 @@ pub enum FactOrigin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegisterFact {
     /// Virtual register identifier.
-    pub register: u32,
+    pub register: Reg,
     /// Fixed declaration, including for uninitialized or unreachable registers.
     pub storage_kind: ValueType,
     /// Guaranteed value before the instruction.
@@ -212,7 +212,7 @@ impl<'a> FunctionAnalysis<'a> {
                 transfer(&mut arena, &di.instr, types, &mut state);
                 for register in di.instr.writes().filter(|&reg| {
                     matches!(
-                        types.get(reg),
+                        types.get(Reg(reg)),
                         Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
                     )
                 }) {
@@ -362,7 +362,7 @@ impl<'a> FunctionAnalysis<'a> {
         initialized: &BitSet,
     ) -> Option<ValueFact> {
         let kind = self.program.functions[self.function.0 as usize]
-            .register_type(self.program, register)
+            .register_type(self.program, Reg(register))
             .ok()?;
         Some(if !reachable {
             ValueFact::Unreachable
@@ -422,13 +422,13 @@ impl<'a> InstructionFacts<'a> {
     }
     /// Queries any declared virtual register; invalid register IDs return `None`.
     #[must_use]
-    pub fn register(&self, register: u32) -> Option<RegisterFact> {
+    pub fn register(&self, register: Reg) -> Option<RegisterFact> {
         let a = self.analysis;
         let storage_kind = a.program.functions[a.function.0 as usize]
             .register_type(a.program, register)
             .ok()?;
         let before = a.value(
-            register,
+            register.0,
             self.reachable(),
             &a.cursor.contracts,
             &a.cursor.initialized,
@@ -436,28 +436,28 @@ impl<'a> InstructionFacts<'a> {
         let writes = a.decoded[self.index]
             .instr
             .writes()
-            .any(|reg| reg == register);
+            .any(|reg| reg == register.0);
         let after = if !self.reachable() {
             ValueFact::Unreachable
         } else if writes {
             let contract = a.changes
                 [a.change_offsets[self.index]..a.change_offsets[self.index + 1]]
                 .iter()
-                .find(|change| change.register == register)
+                .find(|change| change.register == register.0)
                 .and_then(|change| change.contract);
             ValueFact::Contract(contract.unwrap_or(a.kinds[&storage_kind]))
         } else {
             before
         };
         let origin_before = matches!(before, ValueFact::Contract(_)).then(|| {
-            if let Some(&pc) = a.cursor.definitions.get(&register) {
+            if let Some(&pc) = a.cursor.definitions.get(&register.0) {
                 FactOrigin::Instruction { pc }
             } else if self.block == 0 && a.incoming_ranges[0].is_empty() {
-                if register == 0 {
+                if register == Reg(0) {
                     FactOrigin::Effect
                 } else {
                     FactOrigin::Argument {
-                        index: register - 1,
+                        index: register.0 - 1,
                     }
                 }
             } else {
@@ -472,7 +472,7 @@ impl<'a> InstructionFacts<'a> {
             && a.decoded[self.index]
                 .instr
                 .writes()
-                .any(|reg| reg == register)
+                .any(|reg| reg == register.0)
         {
             Some(FactOrigin::Instruction { pc: self.pc() })
         } else {
@@ -510,9 +510,9 @@ pub struct IncomingEdge<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeBinding {
     /// Destination parameter register at block entry.
-    pub parameter: u32,
+    pub parameter: Reg,
     /// Source register in the predecessor.
-    pub argument: u32,
+    pub argument: Reg,
     /// Source value before the transfer, using the instruction view's contract table.
     pub value: ValueFact,
 }
@@ -537,9 +537,9 @@ impl IncomingEdge<'_> {
     }
     /// Reads an unchanged predecessor register before the transfer, including for untyped joins.
     #[must_use]
-    pub fn register(&self, register: u32) -> Option<ValueFact> {
+    pub fn register(&self, register: Reg) -> Option<ValueFact> {
         self.analysis.value(
-            register,
+            register.0,
             true,
             &self.analysis.outputs[self.source.source],
             &self.analysis.output_init[self.source.source],
@@ -557,9 +557,11 @@ impl IncomingEdge<'_> {
             .iter()
             .zip(args)
             .map(|(&parameter, &argument)| EdgeBinding {
-                parameter,
-                argument,
-                value: self.register(argument).expect("verified edge register"),
+                parameter: Reg(parameter),
+                argument: Reg(argument),
+                value: self
+                    .register(Reg(argument))
+                    .expect("verified edge register"),
             })
     }
 }

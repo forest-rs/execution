@@ -17,7 +17,7 @@ use crate::vm::Vm;
 use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
-use crate::program::{HostSigId, RegionId, SymbolId, TagId};
+use crate::program::{HostSigId, Reg, RegionId, SymbolId, TagId};
 use crate::value::{FuncId, FuncRef, TagRef, UnitId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo, Units};
 
@@ -106,10 +106,10 @@ pub struct RegisterValues<'a> {
 impl<'a> RegisterValues<'a> {
     /// Iterates `(source register, observed value)` pairs. `None` marks an unavailable value;
     /// a sink must not invent one or treat it as an uninitialized register's default contents.
-    pub fn iter(&self) -> impl Iterator<Item = (u32, Option<ValueRef<'a>>)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (Reg, Option<ValueRef<'a>>)> + '_ {
         self.registers
-            .filter(|&reg| reg != 0)
-            .map(|reg| (reg, (self.read)(reg)))
+            .filter(|&reg| reg != Reg(0))
+            .map(|reg| (reg, (self.read)(reg.0)))
     }
 }
 impl core::fmt::Debug for RegisterValues<'_> {

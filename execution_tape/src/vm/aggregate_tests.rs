@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::asm::{FunctionSig, ProgramBuilder};
+use crate::asm::{FunctionSig, ProgramBuilder, Reg};
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::StructTypeDef;
 use alloc::string::ToString;
@@ -38,7 +38,7 @@ fn construction(kind: &str, width: usize, count: usize) -> VerifiedProgram {
         .unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let aggregate = body.alloc_register(ValueType::Agg);
-    let fields = vec![1; width];
+    let fields = vec![Reg(1); width];
     for _ in 0..count {
         match kind {
             "tuple" => body.tuple_new(aggregate, &fields),
@@ -47,7 +47,7 @@ fn construction(kind: &str, width: usize, count: usize) -> VerifiedProgram {
             _ => unreachable!(),
         };
     }
-    body.ret(0, &[aggregate]);
+    body.ret(Reg(0), &[aggregate]);
     builder.define_function(entry, body).unwrap();
     builder.build_verified().unwrap()
 }
@@ -133,14 +133,14 @@ fn aggregate_budget_is_shared_by_guest_calls_and_checked_replay() {
     let helper = builder.declare_function(sig).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let dst = body.alloc_register(ValueType::Agg);
-    body.call(0, helper, 0, &[], &[dst]);
-    body.call(0, helper, 0, &[], &[dst]);
-    body.ret(0, &[dst]);
+    body.call(Reg(0), helper, Reg(0), &[], &[dst]);
+    body.call(Reg(0), helper, Reg(0), &[], &[dst]);
+    body.ret(Reg(0), &[dst]);
     builder.define_function(entry, body).unwrap();
     let mut body = builder.function_asm(helper).unwrap();
     let dst = body.alloc_register(ValueType::Agg);
     body.tuple_new(dst, &[]);
-    body.ret(0, &[dst]);
+    body.ret(Reg(0), &[dst]);
     builder.define_function(helper, body).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     for limit in [0, 1, 2] {
@@ -212,8 +212,8 @@ fn borrowed_nested_aggregates_charge_only_new_immediate_fields() {
         .unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let dst = body.alloc_register(ValueType::Agg);
-    body.tuple_new(dst, &[1, 1]);
-    body.ret(0, &[dst]);
+    body.tuple_new(dst, &[Reg(1), Reg(1)]);
+    body.ret(Reg(0), &[dst]);
     builder.define_function(entry, body).unwrap();
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(

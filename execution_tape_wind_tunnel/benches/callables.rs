@@ -4,7 +4,7 @@
 //! Exact indirect dispatch and the additional cost of rich callable/value boundaries.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use execution_tape::asm::{Asm, FunctionAbi, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionAbi, ProgramBuilder, Reg};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
@@ -53,11 +53,11 @@ fn callables(c: &mut Criterion) {
                 let mut args = vec![value_contract.into()];
                 if closure {
                     target.set_register_types(vec![ValueType::Unit, ValueType::Agg, kind]);
-                    target.ret(0, &[2]);
+                    target.ret(Reg(0), &[Reg(2)]);
                     args.insert(0, ValueType::Agg.into());
                 } else {
                     target.set_register_types(vec![ValueType::Unit, kind]);
-                    target.ret(0, &[1]);
+                    target.ret(Reg(0), &[Reg(1)]);
                 }
                 let target = b
                     .push_function_checked(
@@ -100,9 +100,9 @@ fn callables(c: &mut Criterion) {
                 let mut caller = Asm::new();
                 caller.set_register_types(vec![ValueType::Unit, callable_kind, kind, kind]);
                 for _ in 0..count {
-                    caller.call_indirect(0, signature, 1, 0, &[2], &[3]);
+                    caller.call_indirect(Reg(0), signature, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
                 }
-                caller.ret(0, &[3]);
+                caller.ret(Reg(0), &[Reg(3)]);
                 let entry = b
                     .push_function_checked(
                         caller,
@@ -205,7 +205,7 @@ fn retained_callables(c: &mut Criterion) {
         let mut b = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
-        a.const_i64(2, 42).ret(0, &[2]);
+        a.const_i64(Reg(2), 42).ret(Reg(0), &[Reg(2)]);
         let body = b
             .push_function_checked(
                 a,
@@ -267,7 +267,7 @@ fn publications(c: &mut Criterion) {
     for number in [11, 99] {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.const_i64(1, number).ret(0, &[1]);
+        a.const_i64(Reg(1), number).ret(Reg(0), &[Reg(1)]);
         functions.push(
             b.push_function_checked(
                 a,

@@ -1,6 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::program::Reg;
 use crate::recording::{CallStack, RecordedValue, frames::FrameId};
 use crate::trace::TraceLocation;
 use alloc::vec::Vec;
@@ -30,7 +31,7 @@ pub struct RegisterWatch {
     /// Exact source instruction location in the recorded program.
     pub location: crate::trace::CodeLocation,
     /// Virtual register IDs. r0, non-operands and unavailable registers produce no observation.
-    pub registers: Vec<u32>,
+    pub registers: Vec<Reg>,
 }
 
 /// Borrowed selected register values backed by the recording's shared graph arena.
@@ -49,10 +50,10 @@ impl<'a> RegisterObservations<'a> {
         self.entries.is_empty()
     }
     /// Iterates source register IDs and retained values without expanding graphs.
-    pub fn iter(self) -> impl ExactSizeIterator<Item = (u32, &'a RecordedValue)> {
+    pub fn iter(self) -> impl ExactSizeIterator<Item = (Reg, &'a RecordedValue)> {
         self.entries
             .iter()
-            .map(|&(reg, value)| (reg, &self.arena.values[value]))
+            .map(|&(reg, value)| (Reg(reg), &self.arena.values[value]))
     }
 }
 impl core::fmt::Debug for RegisterObservations<'_> {
@@ -167,7 +168,7 @@ impl History {
         for watch in &mut watches {
             watch.registers.sort_unstable();
             watch.registers.dedup();
-            watch.registers.retain(|&reg| reg != 0);
+            watch.registers.retain(|&reg| reg != Reg(0));
         }
         watches.retain(|watch| !watch.registers.is_empty());
         config.watches = watches;

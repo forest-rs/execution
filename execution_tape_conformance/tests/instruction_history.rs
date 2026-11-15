@@ -3,7 +3,7 @@
 
 //! Observed paths, independently bounded from boundary recording and checked by replay.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::program::ValueType;
@@ -42,7 +42,7 @@ fn fixture() -> Arc<VerifiedProgram> {
         .unwrap();
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-    a.i64_add(2, 1, 1).ret(0, &[2]);
+    a.i64_add(Reg(2), Reg(1), Reg(1)).ret(Reg(0), &[Reg(2)]);
     b.define_function(child, a).unwrap();
     let mut a = Asm::new();
     a.set_register_types(vec![
@@ -53,14 +53,15 @@ fn fixture() -> Arc<VerifiedProgram> {
     ]);
     let yes = a.label();
     let no = a.label();
-    let join = a.block(&[2]);
-    a.br(1, yes, no);
+    let join = a.block(&[Reg(2)]);
+    a.br(Reg(1), yes, no);
     a.place(yes).unwrap();
-    a.const_i64(2, 21).jmp(join.with_args(&[2]));
+    a.const_i64(Reg(2), 21).jmp(join.with_args(&[Reg(2)]));
     a.place(no).unwrap();
-    a.const_i64(2, 7).jmp(join.with_args(&[2]));
+    a.const_i64(Reg(2), 7).jmp(join.with_args(&[Reg(2)]));
     a.place(join).unwrap();
-    a.call(0, child, 0, &[2], &[3]).ret(0, &[3]);
+    a.call(Reg(0), child, Reg(0), &[Reg(2)], &[Reg(3)])
+        .ret(Reg(0), &[Reg(3)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -209,7 +210,11 @@ fn watches(program: &VerifiedProgram) -> Vec<execution_tape::recording::Register
                 .instrs()
                 .map(|i| execution_tape::recording::RegisterWatch {
                     location: execution_tape::trace::CodeLocation { func, pc: i.pc() },
-                    registers: i.reads().chain(i.writes()).filter(|&r| r != 0).collect(),
+                    registers: i
+                        .reads()
+                        .chain(i.writes())
+                        .filter(|&r| r != Reg(0))
+                        .collect(),
                 })
                 .collect::<Vec<_>>()
         })
@@ -226,7 +231,7 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
         .unwrap()
         .clone();
     selected.push(execution_tape::recording::RegisterWatch {
-        registers: vec![0, 1, 1],
+        registers: vec![Reg(0), Reg(1), Reg(1)],
         ..duplicate
     });
     let config = InstructionCapture {
@@ -253,13 +258,16 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
     let branch = record.instruction(0).unwrap();
     assert!(matches!(
         branch.inputs.iter().collect::<Vec<_>>().as_slice(),
-        [(1, execution_tape::recording::RecordedValue::Bool(false))]
+        [(
+            Reg(1),
+            execution_tape::recording::RecordedValue::Bool(false)
+        )]
     ));
     let constant = record.instruction(1).unwrap();
     assert!(constant.inputs.is_empty());
     assert!(matches!(
         constant.outputs.iter().collect::<Vec<_>>().as_slice(),
-        [(2, execution_tape::recording::RecordedValue::I64(7))]
+        [(Reg(2), execution_tape::recording::RecordedValue::I64(7))]
     ));
     let call = record.instruction(3).unwrap();
     assert!(call.outputs.is_empty()); // caller r3 was allocated but is not initialized yet
@@ -267,7 +275,7 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
     assert_eq!(add.inputs.len(), 2); // repeated read occurrence is preserved
     assert!(matches!(
         add.outputs.iter().collect::<Vec<_>>().as_slice(),
-        [(2, execution_tape::recording::RecordedValue::I64(14))]
+        [(Reg(2), execution_tape::recording::RecordedValue::I64(14))]
     ));
     assert!(record.instruction(5).unwrap().outputs.is_empty());
     record.replay().unwrap();
@@ -282,7 +290,9 @@ fn trapping_instruction_has_inputs_but_never_successful_writes() {
         ValueType::I64,
         ValueType::I64,
     ]);
-    a.const_i64(2, 0).i64_div(3, 1, 2).ret(0, &[3]);
+    a.const_i64(Reg(2), 0)
+        .i64_div(Reg(3), Reg(1), Reg(2))
+        .ret(Reg(0), &[Reg(3)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -334,11 +344,11 @@ fn aliased_aggregate_watches_preserve_before_after_graph_identity() {
         ValueType::Agg,
         ValueType::Agg,
     ]);
-    a.tuple_new(2, &[1])
-        .tuple_new(3, &[2])
-        .tuple_get(3, 3, 0)
-        .tuple_get(1, 3, 0)
-        .ret(0, &[1]);
+    a.tuple_new(Reg(2), &[Reg(1)])
+        .tuple_new(Reg(3), &[Reg(2)])
+        .tuple_get(Reg(3), Reg(3), 0)
+        .tuple_get(Reg(1), Reg(3), 0)
+        .ret(Reg(0), &[Reg(1)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -421,9 +431,9 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
     let mut b = ProgramBuilder::new();
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    a.const_i64(1, 42);
+    a.const_i64(Reg(1), 42);
     let ret = a.pc();
-    a.ret(0, &[1]);
+    a.ret(Reg(0), &[Reg(1)]);
     b.push_function_checked(
         a,
         FunctionSig {

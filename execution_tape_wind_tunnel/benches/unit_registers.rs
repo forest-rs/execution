@@ -8,7 +8,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::ValueType,
     trace::TraceMask,
@@ -58,21 +58,22 @@ fn program(units: usize) -> (VerifiedProgram, FuncId) {
         },
     );
     let mut body = builder.function_asm(helper).unwrap();
-    body.ret(0, &[2, 1]);
+    body.ret(Reg(0), &[Reg(2), Reg(1)]);
     builder.define_function(helper, body).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     for _ in 3..units {
         body.alloc_register(ValueType::Unit);
     }
     for _ in 0..16 {
-        body.mov(1, 2).select(2, 3, 1, 2);
-        let join = body.block(&[1, 2]);
-        body.jmp(join.with_args(&[2, 1]));
+        body.mov(Reg(1), Reg(2))
+            .select(Reg(2), Reg(3), Reg(1), Reg(2));
+        let join = body.block(&[Reg(1), Reg(2)]);
+        body.jmp(join.with_args(&[Reg(2), Reg(1)]));
         body.place(join).unwrap();
-        body.call(0, helper, 0, &[1, 2], &[1, 2]);
-        body.host_call_sig_id(0, host, 0, &[1, 2], &[1, 2]);
+        body.call(Reg(0), helper, Reg(0), &[Reg(1), Reg(2)], &[Reg(1), Reg(2)]);
+        body.host_call_sig_id(Reg(0), host, Reg(0), &[Reg(1), Reg(2)], &[Reg(1), Reg(2)]);
     }
-    body.ret(0, &[1, 2]);
+    body.ret(Reg(0), &[Reg(1), Reg(2)]);
     builder.define_function(entry, body).unwrap();
     (builder.build_verified().unwrap(), entry)
 }

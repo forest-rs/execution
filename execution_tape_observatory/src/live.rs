@@ -379,7 +379,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                 for reg in registers.take(256) {
                     self.value_targets.push(reg.value.and_then(value_target));
                     self.values.push(format!(
-                        "r{} · {} = {}",
+                        "{} · {} = {}",
                         reg.register,
                         describe::type_name(reg.storage_kind),
                         reg.value.map_or_else(
@@ -405,18 +405,18 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                         ObjectRootOrigin::Register {
                             activation,
                             register,
-                        } => format!("frame #{} r{register}", activation.ordinal()),
+                        } => format!("frame #{} {register}", activation.ordinal()),
                         ObjectRootOrigin::Continuation {
                             activation: Some(activation),
                             register,
                             ..
-                        } => format!("suspended frame #{} r{register}", activation.ordinal()),
+                        } => format!("suspended frame #{} {register}", activation.ordinal()),
                         ObjectRootOrigin::Continuation {
                             activation: None,
                             location,
                             register,
                         } => format!(
-                            "unstarted u{}:f{} r{register}",
+                            "unstarted u{}:f{} {register}",
                             location.unit.0, location.func.0
                         ),
                         ObjectRootOrigin::Argument { index } => format!("argument[{index}]"),

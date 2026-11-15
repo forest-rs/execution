@@ -23,7 +23,7 @@ enum Fact {
 
 impl Fact {
     fn register(state: &RefinementState, types: RegisterTypes<'_>, reg: u32) -> Self {
-        let kind = types.get(reg).expect("checked register");
+        let kind = types.get(Reg(reg)).expect("checked register");
         if matches!(kind, ValueType::Agg | ValueType::Func | ValueType::Closure) {
             state
                 .refinement(reg as usize)
@@ -739,7 +739,7 @@ fn transfer(
     if state.top
         || !instr.writes().any(|reg| {
             matches!(
-                types.get(reg),
+                types.get(Reg(reg)),
                 Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
             )
         })
@@ -862,7 +862,7 @@ fn transfer(
     }
     for reg in instr.writes() {
         if matches!(
-            types.get(reg),
+            types.get(Reg(reg)),
             Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
         ) {
             state.set_refinement(reg as usize, None);
@@ -870,7 +870,7 @@ fn transfer(
     }
     for &(reg, fact) in &replacements {
         if matches!(
-            types.get(reg),
+            types.get(Reg(reg)),
             Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
         ) {
             state.set_refinement(
@@ -962,9 +962,9 @@ fn validate(
             .ok_or(VerifyError::UnknownAggregateShape {
                 func: func_id,
                 pc,
-                reg,
+                reg: Reg(reg),
             })?;
-        check_expected(func_id, pc, dst, types.get(dst), arena.kind(fact))?;
+        check_expected(func_id, pc, dst, types.get(Reg(dst)), arena.kind(fact))?;
     }
     match instr {
         Instr::Call {
@@ -1004,7 +1004,7 @@ fn validate(
             let signature = &arena.program.call_sigs[*call_sig as usize];
             let arg_contracts = arena.program.call_sig_arg_contracts(signature).unwrap();
             let expected =
-                arena.indirect_signature(CallSigId(*call_sig), types.get(*callee).unwrap());
+                arena.indirect_signature(CallSigId(*call_sig), types.get(Reg(*callee)).unwrap());
             let actual = arena.fact(state, types, *callee);
             if matches!(actual, Fact::Refined(_)) && actual != expected {
                 return Err(VerifyError::CallIndirectContractMismatch {
@@ -1033,7 +1033,7 @@ fn validate(
             ..
         } => {
             let expected =
-                arena.indirect_signature(CallSigId(*call_sig), types.get(*callee).unwrap());
+                arena.indirect_signature(CallSigId(*call_sig), types.get(Reg(*callee)).unwrap());
             let actual = arena.fact(state, types, *callee);
             if matches!(actual, Fact::Refined(_)) && actual != expected {
                 return Err(VerifyError::CallIndirectContractMismatch {

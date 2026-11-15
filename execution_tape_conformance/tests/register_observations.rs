@@ -3,7 +3,7 @@
 
 //! Borrowed register observations are explicit and never expose unwritten destinations.
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::{RegisterEvent, RegisterPhase, TraceLocation, TraceMask, TraceSink};
@@ -24,7 +24,7 @@ impl Host for NoHost {
         Err(HostError::UnknownSymbol)
     }
 }
-type Observation = (u32, RegisterPhase, Vec<(u32, Value)>);
+type Observation = (u32, RegisterPhase, Vec<(Reg, Value)>);
 
 #[derive(Default)]
 struct Observe {
@@ -61,7 +61,10 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
         ValueType::Str,
         ValueType::U64,
     ]);
-    a.mov(2, 1).str_concat(1, 1, 2).str_len(3, 1).ret(0, &[1]);
+    a.mov(Reg(2), Reg(1))
+        .str_concat(Reg(1), Reg(1), Reg(2))
+        .str_len(Reg(3), Reg(1))
+        .ret(Reg(0), &[Reg(1)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -85,22 +88,25 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     assert_eq!(result, vec![Value::Str("hellohello".into())]);
     assert_eq!(sink.masks, vec![TraceMask::REGISTERS]);
     assert_eq!(sink.events.len(), 7); // three local operations, then only Ret inputs
-    assert_eq!(sink.events[0].2, vec![(1, Value::Str("hello".into()))]);
+    assert_eq!(sink.events[0].2, vec![(Reg(1), Value::Str("hello".into()))]);
     assert_eq!(
         sink.events[2].2,
         vec![
-            (1, Value::Str("hello".into())),
-            (2, Value::Str("hello".into()))
+            (Reg(1), Value::Str("hello".into())),
+            (Reg(2), Value::Str("hello".into()))
         ]
     );
-    assert_eq!(sink.events[3].2, vec![(1, Value::Str("hellohello".into()))]);
-    assert_eq!(sink.events[5].2, vec![(3, Value::U64(10))]);
+    assert_eq!(
+        sink.events[3].2,
+        vec![(Reg(1), Value::Str("hellohello".into()))]
+    );
+    assert_eq!(sink.events[5].2, vec![(Reg(3), Value::U64(10))]);
     assert_eq!(sink.events[6].1, RegisterPhase::Inputs);
     assert!(
         sink.events
             .iter()
             .flat_map(|(_, _, values)| values)
-            .all(|(reg, _)| *reg != 0)
+            .all(|(reg, _)| *reg != Reg(0))
     );
     sink.events.clear();
     sink.selected = Some(sink_selected_pc(&p));

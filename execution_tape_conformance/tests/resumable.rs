@@ -5,7 +5,7 @@
 
 use execution_tape::value::FuncRef;
 use execution_tape::{
-    asm::{FunctionSig, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder, Reg},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
     program::{Program, ValueType},
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
@@ -66,18 +66,18 @@ fn fixture() -> (Arc<VerifiedProgram>, FuncId) {
     let str_ = a.alloc_register(ValueType::Str);
     let tuple = a.alloc_register(ValueType::Agg);
     // The argument and returned payload deliberately share the same bytes but own their storage.
-    a.host_call_sig_id(0, echo, 0, &[1], &[str_])
-        .tuple_new(tuple, &[1, str_])
-        .ret(0, &[tuple]);
+    a.host_call_sig_id(Reg(0), echo, Reg(0), &[Reg(1)], &[str_])
+        .tuple_new(tuple, &[Reg(1), str_])
+        .ret(Reg(0), &[tuple]);
     b.define_function(child, a).unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let first = a.alloc_register(ValueType::Agg);
     let second = a.alloc_register(ValueType::Agg);
     let root = a.alloc_register(ValueType::Agg);
-    a.call(0, child, 0, &[1], &[first])
-        .call(0, child, 0, &[1], &[second])
+    a.call(Reg(0), child, Reg(0), &[Reg(1)], &[first])
+        .call(Reg(0), child, Reg(0), &[Reg(1)], &[second])
         .tuple_new(root, &[first, second, first])
-        .ret(0, &[root]);
+        .ret(Reg(0), &[root]);
     b.define_function(entry, a).unwrap();
     (Arc::new(b.build_verified().unwrap()), entry)
 }
@@ -392,7 +392,7 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
         .unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let tuple = body.alloc_register(ValueType::Agg);
-    body.tuple_new(tuple, &[]).ret(0, &[tuple]);
+    body.tuple_new(tuple, &[]).ret(Reg(0), &[tuple]);
     builder.define_function(entry, body).unwrap();
     let program = builder.build_verified().unwrap();
     for instruction in [false, true] {
@@ -433,7 +433,10 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
 
 #[test]
 fn contract_proof_work_and_successful_proofs_survive_suspension() {
-    use execution_tape::{asm::FunctionAbi, contract::Contract};
+    use execution_tape::{
+        asm::{FunctionAbi, Reg},
+        contract::Contract,
+    };
     let mut b = ProgramBuilder::new();
     let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
     let tuple = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
@@ -445,7 +448,7 @@ fn contract_proof_work_and_successful_proofs_survive_suspension() {
         .unwrap();
     let mut a = b.function_asm(child).unwrap();
     let r = a.alloc_register(ValueType::I64);
-    a.tuple_get(r, 1, 0).ret(0, &[r]);
+    a.tuple_get(r, Reg(1), 0).ret(Reg(0), &[r]);
     b.define_function(child, a).unwrap();
     let entry = b
         .declare_function(FunctionSig {
@@ -455,9 +458,10 @@ fn contract_proof_work_and_successful_proofs_survive_suspension() {
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let r = a.alloc_register(ValueType::I64);
-    a.call(0, child, 0, &[1], &[r]);
+    a.call(Reg(0), child, Reg(0), &[Reg(1)], &[r]);
     let second = a.pc();
-    a.call(0, child, 0, &[1], &[r]).ret(0, &[r]);
+    a.call(Reg(0), child, Reg(0), &[Reg(1)], &[r])
+        .ret(Reg(0), &[r]);
     b.define_function(entry, a).unwrap();
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(

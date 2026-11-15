@@ -4,7 +4,7 @@
 //! Real recording -> drop original VM/host -> fresh interpreter replay through public APIs.
 
 use execution_tape::aggregates::AggShape;
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{HostTypeId, StructTypeDef, ValueType};
 use execution_tape::recording::{
@@ -46,7 +46,7 @@ fn program(
 
 fn identity(kind: ValueType) -> Arc<VerifiedProgram> {
     program(&[kind], &[kind], vec![ValueType::Unit, kind], |body, _| {
-        body.ret(0, &[1]);
+        body.ret(Reg(0), &[Reg(1)]);
     })
 }
 
@@ -63,8 +63,8 @@ fn host_program(kind: ValueType) -> Arc<VerifiedProgram> {
                     rets: vec![kind],
                 },
             );
-            body.host_call_sig_id(0, import, 0, &[], &[1]);
-            body.ret(0, &[1]);
+            body.host_call_sig_id(Reg(0), import, Reg(0), &[], &[Reg(1)]);
+            body.ret(Reg(0), &[Reg(1)]);
         },
     )
 }
@@ -130,7 +130,7 @@ fn final_outcome_locations_resolve_returns_traps_and_absent_completion() {
         &[ValueType::I64],
         vec![ValueType::Unit, ValueType::I64],
         |body, _| {
-            body.const_i64(1, 7).ret(0, &[1]);
+            body.const_i64(Reg(1), 7).ret(Reg(0), &[Reg(1)]);
         },
     );
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
@@ -159,7 +159,7 @@ fn final_outcome_locations_resolve_returns_traps_and_absent_completion() {
         &[],
         vec![ValueType::Unit, ValueType::I64],
         |body, _| {
-            body.const_i64(1, 7).trap(42);
+            body.const_i64(Reg(1), 7).trap(42);
         },
     );
     let record = capture(&mut vm, &p, &[]);
@@ -202,9 +202,9 @@ fn deep_graphs_are_walked_iteratively_and_repeated_host_boundaries_keep_one_copy
                 },
             );
             for _ in 0..CALLS {
-                body.host_call_sig_id(0, import, 0, &[1], &[2]);
+                body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
             }
-            body.ret(0, &[2]);
+            body.ret(Reg(0), &[Reg(2)]);
         },
     );
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
@@ -295,18 +295,18 @@ fn actual_guest_arithmetic_and_host_values_replay_after_live_host_is_dropped() {
             );
             let yes = body.label();
             let no = body.label();
-            let join = body.block(&[5]);
-            body.br(1, yes, no);
+            let join = body.block(&[Reg(5)]);
+            body.br(Reg(1), yes, no);
             body.place(yes).unwrap();
-            body.host_call_sig_id(0, host, 0, &[], &[2]);
-            body.const_i64(3, 2);
-            body.i64_mul(4, 2, 3);
-            body.jmp(join.with_args(&[4]));
+            body.host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(2)]);
+            body.const_i64(Reg(3), 2);
+            body.i64_mul(Reg(4), Reg(2), Reg(3));
+            body.jmp(join.with_args(&[Reg(4)]));
             body.place(no).unwrap();
-            body.const_i64(4, 7);
-            body.jmp(join.with_args(&[4]));
+            body.const_i64(Reg(4), 7);
+            body.jmp(join.with_args(&[Reg(4)]));
             body.place(join).unwrap();
-            body.ret(0, &[5]);
+            body.ret(Reg(0), &[Reg(5)]);
         },
     );
     for (condition, expected, expected_calls) in [(true, 42, 1), (false, 7, 0)] {
@@ -382,11 +382,11 @@ fn guest_created_host_return_uses_allocation_ordinal_without_preloading_guest_no
                     rets: vec![ValueType::Agg],
                 },
             );
-            body.const_i64(1, 42);
-            body.tuple_new(2, &[1]);
-            body.tuple_new(3, &[2, 2]);
-            body.host_call_sig_id(0, host, 0, &[], &[4]);
-            body.ret(0, &[4]);
+            body.const_i64(Reg(1), 42);
+            body.tuple_new(Reg(2), &[Reg(1)]);
+            body.tuple_new(Reg(3), &[Reg(2), Reg(2)]);
+            body.host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(4)]);
+            body.ret(Reg(0), &[Reg(4)]);
         },
     );
     let mut vm = Vm::new(
@@ -889,7 +889,8 @@ fn wide_decimal_register_arguments_are_borrowed_by_hosts_and_returned_exactly() 
                     rets: vec![ValueType::Decimal],
                 },
             );
-            body.host_call_sig_id(0, import, 0, &[1], &[1]).ret(0, &[1]);
+            body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(1)])
+                .ret(Reg(0), &[Reg(1)]);
         },
     );
     for mantissa in [i128::MIN, i128::MAX] {

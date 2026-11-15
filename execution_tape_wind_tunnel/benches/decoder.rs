@@ -10,7 +10,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::program::{Program, SpanId, ValueType};
 
 fn encoded_program(functions: u32, additions: u32) -> Vec<u8> {
@@ -18,12 +18,12 @@ fn encoded_program(functions: u32, additions: u32) -> Vec<u8> {
     for _ in 0..functions {
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        asm.const_i64(1, 1);
+        asm.const_i64(Reg(1), 1);
         for instruction in 0..additions {
             asm.span(SpanId::try_from(u64::from(instruction) + 1).unwrap());
-            asm.i64_add(1, 1, 1);
+            asm.i64_add(Reg(1), Reg(1), Reg(1));
         }
-        asm.ret(0, &[1]);
+        asm.ret(Reg(0), &[Reg(1)]);
         builder
             .push_function_checked(
                 asm,
