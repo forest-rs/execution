@@ -334,8 +334,13 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     /// A host that dispatches with `match` matches the result against the `const`s `surface` is
     /// built from, as patterns, so the symbols are written once, in the [`HostImport`]s.
     /// [`crate::verifier::VerifiedProgram::check_host_calls`] checks a program against the same
-    /// `surface` before it runs. The lookup scans `surface` in order, comparing each entry's
-    /// symbol and signature with the call's.
+    /// `surface` before it runs.
+    ///
+    /// The first call of an import from an installed unit scans `surface` in order, comparing
+    /// each entry's symbol and signature with the call's, and the unit remembers where it found
+    /// it. Later calls confirm that entry with an index and a pointer comparison, so their cost
+    /// does not depend on the size of `surface`. Passing a surface that holds the import
+    /// elsewhere scans again; one that does not hold it is scanned on every call.
     ///
     /// ```
     /// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
@@ -397,7 +402,10 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     /// ```
     #[must_use]
     pub fn import_in(&self, surface: &[HostImport]) -> Option<HostImport> {
-        HostImport::find(surface, self.program, self.host_sig_id)
+        match self.unit.import_hint(self.host_sig_id) {
+            Some(hint) => hint.resolve(surface, self.program, self.host_sig_id),
+            None => HostImport::find(surface, self.program, self.host_sig_id),
+        }
     }
 
     /// Returns the VM aggregate heap for reading aggregate argument contents.
