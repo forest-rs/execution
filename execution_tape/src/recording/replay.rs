@@ -1125,6 +1125,8 @@ impl TraceSink for Check<'_> {
                 ValueEvent::Entry { .. }
                 | ValueEvent::Installed { .. }
                 | ValueEvent::Relinked { .. } => {}
+                // Replay drives its own invocation and never collects it.
+                ValueEvent::Collected { .. } => {}
                 ValueEvent::HostCall {
                     location,
                     host_sig,

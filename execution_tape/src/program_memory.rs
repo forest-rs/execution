@@ -10,7 +10,8 @@
 //!
 //! Both compactions share one plan-then-apply primitive. An explicit collection
 //! ([`crate::vm::Vm::collect`]) plans over the whole heap from every root and preserves node
-//! order, so retained nodes still never refer to a later run's suffix.
+//! order, so retained nodes still never refer to a later run's suffix, and a run's start
+//! checkpoint moves to just after the retained nodes that survived.
 
 use crate::aggregates::{AggError, AggHeap, Compaction, aggregate_handle};
 use crate::value::Value;
@@ -20,6 +21,13 @@ use crate::vm::HeapStats;
 #[derive(Clone, Copy)]
 pub(crate) struct Checkpoint(u32);
 
+impl Checkpoint {
+    /// The same boundary after a collection compacted the heap with `plan`.
+    pub(crate) fn relocated(self, plan: &Compaction) -> Self {
+        Self(plan.boundary(self.0))
+    }
+}
+
 /// Shared runtime memory for program execution.
 #[derive(Clone, Debug)]
 pub struct ProgramMemory {
@@ -28,7 +36,7 @@ pub struct ProgramMemory {
     collections: u64,
     /// Nodes that survived the latest collection.
     survivors: u32,
-    /// Where collections wrap the handle window.
+    /// Where collections wrap the handle window; lowered only by tests.
     window_limit: u32,
 }
 
@@ -62,15 +70,26 @@ impl ProgramMemory {
     }
 
     /// Applies a whole-heap collection plan. It cannot fail.
-    pub(crate) fn apply_collection(&mut self, plan: &Compaction) {
+    ///
+    /// `checkpoint` is where a waiting run's aggregates begin; only survivors below it are
+    /// counted as retained, since the run's commit or rollback decides the rest.
+    pub(crate) fn apply_collection(&mut self, plan: &Compaction, checkpoint: Option<Checkpoint>) {
+        let retained =
+            checkpoint.map(|checkpoint| plan.boundary(checkpoint.0) - plan.window().start);
         self.aggs.apply_compaction(plan);
         self.collections += 1;
-        self.survivors = self.aggs.len_u32();
+        self.survivors = retained.unwrap_or_else(|| self.aggs.len_u32());
     }
 
     /// Where collections wrap the handle window.
     pub(crate) fn window_limit(&self) -> u32 {
         self.window_limit
+    }
+
+    /// Lowers the wrap point so a test can reach it.
+    #[cfg(test)]
+    pub(crate) fn set_window_limit(&mut self, limit: u32) {
+        self.window_limit = limit;
     }
 
     pub(crate) fn stats(&self, root_groups: usize) -> HeapStats {

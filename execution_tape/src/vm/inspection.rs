@@ -252,12 +252,113 @@ pub(super) struct FrameRegisters<'a> {
     pub(super) started: bool,
     /// Registers written since the frame stopped, which its facts cannot show initialized.
     pub(super) bound: &'a [VReg],
-    /// The frame's register base within `objs` and `exns`.
+    /// The frame's register base within the banks below.
     pub(super) base: RegBase,
     /// Object registers.
     pub(super) objs: &'a [Obj],
     /// Exception reference registers.
     pub(super) exns: &'a [Option<Arc<Exception>>],
+    /// Aggregate registers.
+    pub(super) aggs: &'a [AggHandle],
+    /// Closure registers.
+    pub(super) closures: &'a [Closure],
+    /// Byte string registers, naming payload descriptors.
+    pub(super) bytes: &'a [BytesHandle],
+    /// String registers, naming payload descriptors.
+    pub(super) strs: &'a [StrHandle],
+}
+
+impl<'a> FrameRegisters<'a> {
+    /// The banks of the active stack, for the frame stopped at `location` with `base`.
+    pub(super) fn active(ctx: &'a Registers, location: TraceLocation, base: RegBase) -> Self {
+        Self {
+            location,
+            started: true,
+            bound: &[],
+            base,
+            objs: &ctx.objs,
+            exns: &ctx.exns,
+            aggs: &ctx.aggs,
+            closures: &ctx.closures,
+            bytes: &ctx.bytes,
+            strs: &ctx.strs,
+        }
+    }
+}
+
+/// Lazily built register maps and initialization facts, keyed by code location.
+///
+/// Inspection and collection share them: a register holds a value exactly when the verifier's
+/// facts establish its initialization where the frame stopped, or when it was bound since.
+/// Registers outside that set may hold anything, and are never read before they are written.
+pub(super) struct FrameFacts<'a> {
+    units: &'a UnitTable,
+    /// Source-to-bank register maps, keyed by unit and function: each frame is read with its
+    /// own unit's program.
+    functions: BTreeMap<(u32, u32), Vec<VReg>>,
+    /// Registers definitely initialized at a location, keyed by unit, function and PC; `None`
+    /// when the PC is not an instruction boundary.
+    locations: BTreeMap<(u32, u32, u32), Option<BitSet>>,
+}
+
+impl<'a> FrameFacts<'a> {
+    pub(super) fn new(units: &'a UnitTable) -> Self {
+        Self {
+            units,
+            functions: BTreeMap::new(),
+            locations: BTreeMap::new(),
+        }
+    }
+
+    /// The register mapping of `location`'s function and, for a frame that has run, the
+    /// registers definitely initialized before `location`, both built on first use.
+    ///
+    /// The initialization is `None` for an unstarted frame and for a PC that is not an
+    /// instruction boundary.
+    fn facts(&mut self, location: TraceLocation, started: bool) -> (&[VReg], Option<&BitSet>) {
+        let program: &'a VerifiedProgram = &self.units.unit(location.unit).program;
+        let TraceLocation { unit, func, pc } = location;
+        let registers = self.functions.entry((unit.0, func.0)).or_insert_with(|| {
+            observations::register_map(program.program(), func).expect("verified ledger")
+        });
+        if !started {
+            return (registers, None);
+        }
+        let initialized = self
+            .locations
+            .entry((unit.0, func.0, pc.0))
+            .or_insert_with(|| {
+                let source = program.program();
+                let definition = &source.functions[func.0 as usize];
+                program.init_table(func).expect("verified function").before(
+                    definition.bytecode(source).expect("verified bytecode"),
+                    definition.reg_count as usize,
+                    pc.0,
+                )
+            });
+        (registers, initialized.as_ref())
+    }
+
+    /// Visits the bank register behind each source register of `frame` that holds a value,
+    /// with its source register number.
+    ///
+    /// Returns `false`, having visited only bound registers, when the frame has run but its
+    /// location has no initialization facts.
+    pub(super) fn initialized(
+        &mut self,
+        frame: &FrameRegisters<'_>,
+        mut visit: impl FnMut(u32, VReg),
+    ) -> bool {
+        let (registers, facts) = self.facts(frame.location, frame.started);
+        for (register, &vreg) in (0_u32..).zip(registers.iter()) {
+            if frame.bound.contains(&vreg)
+                || facts.is_some_and(|facts| facts.get(register as usize))
+            {
+                visit(register, vreg);
+            }
+        }
+        !frame.started || facts.is_some()
+    }
 }
 
 /// The live register banks and the value sources their handles resolve against.
@@ -307,19 +408,14 @@ pub struct InvocationInspection<'a> {
     aggregates: &'a AggHeap,
     control: &'a ExecutionControl,
     active: bool,
-    /// Source-to-bank register maps, keyed by unit and function: each frame is read with its
-    /// own unit's program.
-    functions: BTreeMap<(u32, u32), Vec<VReg>>,
-    /// Registers definitely initialized at a location, keyed by unit, function and PC; `None`
-    /// when the PC is not an instruction boundary.
-    locations: BTreeMap<(u32, u32, u32), Option<BitSet>>,
+    facts: FrameFacts<'a>,
 }
 impl fmt::Debug for InvocationInspection<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InvocationInspection")
             .field("active", &self.active)
-            .field("indexed_functions", &self.functions.len())
-            .field("indexed_locations", &self.locations.len())
+            .field("indexed_functions", &self.facts.functions.len())
+            .field("indexed_locations", &self.facts.locations.len())
             .finish_non_exhaustive()
     }
 }
@@ -362,8 +458,7 @@ fn inspection<'a>(
         aggregates,
         control: &continuation.control,
         active: continuation.outcome.is_none(),
-        functions: BTreeMap::new(),
-        locations: BTreeMap::new(),
+        facts: FrameFacts::new(units),
     }
 }
 
@@ -391,34 +486,6 @@ impl<'a> InvocationInspection<'a> {
                 [frame.func.0 as usize]
                 .reg_count,
         }
-    }
-    /// The register mapping of `location`'s function and, for a frame that has run, the
-    /// registers definitely initialized before `location`, both built on first use.
-    ///
-    /// The initialization is `None` for an unstarted frame and for a PC that is not an
-    /// instruction boundary.
-    fn facts(&mut self, location: TraceLocation, started: bool) -> (&[VReg], Option<&BitSet>) {
-        let program: &'a VerifiedProgram = &self.units.unit(location.unit).program;
-        let TraceLocation { unit, func, pc } = location;
-        let registers = self.functions.entry((unit.0, func.0)).or_insert_with(|| {
-            observations::register_map(program.program(), func).expect("verified ledger")
-        });
-        if !started {
-            return (registers, None);
-        }
-        let initialized = self
-            .locations
-            .entry((unit.0, func.0, pc.0))
-            .or_insert_with(|| {
-                let source = program.program();
-                let definition = &source.functions[func.0 as usize];
-                program.init_table(func).expect("verified function").before(
-                    definition.bytecode(source).expect("verified bytecode"),
-                    definition.reg_count as usize,
-                    pc.0,
-                )
-            });
-        (registers, initialized.as_ref())
     }
     /// The borrowed state register values are read from, apart from this view's indexes.
     fn live(&self) -> LiveRegisters<'a> {
@@ -471,7 +538,7 @@ impl<'a> InvocationInspection<'a> {
         let location = self.control.paused_location(self.ctx, index);
         let base = self.ctx.frames[index].base;
         let storage_kind = self.register_types(location).get(register)?;
-        let (registers, initialized) = self.facts(location, true);
+        let (registers, initialized) = self.facts.facts(location, true);
         let initialized = initialized?.get(register.0 as usize);
         let vreg = *registers.get(register.0 as usize)?;
         Some(RegisterValue {
@@ -498,7 +565,7 @@ impl<'a> InvocationInspection<'a> {
         let base = self.ctx.frames[index].base;
         let kinds = self.register_types(location);
         let live = self.live();
-        let (registers, initialized) = self.facts(location, true);
+        let (registers, initialized) = self.facts.facts(location, true);
         let values = initialized.map(|initialized| {
             (0_u32..)
                 .zip(registers)
@@ -531,18 +598,15 @@ impl<'a> InvocationInspection<'a> {
     /// collector must additionally trace its own heap, globals, snapshots and other external
     /// roots. Object identity, relocation and reclamation belong to that collector. This method
     /// performs no collection or host-state mutation.
+    ///
+    /// The registers it reads are those [`Invocation::collect`] treats as roots. Aggregate fields
+    /// are listed for every node, reachable or not; collecting first leaves only the nodes the
+    /// VM's roots reach, which narrows this inventory to their objects.
     pub fn visit_objects(&mut self, mut visit: impl FnMut(ObjectRoot)) {
         let ctx = self.ctx;
         for index in (0..if self.active { ctx.frames.len() } else { 0 }).rev() {
             let frame = self.frame_at(index);
-            let registers = FrameRegisters {
-                location: frame.location,
-                started: true,
-                bound: &[],
-                base: ctx.frames[index].base,
-                objs: &ctx.objs,
-                exns: &ctx.exns,
-            };
+            let registers = FrameRegisters::active(ctx, frame.location, ctx.frames[index].base);
             self.visit_frame(
                 registers,
                 |register| ObjectRootOrigin::Register {
@@ -553,7 +617,7 @@ impl<'a> InvocationInspection<'a> {
             );
         }
         if self.active {
-            for (activation, registers) in ctx.continuations.held(self.units) {
+            for (_, activation, registers) in ctx.continuations.held(self.units) {
                 let activation = activation.map(|activation| self.activation_id(activation));
                 let location = registers.location;
                 self.visit_frame(
@@ -615,36 +679,27 @@ impl<'a> InvocationInspection<'a> {
         origin: impl Fn(u32) -> ObjectRootOrigin,
         visit: &mut impl FnMut(ObjectRoot),
     ) {
-        let (registers, facts) = self.facts(frame.location, frame.started);
-        for (register, &vreg) in (0_u32..).zip(registers.iter()) {
-            if !matches!(vreg, VReg::Obj(_) | VReg::Exn(_)) {
-                continue;
-            }
-            let initialized = frame.bound.contains(&vreg)
-                || facts.is_some_and(|facts| facts.get(register as usize));
-            if !initialized {
-                continue;
-            }
-            match vreg {
-                VReg::Obj(r) => visit(ObjectRoot {
-                    object: frame.objs[frame.base.objs + r.0 as usize],
-                    origin: origin(register),
-                }),
-                VReg::Exn(r) => {
-                    let Some(exception) = &frame.exns[frame.base.exns + r.0 as usize] else {
-                        continue;
-                    };
-                    for value in exception.payload() {
-                        if let Value::Obj(object) = value {
-                            visit(ObjectRoot {
-                                object: *object,
-                                origin: origin(register),
-                            });
-                        }
+        // Inventory is conservative but never reads an unestablished register: a frame
+        // without facts contributes only its bound registers.
+        self.facts.initialized(&frame, |register, vreg| match vreg {
+            VReg::Obj(r) => visit(ObjectRoot {
+                object: frame.objs[frame.base.objs + r.0 as usize],
+                origin: origin(register),
+            }),
+            VReg::Exn(r) => {
+                let Some(exception) = &frame.exns[frame.base.exns + r.0 as usize] else {
+                    return;
+                };
+                for value in exception.payload() {
+                    if let Value::Obj(object) = value {
+                        visit(ObjectRoot {
+                            object: *object,
+                            origin: origin(register),
+                        });
                     }
                 }
-                _ => {}
             }
-        }
+            _ => {}
+        });
     }
 }

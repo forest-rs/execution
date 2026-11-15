@@ -686,6 +686,14 @@ let [Value::Agg(kept)] = vm.resolve(&root)? else { unreachable!() };
 assert_eq!(vm.aggregates().tuple_get(*kept, 0)?, Value::I64(42));
 ```
 
+An invocation can be collected while it waits, between quanta or at a host request or
+suspension, with [`Invocation::collect`](vm::Invocation::collect). Its arguments, outputs,
+callback results and the reference registers of its active and held frames are roots, read
+where verification establishes they hold values, as inspection reads them. A host request
+holding aggregates its host built refuses a collection that would move them, since only the
+host knows those handles; complete the request first. Recordings cannot replay across such a collection and report it
+as incomplete; collecting between recorded runs is unaffected.
+
 ## Design Docs
 
 The repository-level design notes live outside the packaged crate:

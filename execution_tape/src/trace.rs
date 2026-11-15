@@ -363,6 +363,25 @@ pub enum ValueEvent<'a> {
         /// The VM's units, tags and links after the change.
         units: Units<'a>,
     },
+    /// An explicit collection moved this invocation's aggregates while it waited, through
+    /// [`crate::vm::Invocation::collect`].
+    ///
+    /// Aggregate handles observed before this event no longer name the same values: survivors
+    /// moved and the rest were reclaimed. Observers that keep handles must stop relying on
+    /// them.
+    ///
+    /// Like every value event it reaches only sinks subscribed to [`TraceMask::VALUES`]. Only
+    /// value events and register watches ([`TraceMask::REGISTERS`]) carry aggregate handles, so
+    /// a sink that keeps handles from register watches should subscribe to `VALUES` as well to
+    /// learn of collections. Recordings mark their capture incomplete
+    /// ([`crate::recording::CaptureFault::Relocated`]), since replay rebuilds handles from an
+    /// append-only heap.
+    Collected {
+        /// What the collection did.
+        report: &'a crate::vm::CollectionReport,
+        /// Storage after the collection.
+        aggregates: &'a AggHeap,
+    },
     /// Raw host outcome after the call, before fuel debit and return validation.
     ///
     /// A VM denial before invoking the host produces no such event. A returned value is not
@@ -519,6 +538,11 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("location", location)
                 .field("caller", caller)
                 .field("values", values)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::Collected { report, aggregates } => f
+                .debug_struct("Collected")
+                .field("report", report)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
             Self::Installed { unit, units } => f

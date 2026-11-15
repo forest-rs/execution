@@ -476,6 +476,27 @@ impl Compaction {
     pub(crate) fn moved(&self) -> u32 {
         self.moved
     }
+
+    /// The handles survivors take: their new window.
+    pub(crate) fn window(&self) -> core::ops::Range<u32> {
+        self.dest..self.dest + self.live
+    }
+
+    /// The handle a boundary at `handle` moves to: the base plus the survivors below it.
+    ///
+    /// Remaps a checkpoint, which separates retained nodes from a later suffix.
+    pub(crate) fn boundary(&self, handle: u32) -> u32 {
+        let source = self.remap.base_len;
+        if handle < source {
+            return handle;
+        }
+        let local = ((handle - source) as usize).min(self.remap.staged_to_base.len());
+        let below = self.remap.staged_to_base[..local]
+            .iter()
+            .filter(|mapped| mapped.is_some())
+            .count();
+        self.dest + u32::try_from(below).expect("heap lengths fit u32")
+    }
 }
 
 /// Handle remapping produced by [`AggDelta::merge_into`] or [`AggHeap::into_snapshot`].
@@ -1720,7 +1741,11 @@ mod tests {
         let parent = heap.tuple_new(vec![Value::Agg(child)]).unwrap();
         let plan = heap.plan_collection([parent], WINDOW_LIMIT).unwrap();
         assert_eq!((plan.live(), plan.reclaimed(), plan.moved()), (2, 1, 2));
-        // Survivors land above every earlier handle, in order.
+        assert_eq!(
+            plan.window(),
+            3..5,
+            "survivors land above every earlier handle"
+        );
         let moved = 4; // The parent follows its child, in order.
         heap.apply_compaction(&plan);
         assert_eq!((heap.len_u32(), heap.handle_end()), (2, 5));
@@ -1771,6 +1796,7 @@ mod tests {
         let kept = heap.tuple_new(vec![]).unwrap();
         heap.tuple_new(vec![]).unwrap();
         let plan = heap.plan_collection([kept], WINDOW_LIMIT).unwrap();
+        assert_eq!(plan.window(), 0..1);
         heap.apply_compaction(&plan);
         assert_eq!(heap.agg_type(kept), Err(AggError::BadHandle));
         assert!(heap.agg_type(AggHandle(0)).is_ok());

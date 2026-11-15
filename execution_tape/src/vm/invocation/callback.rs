@@ -10,6 +10,12 @@ use crate::vm::host_call::PendingHost;
 pub(in crate::vm) struct Callbacks {
     waiting: Vec<WaitingHost>,
     pub(in crate::vm) returned: Option<Vec<Value>>,
+    /// Host-built aggregates promoted when a request called back, with that request's depth.
+    ///
+    /// Only the host holds their handles, which it may still return or pass to a callback, so
+    /// they stay alive until that request completes or unwinds. A collection keeps them and
+    /// refuses to move them, so those handles stay valid.
+    pub(in crate::vm) promoted: Vec<(usize, core::ops::Range<u32>)>,
 }
 struct WaitingHost {
     host: PendingHost,
@@ -40,6 +46,12 @@ impl Callbacks {
             self.waiting.pop();
         }
         self.returned = None;
+        self.promoted.retain(|(depth, _)| *depth < first);
+    }
+
+    /// Forgets the promoted aggregates of the request at `depth`, which completed.
+    pub(in crate::vm) fn completed(&mut self, depth: usize) {
+        self.promoted.retain(|(promoted, _)| *promoted != depth);
     }
 }
 
@@ -64,8 +76,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// suspended callers. There is no budget reset or native Rust stack capture.
     ///
     /// Previously staged host aggregates are promoted, preserving handles, before guest reentry.
-    /// Even unused staged nodes then live until root commit or rollback; their already admitted
-    /// work remains charged. Later host construction uses the updated shared heap/budgets.
+    /// Even unused staged nodes then live until this request completes or the run ends. Only
+    /// the host holds their handles, so meanwhile an [`Invocation::collect`] that would move
+    /// them refuses with [`CollectError::HostHandles`]. Their already admitted work remains
+    /// charged. Later host construction uses the updated shared heap/budgets.
     /// Invalid targets, arguments or exhausted limits terminate the whole invocation, as guest
     /// calls do. Dropping it cancels all waiting operations without executing guest code.
     ///
@@ -82,7 +96,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ///
     /// An empty successful callback yields `Some(&[])`; `None` means no results are available.
     /// Handles use this request's original heap/code and stay valid until the invocation commits
-    /// its root or rolls back. Inspection spends no guest work.
+    /// its root, rolls back or is collected. Inspection spends no guest work.
     #[must_use]
     pub fn callback_results(&self) -> Option<&[Value]> {
         self.running
@@ -283,6 +297,9 @@ impl<H: Host> Running<'_, '_, H> {
             .callbacks
             .get_or_insert_with(|| Box::new(Callbacks::default()));
         callbacks.returned = None;
+        if !created.is_empty() {
+            callbacks.promoted.push((pending.depth, created));
+        }
         let instruction = self.continuation.trace.pending.take();
         debug_assert!(
             instruction.is_none_or(|location| location == pending.location),
@@ -388,5 +405,6 @@ pub(in crate::vm) fn finish_instructions(
             trace.instr_end(program, None, outcome);
         }
         callbacks.returned = None;
+        callbacks.promoted.clear();
     }
 }
