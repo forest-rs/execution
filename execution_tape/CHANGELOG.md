@@ -16,6 +16,22 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Look up a function by id with `Program::function(FuncId) -> Option<&Function>`, like
+  `Program::tag` and `Program::link`, instead of indexing `program.functions`. A verified
+  function exposes its source too: `VerifiedFunction::bytecode` and `VerifiedFunction::spans`
+  borrow the bytecode and span table the verifier accepted, so callers holding a
+  `VerifiedProgram` need not reach back into its `Program`.
+
+- Name the effect token register: `Reg::EFFECT` is r0, the operand that calls, host calls,
+  `resume`, `suspend`, `ret` and `throw` thread, so frontends write `body.ret(Reg::EFFECT,
+  &[value])` rather than a bare `Reg(0)`.
+
+- Write span ids as constants and literals with `const fn SpanId::new(u64)`, which panics on
+  zero (a compile-time error in a constant). `SpanId::try_from` remains the fallible route for
+  external input.
+
+- Display `UnitId` as its bare index, like `FuncId`, so `format!("unit {unit}")` reads `unit 1`.
+
 - Add checked conversions, which report a value that does not fit instead of trapping, so a
   language can turn a failed range check into a recoverable error. Each writes the converted
   value and a `bool` flag, like the `_ovf` arithmetic, and the frontend branches on the flag.

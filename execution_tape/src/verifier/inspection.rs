@@ -10,7 +10,7 @@ use core::mem::size_of;
 use super::VerifiedProgram;
 use crate::arena::{BytesHandle, StrHandle};
 use crate::opcode::Opcode;
-use crate::program::{Function, Pc, RegisterTypes, SpanId, ValueType};
+use crate::program::{Function, Pc, RegisterTypes, SpanEntry, SpanId, ValueType};
 use crate::typed::{ExecFunc, RegCounts};
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj};
 
@@ -86,6 +86,26 @@ impl<'a> VerifiedFunction<'a> {
         self.id
     }
 
+    /// Borrows the function's encoded bytecode, as the verifier accepted it.
+    ///
+    /// Offsets into it are the [`Pc`]s that instructions, traps and traces report.
+    #[must_use]
+    pub fn bytecode(self) -> &'a [u8] {
+        self.definition
+            .bytecode(self.program.program())
+            .expect("verified bytecode range")
+    }
+
+    /// Borrows the function's source span table, as `(pc_delta, span_id)` entries in pc order.
+    ///
+    /// [`InstructionInfo::span`] gives the span already resolved for each instruction.
+    #[must_use]
+    pub fn spans(self) -> &'a [SpanEntry] {
+        self.definition
+            .spans(self.program.program())
+            .expect("verified span range")
+    }
+
     /// Borrows declared virtual-register kinds, including unused registers and r0.
     #[must_use]
     pub fn register_types(self) -> RegisterTypes<'a> {
@@ -155,10 +175,7 @@ impl<'a> VerifiedFunction<'a> {
 
     /// Iterates prepared instruction locations without reparsing source bytecode.
     pub fn instructions(self) -> impl ExactSizeIterator<Item = InstructionInfo> + 'a {
-        let source = self
-            .definition
-            .bytecode(self.program.program())
-            .expect("verified bytecode range");
+        let source = self.bytecode();
         self.executable
             .instrs
             .iter()
@@ -467,5 +484,38 @@ mod tests {
             Pc(f.stats().bytecode_bytes)
         );
         assert_eq!(f.instructions().len(), f.stats().instruction_count);
+    }
+
+    #[test]
+    fn bytecode_and_spans_are_the_verified_source() {
+        let span = SpanId::new(3);
+        let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
+        body.span(span)
+            .const_i64(Reg(1), 42)
+            .ret(Reg::EFFECT, &[Reg(1)]);
+        let mut pb = ProgramBuilder::new();
+        let id = pb
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        let p = pb.build_verified().unwrap();
+        let f = p.function(id).unwrap();
+        let definition = p.program().function(id).unwrap();
+        assert_eq!(f.bytecode(), definition.bytecode(p.program()).unwrap());
+        assert_eq!(f.spans(), definition.spans(p.program()).unwrap());
+        assert_eq!(f.bytecode().len(), f.stats().bytecode_bytes as usize);
+        assert_eq!(
+            f.spans()
+                .iter()
+                .map(|entry| entry.span_id)
+                .collect::<Vec<_>>(),
+            [span]
+        );
     }
 }
