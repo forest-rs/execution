@@ -22,7 +22,7 @@ use crate::bytecode::{BytecodeError, DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
 use crate::program::{
-    CallSigId, ConstId, ElemTypeId, HostSigId, Program, Reg, TagId, TypeId, ValueType,
+    CallSigId, ConstId, ElemTypeId, HostSigId, Pc, Program, Reg, TagId, TypeId, ValueType,
 };
 pub use crate::register_operands::{RegIter, RegList};
 use crate::value::{Decimal, DecimalRounding, FuncId};
@@ -114,10 +114,10 @@ impl<'a> FunctionDisassembly<'a> {
     /// Looks up one exact source instruction/declaration boundary in logarithmic time.
     /// Returns `None` for an absent PC or when decoding failed.
     #[must_use]
-    pub fn instruction(&self, pc: u32) -> Option<InstrView<'_>> {
+    pub fn instruction(&self, pc: Pc) -> Option<InstrView<'_>> {
         let decoded = self.decoded.as_ref().ok()?;
         let index = decoded
-            .binary_search_by_key(&pc, |instruction| instruction.offset)
+            .binary_search_by_key(&pc.0, |instruction| instruction.offset)
             .ok()?;
         Some(instr_view(self.program, self.func, &decoded[index]))
     }
@@ -127,13 +127,13 @@ impl<'a> FunctionDisassembly<'a> {
     /// Declarations carry no fuel or trace events. Returns `None` for non-boundaries, decode
     /// errors, or declarations with no following instruction. This does not verify control flow.
     #[must_use]
-    pub fn executable_pc(&self, pc: u32) -> Option<u32> {
+    pub fn executable_pc(&self, pc: Pc) -> Option<Pc> {
         let decoded = self.decoded.as_ref().ok()?;
-        let ix = decoded.binary_search_by_key(&pc, |di| di.offset).ok()?;
+        let ix = decoded.binary_search_by_key(&pc.0, |di| di.offset).ok()?;
         decoded[ix..]
             .iter()
             .find(|di| !matches!(di.instr, Instr::Block { .. }))
-            .map(|di| di.offset)
+            .map(|di| Pc(di.offset))
     }
 
     /// Computes label indices for this function.
@@ -147,13 +147,13 @@ impl<'a> FunctionDisassembly<'a> {
             return Labels { pcs: Vec::new() };
         }
 
-        let mut pcs: Vec<u32> = Vec::new();
-        pcs.push(0);
+        let mut pcs: Vec<Pc> = Vec::new();
+        pcs.push(Pc(0));
         for iv in self.instrs() {
             if matches!(iv.decoded.instr, Instr::Block { .. }) {
                 pcs.push(iv.pc());
             }
-            crate::instr_operands::visit_pcs(&iv.decoded.instr, |pc| pcs.push(pc));
+            crate::instr_operands::visit_pcs(&iv.decoded.instr, |pc| pcs.push(Pc(pc)));
         }
         if let Some(function) = self.program.functions.get(self.func.0 as usize)
             && let Ok(regions) = function.regions(self.program)
@@ -173,19 +173,19 @@ impl<'a> FunctionDisassembly<'a> {
 /// Label indices for a function disassembly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Labels {
-    pcs: Vec<u32>,
+    pcs: Vec<Pc>,
 }
 
 impl Labels {
     /// Returns the sorted label pcs.
     #[must_use]
-    pub fn pcs(&self) -> &[u32] {
+    pub fn pcs(&self) -> &[Pc] {
         &self.pcs
     }
 
     /// Returns the label index for `pc` if it is labeled.
     #[must_use]
-    pub fn label_index(&self, pc: u32) -> Option<usize> {
+    pub fn label_index(&self, pc: Pc) -> Option<usize> {
         self.pcs.binary_search(&pc).ok()
     }
 }
@@ -216,7 +216,7 @@ pub enum DisasmError {
     /// An instruction starts with an unassigned opcode.
     UnknownOpcode {
         /// Byte offset of the opcode.
-        pc: u32,
+        pc: Pc,
         /// The unassigned code: the lone byte, or `prefix << 8 | byte` (see [`Opcode::code`]).
         opcode: u16,
     },
@@ -226,9 +226,10 @@ impl DisasmError {
     fn from_bytecode(e: BytecodeError) -> Self {
         match e {
             BytecodeError::Decode(e) => Self::Decode(e),
-            BytecodeError::UnknownOpcode { offset, opcode } => {
-                Self::UnknownOpcode { pc: offset, opcode }
-            }
+            BytecodeError::UnknownOpcode { offset, opcode } => Self::UnknownOpcode {
+                pc: Pc(offset),
+                opcode,
+            },
         }
     }
 }
@@ -275,7 +276,7 @@ pub enum Operands<'a> {
     /// Jump with simultaneous arguments.
     JmpArgs {
         /// Target header PC.
-        pc_target: u32,
+        pc_target: Pc,
         /// Source registers in parameter order.
         args: RegList<'a>,
     },
@@ -284,9 +285,9 @@ pub enum Operands<'a> {
         /// Condition register.
         cond: Reg,
         /// True target header PC.
-        pc_true: u32,
+        pc_true: Pc,
         /// False target header PC.
-        pc_false: u32,
+        pc_false: Pc,
         /// Number of arguments belonging to the true arm.
         true_arg_count: u32,
         /// True then false arguments (one owned list in the decoded source).
@@ -299,14 +300,14 @@ pub enum Operands<'a> {
         /// Condition register.
         cond: Reg,
         /// Jump target if `cond` is true.
-        pc_true: u32,
+        pc_true: Pc,
         /// Jump target if `cond` is false.
-        pc_false: u32,
+        pc_false: Pc,
     },
     /// `jmp pc_target`.
     Jmp {
         /// Jump target pc.
-        pc_target: u32,
+        pc_target: Pc,
     },
     /// `call eff_out, func_id, eff_in, args..., rets...`.
     Call(CallOperands<'a>),
@@ -341,7 +342,7 @@ pub enum Operands<'a> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BlockEdge<'a> {
     /// Target declaration or unparameterized source PC.
-    pub target: u32,
+    pub target: Pc,
     /// Incoming argument registers in parameter order.
     pub args: RegList<'a>,
 }
@@ -399,8 +400,8 @@ impl<'a> InstrView<'a> {
 
     /// Byte offset (pc) within the function bytecode stream.
     #[must_use]
-    pub fn pc(&self) -> u32 {
-        self.decoded.offset
+    pub fn pc(&self) -> Pc {
+        Pc(self.decoded.offset)
     }
 
     /// Decoded opcode.
@@ -609,7 +610,7 @@ impl<'a> InstrView<'a> {
                 params: RegList::new(params),
             },
             Instr::JmpArgs { pc_target, args } => Operands::JmpArgs {
-                pc_target: *pc_target,
+                pc_target: Pc(*pc_target),
                 args: RegList::new(args),
             },
             Instr::BrArgs {
@@ -620,8 +621,8 @@ impl<'a> InstrView<'a> {
                 args,
             } => Operands::BrArgs {
                 cond: Reg(*cond),
-                pc_true: *pc_true,
-                pc_false: *pc_false,
+                pc_true: Pc(*pc_true),
+                pc_false: Pc(*pc_false),
                 true_arg_count: *true_arg_count,
                 args: RegList::new(args),
             },
@@ -631,11 +632,11 @@ impl<'a> InstrView<'a> {
                 pc_false,
             } => Operands::Br {
                 cond: Reg(*cond),
-                pc_true: *pc_true,
-                pc_false: *pc_false,
+                pc_true: Pc(*pc_true),
+                pc_false: Pc(*pc_false),
             },
             Instr::Jmp { pc_target } => Operands::Jmp {
-                pc_target: *pc_target,
+                pc_target: Pc(*pc_target),
             },
             Instr::Throw { eff_in, tag, args } => Operands::Throw {
                 eff: Reg(*eff_in),
@@ -660,7 +661,7 @@ impl<'a> InstrView<'a> {
             .instr
             .edge(arm)
             .map(|(target, args)| BlockEdge {
-                target,
+                target: Pc(target),
                 args: RegList::new(args),
             })
     }
@@ -1146,7 +1147,7 @@ fn fmt_named_ret_list(
             write!(w, ", ")?;
         }
         let ret = u32::try_from(i).unwrap_or(u32::MAX);
-        if let Some(name) = program.function_output_name(func.0, ret) {
+        if let Some(name) = program.function_output_name(func, ret) {
             write!(w, "{name}=")?;
         }
         fmt_reg(w, *r)?;
@@ -1166,7 +1167,7 @@ fn fmt_named_arg_list(
             write!(w, ", ")?;
         }
         let arg = u32::try_from(i).unwrap_or(u32::MAX);
-        if let Some(name) = program.function_input_name(func.0, arg) {
+        if let Some(name) = program.function_input_name(func, arg) {
             write!(w, "{name}=")?;
         }
         fmt_reg(w, *r)?;
@@ -1185,7 +1186,7 @@ fn fmt_named_func_arg_bindings(
     let argc = f.arg_count;
     let mut any = false;
     for arg in 0..argc {
-        if program.function_input_name(func.0, arg).is_some() {
+        if program.function_input_name(func, arg).is_some() {
             any = true;
             break;
         }
@@ -1199,7 +1200,7 @@ fn fmt_named_func_arg_bindings(
         if arg != 0 {
             write!(w, ", ")?;
         }
-        if let Some(name) = program.function_input_name(func.0, arg) {
+        if let Some(name) = program.function_input_name(func, arg) {
             write!(w, "{name}=")?;
         }
         fmt_reg(w, 1 + arg)?;
@@ -1473,7 +1474,7 @@ impl fmt::Display for Disassembly<'_> {
                 writeln!(f)?;
             }
             write!(f, "func f{}:", fd.func().0)?;
-            if let Some(name) = self.program.function_name(fd.func().0) {
+            if let Some(name) = self.program.function_name(fd.func()) {
                 write!(f, " ; name=\"{name}\"")?;
             }
             writeln!(f)?;
@@ -1490,7 +1491,7 @@ impl fmt::Display for Disassembly<'_> {
                 let pc = iv.pc();
                 if let Some(label_ix) = labels.label_index(pc) {
                     write!(f, "  @L{label_ix}:")?;
-                    if let Some(name) = self.program.label_name(fd.func().0, pc) {
+                    if let Some(name) = self.program.label_name(fd.func(), pc) {
                         write!(f, " ; name=\"{name}\"")?;
                     }
                     writeln!(f)?;
@@ -1508,7 +1509,7 @@ fn fmt_regions(
     f: &mut fmt::Formatter<'_>,
     program: &Program,
     func: FuncId,
-    label_pcs: &[u32],
+    label_pcs: &[Pc],
 ) -> fmt::Result {
     let Some(function) = program.functions.get(func.0 as usize) else {
         return Ok(());
@@ -1559,7 +1560,7 @@ fn fmt_regions(
     Ok(())
 }
 
-fn fmt_label_ref(f: &mut fmt::Formatter<'_>, pc: u32, label_pcs: &[u32]) -> fmt::Result {
+fn fmt_label_ref(f: &mut fmt::Formatter<'_>, pc: Pc, label_pcs: &[Pc]) -> fmt::Result {
     match label_pcs.binary_search(&pc) {
         Ok(ix) => write!(f, "@L{ix}"),
         Err(_) => write!(f, "@{:06}", pc),
@@ -1586,11 +1587,11 @@ fn fmt_block(f: &mut fmt::Formatter<'_>, params: &[u32], iv: &InstrView<'_>) -> 
 fn fmt_branch_args(
     f: &mut fmt::Formatter<'_>,
     cond: u32,
-    t: u32,
-    false_pc: u32,
+    t: Pc,
+    false_pc: Pc,
     split: u32,
     args: &[u32],
-    labels: &[u32],
+    labels: &[Pc],
 ) -> fmt::Result {
     let split = split as usize;
     if split > args.len() {
@@ -1618,7 +1619,7 @@ fn fmt_branch_args(
 fn fmt_instr_with_labels(
     f: &mut fmt::Formatter<'_>,
     iv: &InstrView<'_>,
-    label_pcs: &[u32],
+    label_pcs: &[Pc],
 ) -> fmt::Result {
     write!(f, "  {:06}: {}", iv.pc(), iv.opcode().mnemonic())?;
     match iv.operands() {
@@ -2133,7 +2134,7 @@ mod tests {
 
         let fd = disassemble_function(vp.program(), FuncId(0)).unwrap();
         let labels = fd.labels();
-        assert_eq!(labels.label_index(0), Some(0));
+        assert_eq!(labels.label_index(Pc(0)), Some(0));
 
         let mut targets = None;
         for iv in fd.instrs() {

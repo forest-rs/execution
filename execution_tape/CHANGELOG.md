@@ -483,6 +483,35 @@ This release has an [MSRV][] of 1.88.
   `Reg(..)` wrappers and `.0` unwraps around them; match `UninitializedRead { reg: Reg(1), .. }`;
   and read a register's index with `.0`.
 
+- Every other ID and code position in the public API now uses its newtype too, so a function,
+  tag or bytecode position cannot stand in for another integer either. The new `program::Pc`,
+  beside the other program IDs, names a bytecode position: `Asm::pc`,
+  `ProgramBuilder::set_label_name_pc`, `NamedLabel`, `LabelNameEntry` and `Program::label_name`;
+  `CatchClause` targets and `RegionRun::start_pc`/`end_pc`; `TraceLocation`, `CodeLocation`,
+  `TrapInfo` and `host_binding::CallError`; `TraceSink::instr`'s `next_pc`; `InstructionInfo`,
+  `HostCallSite::pc`, `FunctionAnalysis::instruction`, `InstructionFacts::pc`, `FactOrigin` and
+  `IncomingEdge::source_pc`/`target_pc`; `VerifyError::pc` and the positions in `VerifyError`,
+  `VerifyLint`, `RegionError`, `BlockEdgeError` and `ExceptionPlace`; disassembly
+  (`InstrView::pc`, `FunctionDisassembly::instruction`/`executable_pc`, `Labels`, `Operands`
+  targets, `BlockEdge::target`, `DisasmError::UnknownOpcode`); and `codec::Operand::Pc` and
+  `DecodedOperand::Pc`. Functions are `FuncId` in `VerifyError`, `VerifyLint`,
+  `ExceptionPlace`, `BuildError::{BadFuncId, BadArgIndex, BadRetIndex, MissingFunctionBody}`,
+  `FunctionNameEntry`, `LabelNameEntry` and `Program::function_name`, `label_name`,
+  `function_input_name` and `function_output_name`. Diagnostics name host and call signatures,
+  tags, struct and element types, constants and regions as `HostSigId`, `CallSigId`, `TagId`,
+  `TypeId`, `ElemTypeId`, `ConstId` and `RegionId` in `VerifyError`, `ExceptionPlace` and
+  `RegionError`/`RegionRunError`. Span IDs are `SpanId` in `TrapInfo` and the `TraceSink`
+  callbacks, `Program::value_name_ids` holds `Option<SymbolId>` (`None` for an unnamed value)
+  as `function_arg_name_ids`/`function_ret_name_ids` now return, and
+  `CaptureFault::InvalidAggregate` carries an `AggHandle`. Argument, return, clause, field and
+  payload positions, counts, immediates, metadata table entries and span `pc_delta`s stay
+  integers, and the bytecode is unchanged. `Pc`, `FuncId` and these IDs display as their bare
+  number, so diagnostics read as before. Migration: wrap literals as `FuncId(0)`, `Pc(4)` or
+  `TagId(1)`; values from `Asm::pc`, `declare_function` and the builders are already typed, so
+  drop `.0` unwraps and rewraps around them; read an index with `.0`; and implement
+  `TraceSink::instr` with `next_pc: Pc, span_id: Option<SpanId>` and `scope_enter`/`scope_exit`
+  with `span_id: Option<SpanId>`.
+
 - `verify_program_owned` and `verify_program_owned_with_lints` return the rejected program with
   the error, as the new `verifier::RejectedProgram { error, program }`, so the error can be
   rendered with `VerifyError::display_in` without decoding the program again. Its `Display` does

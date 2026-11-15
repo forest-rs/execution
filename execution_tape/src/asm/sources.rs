@@ -74,7 +74,7 @@ impl Asm {
             .map(move |(pc, document, range)| SourceMapping {
                 location: crate::trace::CodeLocation {
                     func: function,
-                    pc: *pc,
+                    pc: Pc(*pc),
                 },
                 document: *document,
                 range: range.clone(),

@@ -70,21 +70,21 @@ impl Regions {
                 clauses.push(match catch {
                     Catch::Tag(tag, label) => CatchClause::Tag {
                         tag,
-                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                        target: Pc(resolve(label).ok_or(UnresolvedLabel)?),
                     },
                     Catch::All(label) => CatchClause::All {
-                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                        target: Pc(resolve(label).ok_or(UnresolvedLabel)?),
                     },
                     Catch::TagRef(tag, label) => CatchClause::TagRef {
                         tag,
-                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                        target: Pc(resolve(label).ok_or(UnresolvedLabel)?),
                     },
                     Catch::AllRef(label) => CatchClause::AllRef {
-                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                        target: Pc(resolve(label).ok_or(UnresolvedLabel)?),
                     },
                     Catch::On(tag, label) => CatchClause::On {
                         tag,
-                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                        target: Pc(resolve(label).ok_or(UnresolvedLabel)?),
                     },
                 });
             }
@@ -103,12 +103,12 @@ impl Regions {
                     end_pc: previous_end,
                     region: previous,
                     ..
-                }) if *previous_end == start_pc && *previous == region => {
-                    *previous_end = end_pc;
+                }) if *previous_end == Pc(start_pc) && *previous == region => {
+                    *previous_end = Pc(end_pc);
                 }
                 _ => runs.push(RegionRun {
-                    start_pc,
-                    end_pc,
+                    start_pc: Pc(start_pc),
+                    end_pc: Pc(end_pc),
                     region,
                 }),
             }
@@ -140,7 +140,7 @@ impl Asm {
     pub fn resume_region(&mut self, region: RegionId) -> &mut Self {
         self.regions.open.push(region);
         let pc = self.pc();
-        self.regions.mark(pc);
+        self.regions.mark(pc.0);
         self
     }
 
@@ -148,7 +148,7 @@ impl Asm {
     pub fn end_region(&mut self) -> Option<RegionId> {
         let region = self.regions.open.pop()?;
         let pc = self.pc();
-        self.regions.mark(pc);
+        self.regions.mark(pc.0);
         Some(region)
     }
 }

@@ -4,7 +4,7 @@
 use super::*;
 use crate::{render_program, render_screen};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
-use execution_tape::program::{SpanId, ValueType};
+use execution_tape::program::{Pc, SpanId, ValueType};
 use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncId;
 
@@ -322,8 +322,8 @@ fn diagnostic_formatting_bounds_large_contract_paths() {
         ContractId, ContractMismatch, ContractPosition, ContractViolation,
     };
     let error = VerifyError::ContractMismatch {
-        func: 0,
-        pc: 0,
+        func: FuncId(0),
+        pc: Pc(0),
         position: ContractPosition::Result { index: 0 },
         error: ContractViolation {
             contract: ContractId(0),
@@ -541,8 +541,8 @@ fn contract_diagnostics_resolve_named_fields_and_bound_deep_paths() {
     b.set_function_name(callee, "accepts_settings").unwrap();
     let program = b.build_checked().unwrap();
     let error = |path| VerifyError::ContractMismatch {
-        func: 0,
-        pc: 0,
+        func: FuncId(0),
+        pc: Pc(0),
         position: ContractPosition::Argument { callee, index: 0 },
         error: ContractViolation {
             contract: ContractId(0),

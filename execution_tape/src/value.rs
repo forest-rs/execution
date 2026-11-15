@@ -31,6 +31,13 @@ pub struct Obj {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FuncId(pub u32);
 
+impl core::fmt::Display for FuncId {
+    /// Displays the bare function index, as diagnostics such as `function #3` expect.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// One verified program installed in a VM store.
 ///
 /// [`crate::vm::Vm::install`] assigns these in installation order. An ID belongs to the VM that

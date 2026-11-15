@@ -18,6 +18,7 @@ use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, Reg, RegionId, SymbolId, TagId};
+use crate::program::{Pc, SpanId};
 use crate::value::{FuncId, FuncRef, TagRef, UnitId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo, Units};
 
@@ -195,8 +196,8 @@ pub struct TraceLocation {
     pub unit: UnitId,
     /// Function containing the instruction.
     pub func: FuncId,
-    /// Byte offset within the function.
-    pub pc: u32,
+    /// Instruction boundary within the function.
+    pub pc: Pc,
 }
 
 impl TraceLocation {
@@ -218,8 +219,8 @@ impl TraceLocation {
 pub struct CodeLocation {
     /// Function containing the instruction.
     pub func: FuncId,
-    /// Byte offset within the function.
-    pub pc: u32,
+    /// Instruction boundary within the function.
+    pub pc: Pc,
 }
 
 impl From<TraceLocation> for CodeLocation {
@@ -693,8 +694,8 @@ pub trait TraceSink {
         &mut self,
         _program: &Program,
         _location: TraceLocation,
-        _next_pc: u32,
-        _span_id: Option<u64>,
+        _next_pc: Pc,
+        _span_id: Option<SpanId>,
         _opcode: u16,
     ) {
     }
@@ -736,7 +737,7 @@ pub trait TraceSink {
         _kind: ScopeKind,
         _depth: usize,
         _location: TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
     ) {
     }
 
@@ -762,7 +763,7 @@ pub trait TraceSink {
         _kind: ScopeKind,
         _depth: usize,
         _location: TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
         _outcome: TraceOutcome<'_>,
     ) {
     }
@@ -803,8 +804,8 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
         &mut self,
         program: &Program,
         location: TraceLocation,
-        next_pc: u32,
-        span_id: Option<u64>,
+        next_pc: Pc,
+        span_id: Option<SpanId>,
         opcode: u16,
     ) {
         self.as_ref()
@@ -828,7 +829,7 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        span_id: Option<u64>,
+        span_id: Option<SpanId>,
     ) {
         self.as_ref()
             .borrow_mut()
@@ -840,7 +841,7 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        span_id: Option<u64>,
+        span_id: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         self.as_ref()

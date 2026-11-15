@@ -24,6 +24,7 @@ use crate::math;
 use crate::num32;
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
+use crate::program::{Pc, SpanId};
 use crate::program_memory::{Checkpoint, ProgramMemory};
 use crate::trace::{
     HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
@@ -477,10 +478,10 @@ pub struct TrapInfo {
     pub unit: UnitId,
     /// Function id.
     pub func: FuncId,
-    /// Byte offset pc.
-    pub pc: u32,
+    /// Instruction boundary within the function.
+    pub pc: Pc,
     /// Best-effort span id for tracing/source mapping.
-    pub span_id: Option<u64>,
+    pub span_id: Option<SpanId>,
     /// Trap kind.
     pub trap: Trap,
 }
@@ -800,7 +801,13 @@ impl<'a> TraceCtx<'a> {
         {
             let t: &mut dyn TraceSink = &mut **t;
             self.pending = Some(location);
-            t.instr(program, location, next_pc, span_id, opcode);
+            t.instr(
+                program,
+                location,
+                Pc(next_pc),
+                span_id_at_boundary(span_id),
+                opcode,
+            );
         }
     }
 
@@ -825,7 +832,7 @@ impl<'a> TraceCtx<'a> {
                 ScopeKind::CallFrame { func, caller },
                 depth,
                 location,
-                span_id,
+                span_id_at_boundary(span_id),
             );
         }
     }
@@ -843,7 +850,14 @@ impl<'a> TraceCtx<'a> {
         {
             let t: &mut dyn TraceSink = &mut **t;
             let (kind, _) = self.scopes.pop().expect("entered call frame");
-            t.scope_exit(program, kind, depth, location, span_id, TraceOutcome::Ok);
+            t.scope_exit(
+                program,
+                kind,
+                depth,
+                location,
+                span_id_at_boundary(span_id),
+                TraceOutcome::Ok,
+            );
         }
     }
 
@@ -879,7 +893,7 @@ impl<'a> TraceCtx<'a> {
                 },
                 depth,
                 location,
-                span_id,
+                span_id_at_boundary(span_id),
             );
         }
     }
@@ -909,7 +923,7 @@ impl<'a> TraceCtx<'a> {
                 },
                 depth,
                 location,
-                span_id,
+                span_id_at_boundary(span_id),
                 TraceOutcome::Ok,
             );
         }
@@ -938,13 +952,27 @@ impl<'a> TraceCtx<'a> {
         if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
             let (kind, depth) = self.scopes.pop().expect("open host scope");
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(program, kind, depth, location, span_id, outcome);
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location,
+                    span_id_at_boundary(span_id),
+                    outcome,
+                );
             }
         }
         self.instr_end(program, None, outcome);
         while let Some((kind, depth)) = self.scopes.pop() {
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(program, kind, depth, location, span_id, outcome);
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location,
+                    span_id_at_boundary(span_id),
+                    outcome,
+                );
             }
         }
     }
@@ -962,7 +990,7 @@ impl<'a> TraceCtx<'a> {
                     func: error.func,
                     pc: error.pc,
                 },
-                error.span_id,
+                error.span_id.map(SpanId::get),
                 outcome,
             );
         }
@@ -1354,7 +1382,7 @@ impl<H: Host> Vm<H> {
             .ok_or(TrapInfo {
                 unit,
                 func: FuncId(0),
-                pc: 0,
+                pc: Pc(0),
                 span_id: None,
                 trap: Trap::UnknownUnit { unit },
             })
@@ -1459,7 +1487,7 @@ impl<H: Host> Vm<H> {
             TraceLocation {
                 unit,
                 func: entry,
-                pc: entry_vf.pc_at_ix(0).unwrap_or(0),
+                pc: Pc(entry_vf.pc_at_ix(0).unwrap_or(0)),
             },
             entry_vf.span_at_ix(0).map(|id| id.get()),
             None,
@@ -1563,7 +1591,7 @@ impl<H: Host> Vm<H> {
                 TraceLocation {
                     unit: unit_id,
                     func: func_id,
-                    pc,
+                    pc: Pc(pc),
                 },
                 next_pc,
                 span_id,
@@ -1584,7 +1612,7 @@ impl<H: Host> Vm<H> {
                 TraceLocation {
                     unit: unit_id,
                     func: func_id,
-                    pc,
+                    pc: Pc(pc),
                 },
                 base,
                 sources,
@@ -1610,7 +1638,7 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         },
                         span_id,
                     )?;
@@ -1631,7 +1659,7 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         },
                         span_id,
                     )?;
@@ -1681,7 +1709,7 @@ impl<H: Host> Vm<H> {
                             TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             (*from_sig, *to_sig),
                             cont,
@@ -1705,7 +1733,7 @@ impl<H: Host> Vm<H> {
                     let location = TraceLocation {
                         unit: unit_id,
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                     };
                     let cont = ctx.read_cont(base, *cont);
                     self.resume::<P, YIELD>(
@@ -1722,8 +1750,8 @@ impl<H: Host> Vm<H> {
                     .map_err(|trap| TrapInfo {
                         unit: unit_id,
                         func: func_id,
-                        pc,
-                        span_id,
+                        pc: Pc(pc),
+                        span_id: span_id_at_boundary(span_id),
                         trap,
                     })?;
                 }
@@ -1737,7 +1765,7 @@ impl<H: Host> Vm<H> {
                     let location = TraceLocation {
                         unit: unit_id,
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                     };
                     let cont = ctx.read_cont(base, *cont);
                     self.resume::<P, YIELD>(
@@ -1746,15 +1774,15 @@ impl<H: Host> Vm<H> {
                     .map_err(|trap| TrapInfo {
                         unit: unit_id,
                         func: func_id,
-                        pc,
-                        span_id,
+                        pc: Pc(pc),
+                        span_id: span_id_at_boundary(span_id),
                         trap,
                     })?;
                     // The exception starts at the continuation's suspension point, or here when
                     // it never started; this unit still names the tag and holds the payload.
                     let at = ctx.raising_location(&self.units);
                     let raising = &self.units.unit(at.unit).program;
-                    let at_span = ctx.span_at(raising.program(), at.func, at.pc);
+                    let at_span = ctx.span_at(raising.program(), at.func, at.pc.0);
                     self.raise::<P>(
                         ctx,
                         budget,
@@ -1782,7 +1810,7 @@ impl<H: Host> Vm<H> {
                             TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             span_id,
                             *tag,
@@ -3459,7 +3487,7 @@ impl<H: Host> Vm<H> {
                         control.enter(TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         });
                     }
                     P::call_scope_enter(
@@ -3469,13 +3497,13 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: unit_id,
                             func: *callee,
-                            pc: callee_vf.pc_at_ix(0).unwrap_or(0),
+                            pc: Pc(callee_vf.pc_at_ix(0).unwrap_or(0)),
                         },
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         }),
                     );
 
@@ -3500,7 +3528,7 @@ impl<H: Host> Vm<H> {
                             TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             span_id,
                             base,
@@ -3520,7 +3548,7 @@ impl<H: Host> Vm<H> {
                             location: TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             values: &outputs[output_start..],
                             aggregates: self.memory.aggs(),
@@ -3531,7 +3559,7 @@ impl<H: Host> Vm<H> {
                             location: TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             span: span_id,
                         }));
@@ -3595,7 +3623,7 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         },
                         span_id,
                     );
@@ -3671,7 +3699,7 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         },
                         span_id,
                     );
@@ -3681,7 +3709,7 @@ impl<H: Host> Vm<H> {
                             location: TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             span: span_id,
                             import: *host_sig,
@@ -3754,7 +3782,7 @@ impl<H: Host> Vm<H> {
                             location: TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             host_sig: *host_sig,
                             args: &observed_args,
@@ -3782,7 +3810,7 @@ impl<H: Host> Vm<H> {
                             TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             span_id,
                         )?;
@@ -3795,7 +3823,7 @@ impl<H: Host> Vm<H> {
                             location: TraceLocation {
                                 unit: unit_id,
                                 func: func_id,
-                                pc,
+                                pc: Pc(pc),
                             },
                             span: span_id,
                             base,
@@ -3817,7 +3845,7 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         },
                         span_id,
                     );
@@ -3882,7 +3910,7 @@ impl<H: Host> Vm<H> {
                         control.enter(TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         });
                     }
                     P::call_scope_enter(
@@ -3892,13 +3920,13 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: target.unit,
                             func: target.func,
-                            pc: callee_vf.pc_at_ix(0).unwrap_or(0),
+                            pc: Pc(callee_vf.pc_at_ix(0).unwrap_or(0)),
                         },
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         }),
                     );
 
@@ -4006,7 +4034,7 @@ impl<H: Host> Vm<H> {
                         control.enter(TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         });
                     }
                     P::call_scope_enter(
@@ -4016,13 +4044,13 @@ impl<H: Host> Vm<H> {
                         TraceLocation {
                             unit: target.unit,
                             func: target.func,
-                            pc: callee_vf.pc_at_ix(0).unwrap_or(0),
+                            pc: Pc(callee_vf.pc_at_ix(0).unwrap_or(0)),
                         },
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation {
                             unit: unit_id,
                             func: func_id,
-                            pc,
+                            pc: Pc(pc),
                         }),
                     );
 
@@ -4686,7 +4714,7 @@ impl<H: Host> Vm<H> {
                 TraceLocation {
                     unit: unit_id,
                     func: func_id,
-                    pc,
+                    pc: Pc(pc),
                 },
                 base,
                 ValueSources::new(&self.units, args, self.memory.aggs())
@@ -4699,7 +4727,7 @@ impl<H: Host> Vm<H> {
                 ctx.frames.last().map(|frame| TraceLocation {
                     unit: frame.unit,
                     func: frame.func,
-                    pc: frame.pc,
+                    pc: Pc(frame.pc),
                 }),
             );
         }
@@ -4720,7 +4748,7 @@ impl<H: Host> Vm<H> {
         self.memory.commit(checkpoint, outputs).map_err(|error| {
             ctx.trap(
                 site.location.func,
-                site.location.pc,
+                site.location.pc.0,
                 site.span,
                 Trap::AggError(error),
             )
@@ -5489,11 +5517,20 @@ impl Registers {
         TrapInfo {
             unit: self.frames.last().map_or(self.unit, |frame| frame.unit),
             func,
-            pc,
-            span_id,
+            pc: Pc(pc),
+            span_id: span_id_at_boundary(span_id),
             trap,
         }
     }
+}
+
+/// Names a dispatch-loop span id for a trap or trace sink.
+///
+/// The dispatch loop carries span ids as plain `u64` (see `run_frames`); the public surface
+/// names them with [`SpanId`]. Zero never names a span.
+#[inline]
+pub(crate) fn span_id_at_boundary(raw: Option<u64>) -> Option<SpanId> {
+    raw.and_then(|raw| SpanId::try_from(raw).ok())
 }
 
 impl Value {
@@ -5858,8 +5895,8 @@ mod tests {
                 &mut self,
                 _: &Program,
                 location: TraceLocation,
-                _: u32,
-                _: Option<u64>,
+                _: Pc,
+                _: Option<SpanId>,
                 _: u16,
             ) {
                 let (func, pc) = (location.func, location.pc);
@@ -5890,7 +5927,7 @@ mod tests {
                 kind: ScopeKind,
                 depth: usize,
                 _location: TraceLocation,
-                _: Option<u64>,
+                _: Option<SpanId>,
             ) {
                 self.scopes.push((kind, depth));
             }
@@ -5900,7 +5937,7 @@ mod tests {
                 kind: ScopeKind,
                 depth: usize,
                 _location: TraceLocation,
-                _: Option<u64>,
+                _: Option<SpanId>,
                 outcome: TraceOutcome<'_>,
             ) {
                 assert_eq!(self.scopes.pop(), Some((kind, depth)));
@@ -6005,7 +6042,7 @@ mod tests {
                             Some(TraceLocation {
                                 unit: UnitId(0),
                                 func: target,
-                                pc: 0
+                                pc: Pc(0)
                             })
                         );
                         assert_eq!(sink.ends[2].1.unwrap().func, entry);
@@ -6405,7 +6442,7 @@ mod tests {
                 _: ScopeKind,
                 _: usize,
                 _location: TraceLocation,
-                _: Option<u64>,
+                _: Option<SpanId>,
                 outcome: TraceOutcome<'_>,
             ) {
                 self.scopes.push(matches!(outcome, TraceOutcome::Ok));
@@ -6962,8 +6999,8 @@ mod tests {
                 &mut self,
                 _program: &Program,
                 _location: TraceLocation,
-                _next_pc: u32,
-                _span_id: Option<u64>,
+                _next_pc: Pc,
+                _span_id: Option<SpanId>,
                 opcode: u16,
             ) {
                 self.instrs.push(opcode);

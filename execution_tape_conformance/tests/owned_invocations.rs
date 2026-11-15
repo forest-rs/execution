@@ -11,7 +11,7 @@ use execution_tape::{
     callable::Callable,
     contract::Contract,
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::ValueType,
+    program::{Pc, SpanId, ValueType},
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     trace::TraceSink,
     value::{Closure, Value},
@@ -512,7 +512,14 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
         fn values(&mut self, _: &Program, _: ValueEvent<'_>) {
             self.values += 1;
         }
-        fn instr(&mut self, _: &Program, _location: TraceLocation, _: u32, _: Option<u64>, _: u16) {
+        fn instr(
+            &mut self,
+            _: &Program,
+            _location: TraceLocation,
+            _: Pc,
+            _: Option<SpanId>,
+            _: u16,
+        ) {
             self.instructions += 1;
         }
         fn instr_end(
@@ -530,7 +537,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
             _: ScopeKind,
             _: usize,
             _location: TraceLocation,
-            _: Option<u64>,
+            _: Option<SpanId>,
         ) {
             self.enters += 1;
         }
@@ -540,7 +547,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
             _: ScopeKind,
             _: usize,
             _location: TraceLocation,
-            _: Option<u64>,
+            _: Option<SpanId>,
             _: TraceOutcome<'_>,
         ) {
             self.exits += 1;

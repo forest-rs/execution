@@ -7,7 +7,7 @@ use execution_tape::{
     asm::{Asm, Catch, ContractRef, FunctionSig, ProgramBuilder, Reg},
     contract::{Contract, ContractPosition},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{CallSigId, Program, TagId, ValueType},
+    program::{CallSigId, Program, SpanId, TagId, ValueType},
     recording::{RecordLimits, RecordedAnswer, RecordedValue, Recorder, ReplayOutcome},
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink},
     value::{FuncId, FuncRef, Value},
@@ -572,7 +572,7 @@ impl TraceSink for Scopes {
         kind: ScopeKind,
         depth: usize,
         _: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         let ScopeKind::CallFrame { caller, .. } = kind else {
             return;
@@ -587,7 +587,7 @@ impl TraceSink for Scopes {
         kind: ScopeKind,
         depth: usize,
         _: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         let ScopeKind::CallFrame { caller, .. } = kind else {
@@ -857,7 +857,7 @@ fn an_answer_interrupted_by_an_observer_panic_is_terminal() {
             _: ScopeKind,
             _: usize,
             _: TraceLocation,
-            _: Option<u64>,
+            _: Option<SpanId>,
         ) {
             self.entered += 1;
             if self.entered == 3 {
@@ -1008,7 +1008,7 @@ fn a_yield_interrupted_by_an_observer_panic_is_terminal() {
             _: ScopeKind,
             _: usize,
             _: TraceLocation,
-            _: Option<u64>,
+            _: Option<SpanId>,
             outcome: TraceOutcome<'_>,
         ) {
             if matches!(outcome, TraceOutcome::Suspended) {

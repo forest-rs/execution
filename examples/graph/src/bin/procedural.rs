@@ -17,7 +17,7 @@ use execution_tape::{
     asm::{Asm, FunctionAbi, ProgramBuilder, Reg},
     contract::Contract,
     host::{Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::ValueType,
+    program::{Pc, ValueType},
     value::{FuncId, Value},
     verifier::VerifiedProgram,
     vm::Limits,
@@ -45,7 +45,7 @@ const QUALITY_OP: u64 = 7;
 struct Compiled {
     program: Arc<VerifiedProgram>,
     entry: FuncId,
-    ranges: Vec<(u32, Range<usize>)>,
+    ranges: Vec<(Pc, Range<usize>)>,
 }
 
 fn source_range(text: &str) -> Range<usize> {

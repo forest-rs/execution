@@ -10,7 +10,7 @@ use core::mem::size_of;
 use super::VerifiedProgram;
 use crate::arena::{BytesHandle, StrHandle};
 use crate::opcode::Opcode;
-use crate::program::{Function, RegisterTypes, SpanId, ValueType};
+use crate::program::{Function, Pc, RegisterTypes, SpanId, ValueType};
 use crate::typed::{ExecFunc, RegCounts};
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj};
 
@@ -70,9 +70,9 @@ pub struct FunctionStats {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstructionInfo {
     /// Source byte offset within the function.
-    pub pc: u32,
+    pub pc: Pc,
     /// Lexical end of the instruction, not its control-flow successor.
-    pub next_pc: u32,
+    pub next_pc: Pc,
     /// Original bytecode opcode.
     pub opcode: Opcode,
     /// Resolved source span used by runtime tracing, if any.
@@ -164,8 +164,8 @@ impl<'a> VerifiedFunction<'a> {
             .iter()
             .enumerate()
             .map(move |(index, instruction)| InstructionInfo {
-                pc: instruction.offset,
-                next_pc: instruction.end,
+                pc: Pc(instruction.offset),
+                next_pc: Pc(instruction.end),
                 opcode: crate::opcode::code_at(&source[instruction.offset as usize..])
                     .and_then(Opcode::from_code)
                     .expect("verified opcode"),
@@ -464,7 +464,7 @@ mod tests {
         }
         assert_eq!(
             instructions.last().unwrap().next_pc,
-            f.stats().bytecode_bytes
+            Pc(f.stats().bytecode_bytes)
         );
         assert_eq!(f.instructions().len(), f.stats().instruction_count);
     }

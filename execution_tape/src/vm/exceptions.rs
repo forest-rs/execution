@@ -127,7 +127,7 @@ impl<H: Host> Vm<H> {
         location: TraceLocation,
         span_id: Option<u64>,
     ) -> Result<(), TrapInfo> {
-        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc.0, span_id, trap);
         let mut values = Vec::with_capacity(payload.len());
         for &register in payload {
             match ctx.materialize_vreg(budget, base, register, sources) {
@@ -171,7 +171,7 @@ impl<H: Host> Vm<H> {
         location: TraceLocation,
         span_id: Option<u64>,
     ) -> Result<(), TrapInfo> {
-        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc.0, span_id, trap);
         let Some(tag) = self.units.tag(thrown.tag) else {
             return Err(fail(ctx, Trap::UnknownTag { tag: thrown.tag }));
         };
@@ -233,7 +233,7 @@ impl<H: Host> Vm<H> {
         span_id: Option<u64>,
     ) -> Result<(), TrapInfo> {
         let program = prepared.program();
-        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc.0, span_id, trap);
         P::values(trace, program, || ValueEvent::Thrown {
             location,
             tag,
@@ -342,7 +342,7 @@ impl<H: Host> Vm<H> {
             );
         }
         let name = self.units.tag(tag).map_or("", |tag| tag.name()).into();
-        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc.0, span_id, trap);
         let payload = match self.memory.aggs().snapshot(&exception.payload) {
             Ok(payload) => payload,
             Err(error) => return Err(fail(ctx, Trap::AggError(error))),
@@ -388,7 +388,7 @@ impl<H: Host> Vm<H> {
         let handler = TraceLocation {
             unit: catcher.unit,
             func: catcher.func,
-            pc: body.pc_at_ix(target_ix).expect("verified handler entry"),
+            pc: Pc(body.pc_at_ix(target_ix).expect("verified handler entry")),
         };
         let depth = frame + 1;
         let unwound_callbacks = control
@@ -426,7 +426,7 @@ impl<H: Host> Vm<H> {
             if let Some((host, instruction)) = waiting {
                 let host_program = self.units.unit(host.location.unit).program.program();
                 trace.pending = instruction.then_some(host.location);
-                let span = ctx.span_at(host_program, host.location.func, host.location.pc);
+                let span = ctx.span_at(host_program, host.location.func, host.location.pc.0);
                 trace.exit_host(host_program, host.location, span, outcome);
                 trace.instr_end(host_program, None, outcome);
             }
@@ -443,7 +443,7 @@ impl<H: Host> Vm<H> {
         }
         let catcher = ctx.frames.last_mut().expect("catching activation");
         catcher.instr_ix = target_ix;
-        catcher.pc = handler.pc;
+        catcher.pc = handler.pc.0;
         let base = catcher.base;
         let params = body.vregs(catch.handler.params);
         let (payload_params, reference) = if catch.handler.binds_exception {
@@ -454,7 +454,7 @@ impl<H: Host> Vm<H> {
         };
         for (&param, value) in payload_params.iter().zip(&exception.payload) {
             ctx.write_owned_value(base, param, value.clone())
-                .map_err(|trap| ctx.trap(location.func, location.pc, span_id, trap))?;
+                .map_err(|trap| ctx.trap(location.func, location.pc.0, span_id, trap))?;
         }
         if let Some(VReg::Exn(reference)) = reference {
             ctx.write_exn(base, reference, exception);
@@ -475,7 +475,14 @@ impl TraceCtx<'_> {
         if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
             let (kind, depth) = self.scopes.pop().expect("entered host scope");
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(program, kind, depth, location, span, outcome);
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location,
+                    span_id_at_boundary(span),
+                    outcome,
+                );
             }
         }
     }
@@ -494,7 +501,14 @@ impl TraceCtx<'_> {
                 "exit scopes follow actual guest activations"
             );
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(program, kind, depth, location, span, outcome);
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location,
+                    span_id_at_boundary(span),
+                    outcome,
+                );
             }
         }
     }

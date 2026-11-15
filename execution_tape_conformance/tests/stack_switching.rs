@@ -6,7 +6,7 @@
 use execution_tape::{
     asm::{Asm, Catch, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
-    program::{CallSigId, TagId, ValueType},
+    program::{CallSigId, HostSigId, Pc, SpanId, TagId, ValueType},
     value::{FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::{Limits, Trap, Vm},
@@ -537,8 +537,8 @@ impl execution_tape::trace::TraceSink for Scopes {
         &mut self,
         _: &execution_tape::program::Program,
         _: execution_tape::trace::TraceLocation,
-        _: u32,
-        _: Option<u64>,
+        _: Pc,
+        _: Option<SpanId>,
         _: u16,
     ) {
         self.attempts += 1;
@@ -558,7 +558,7 @@ impl execution_tape::trace::TraceSink for Scopes {
         _: execution_tape::trace::ScopeKind,
         depth: usize,
         _: execution_tape::trace::TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         assert_eq!(depth, self.open.len() + 1, "scopes enter at the next depth");
         self.open.push(depth);
@@ -570,7 +570,7 @@ impl execution_tape::trace::TraceSink for Scopes {
         _: execution_tape::trace::ScopeKind,
         depth: usize,
         _: execution_tape::trace::TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
         assert_eq!(self.open.pop(), Some(depth), "scopes exit innermost first");
@@ -938,7 +938,9 @@ fn verifier_keeps_continuations_inside_guest_registers_and_checks_their_instruct
     assert_eq!(
         error,
         VerifyError::ContinuationReference {
-            place: ExceptionPlace::HostSig { host_sig: 0 }
+            place: ExceptionPlace::HostSig {
+                host_sig: HostSigId(0)
+            }
         }
     );
     let error = rejected(|b| {
@@ -948,7 +950,7 @@ fn verifier_keeps_continuations_inside_guest_registers_and_checks_their_instruct
     assert_eq!(
         error,
         VerifyError::ContinuationReference {
-            place: ExceptionPlace::TagPayload { tag: 0 }
+            place: ExceptionPlace::TagPayload { tag: TagId(0) }
         }
     );
 

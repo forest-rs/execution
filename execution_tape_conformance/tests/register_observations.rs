@@ -5,7 +5,7 @@
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
-use execution_tape::program::{Program, ValueType};
+use execution_tape::program::{Pc, Program, ValueType};
 use execution_tape::trace::{RegisterEvent, RegisterPhase, TraceLocation, TraceMask, TraceSink};
 use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
@@ -24,13 +24,13 @@ impl Host for NoHost {
         Err(HostError::UnknownSymbol)
     }
 }
-type Observation = (u32, RegisterPhase, Vec<(Reg, Value)>);
+type Observation = (Pc, RegisterPhase, Vec<(Reg, Value)>);
 
 #[derive(Default)]
 struct Observe {
     masks: Vec<TraceMask>,
     events: Vec<Observation>,
-    selected: Option<u32>,
+    selected: Option<Pc>,
 }
 impl TraceSink for Observe {
     fn run_mask(&mut self, _: &Program, mask: TraceMask) {
@@ -133,7 +133,7 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
             .all(|(pc, _, _)| Some(*pc) == sink.selected)
     );
 }
-fn sink_selected_pc(p: &execution_tape::verifier::VerifiedProgram) -> u32 {
+fn sink_selected_pc(p: &execution_tape::verifier::VerifiedProgram) -> Pc {
     execution_tape::disasm::disassemble_function(p.program(), FuncId(0))
         .unwrap()
         .instrs()

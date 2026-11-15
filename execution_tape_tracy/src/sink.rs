@@ -4,7 +4,7 @@
 use crate::resolver::{
     DefaultLabelResolver, LabelResolver, default_call_frame_label, default_host_call_label,
 };
-use execution_tape::program::Program;
+use execution_tape::program::{Program, SpanId};
 use execution_tape::source::{BoundSources, SourceError, SourceMap, SourceRange};
 use execution_tape::trace::{CodeLocation, ScopeKind, TraceLocation, TraceMask, TraceSink};
 use std::string::String;
@@ -154,7 +154,7 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
                 .ok()
                 .map(|line| (source.document().name.as_str(), line))
         });
-        let (file, line) = mapped.unwrap_or(("execution_tape.bytecode", location.pc));
+        let (file, line) = mapped.unwrap_or(("execution_tape.bytecode", location.pc.0));
         Some(client.span_alloc(Some(label), function_name, file, line, 0))
     }
 
@@ -182,7 +182,7 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
     ) {
         self.on_scope_enter(program, kind, depth, location.code());
     }
@@ -193,7 +193,7 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         kind: ScopeKind,
         depth: usize,
         _location: TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
         _outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
         self.on_scope_exit(kind, depth);
@@ -230,6 +230,7 @@ impl<R> Drop for ProfilingTraceSink<'_, R> {
 #[cfg(test)]
 mod tests {
     use super::ProfilingTraceSink;
+    use execution_tape::program::Pc;
     use execution_tape::trace::ScopeKind;
     use execution_tape::value::{FuncId, FuncRef, UnitId};
 
@@ -246,7 +247,7 @@ mod tests {
             "test",
             execution_tape::trace::CodeLocation {
                 func: FuncId(0),
-                pc: 0,
+                pc: Pc(0),
             },
         );
     }

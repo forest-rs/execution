@@ -16,7 +16,7 @@ use core::num::{NonZeroU32, NonZeroU64};
 use crate::contract::{Contract, ContractId, ContractKinds, ContractTable, ContractTableBuilder};
 use crate::format::{DecodeError, Reader, Writer};
 use crate::host::{HostSig, SigHash, sig_hash};
-use crate::value::Decimal;
+use crate::value::{Decimal, FuncId};
 
 #[cfg(doc)]
 use crate::verifier;
@@ -147,13 +147,13 @@ pub struct RegionId(pub u32);
 /// sit beside, so a swapped `const_i32(7, dst)` does not compile. Write `Reg(1)` for r1 and read
 /// the index with `.0`; no integer converts to a `Reg` implicitly.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0308
 /// # use execution_tape::asm::{Asm, Reg};
 /// let mut asm = Asm::new();
 /// asm.const_i32(7, Reg(1)); // Swapped operands no longer compile.
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0308
 /// # use execution_tape::asm::Asm;
 /// let mut asm = Asm::new();
 /// asm.mov(2, 1); // A register is a `Reg`, never a bare integer.
@@ -180,6 +180,71 @@ impl core::fmt::Display for Reg {
     }
 }
 
+/// A bytecode position: the byte offset of an instruction boundary within one function.
+///
+/// Instructions, jump and handler targets, labels, region runs, traps, traces and verifier
+/// diagnostics all name code positions with `Pc`. A position may also be the function's
+/// bytecode length, the end of its last instruction. Offsets and deltas that are not positions,
+/// such as [`SpanEntry::pc_delta`], stay integers. `Pc` displays as its bare offset, so
+/// `format!("pc {pc}")` reads `pc 12`.
+///
+/// ```compile_fail,E0308
+/// # use execution_tape::asm::ProgramBuilder;
+/// # use execution_tape::value::FuncId;
+/// let program = ProgramBuilder::new().build();
+/// program.label_name(FuncId(0), 4); // A position is a `Pc`, never a bare integer.
+/// ```
+///
+/// ```compile_fail,E0308
+/// # use execution_tape::asm::ProgramBuilder;
+/// # use execution_tape::program::Pc;
+/// let program = ProgramBuilder::new().build();
+/// program.label_name(0, Pc(4)); // A function is a `FuncId`.
+/// ```
+///
+/// ```
+/// # use execution_tape::asm::ProgramBuilder;
+/// # use execution_tape::program::Pc;
+/// # use execution_tape::value::FuncId;
+/// let program = ProgramBuilder::new().build();
+/// assert_eq!(program.label_name(FuncId(0), Pc(4)), None);
+/// assert_eq!(format!("function #{}, pc {}", FuncId(0), Pc(4)), "function #0, pc 4");
+/// ```
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pc(pub u32);
+
+impl From<Pc> for u32 {
+    fn from(pc: Pc) -> Self {
+        pc.0
+    }
+}
+
+/// Implements `Display` as the bare index for program-local ids, so `format!("tag {tag}")`
+/// reads the same as it did for the raw integer.
+macro_rules! display_index {
+    ($($id:ty),* $(,)?) => {
+        $(
+            impl core::fmt::Display for $id {
+                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    self.0.fmt(f)
+                }
+            }
+        )*
+    };
+}
+
+display_index!(
+    Pc,
+    ConstId,
+    HostSigId,
+    CallSigId,
+    TagId,
+    RegionId,
+    TypeId,
+    FieldNameId,
+    ElemTypeId,
+);
+
 /// One handler clause of a protected region. Clauses are tried in order.
 ///
 /// Targets are byte offsets of block headers in the same function. A tag clause's target
@@ -197,24 +262,24 @@ pub enum CatchClause {
         /// Caught tag.
         tag: TagId,
         /// Handler block header.
-        target: u32,
+        target: Pc,
     },
     /// Catches every exception, binding nothing.
     All {
         /// Handler block header.
-        target: u32,
+        target: Pc,
     },
     /// Catches exactly one tag, binding its payload and then the exception reference.
     TagRef {
         /// Caught tag.
         tag: TagId,
         /// Handler block header.
-        target: u32,
+        target: Pc,
     },
     /// Catches every exception, binding only the exception reference.
     AllRef {
         /// Handler block header.
-        target: u32,
+        target: Pc,
     },
     /// Handles a suspension to `tag` from a continuation run by the protected `resume`.
     ///
@@ -224,14 +289,14 @@ pub enum CatchClause {
         /// Handled tag.
         tag: TagId,
         /// Handler block header.
-        target: u32,
+        target: Pc,
     },
 }
 
 impl CatchClause {
     /// Handler block header.
     #[must_use]
-    pub fn target(self) -> u32 {
+    pub fn target(self) -> Pc {
         match self {
             Self::Tag { target, .. }
             | Self::All { target }
@@ -285,9 +350,9 @@ pub struct RegionEntry {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct RegionRun {
     /// First covered instruction.
-    pub start_pc: u32,
+    pub start_pc: Pc,
     /// End of the covered range: the next instruction boundary or the bytecode length.
-    pub end_pc: u32,
+    pub end_pc: Pc,
     /// Innermost region for these instructions.
     pub region: RegionId,
 }
@@ -607,9 +672,9 @@ pub struct Program {
     pub register_type_ids: Vec<u32>,
     /// Packed optional value-name arena for function signatures.
     ///
-    /// Entries are symbol table indices (so `0` means “no name”). Function signatures store
-    /// ranges into this arena for argument/return names.
-    pub value_name_ids: Vec<u32>,
+    /// `None` marks an unnamed value; the encoding stores it as symbol index `0`. Function
+    /// signatures store ranges into this arena for argument/return names.
+    pub value_name_ids: Vec<Option<SymbolId>>,
     /// Packed bytecode arena; functions reference slices by [`ByteRange`].
     pub bytecode_data: Vec<u8>,
     /// Packed span arena; functions reference slices by [`ByteRange`] interpreted as a span-entry range.
@@ -633,8 +698,8 @@ pub struct Program {
 /// A function-name entry.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FunctionNameEntry {
-    /// Function index within the program.
-    pub func: u32,
+    /// Named function.
+    pub func: FuncId,
     /// Symbol id naming the function.
     pub name: SymbolId,
 }
@@ -642,10 +707,10 @@ pub struct FunctionNameEntry {
 /// A label-name entry (per-function pc -> name).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct LabelNameEntry {
-    /// Function index within the program.
-    pub func: u32,
-    /// Bytecode pc (byte offset within the function).
-    pub pc: u32,
+    /// Function containing the label.
+    pub func: FuncId,
+    /// Labelled instruction boundary.
+    pub pc: Pc,
     /// Symbol id naming the label.
     pub name: SymbolId,
 }
@@ -1161,7 +1226,7 @@ impl Program {
 
     /// Returns the function name for `func`, if present.
     #[must_use]
-    pub fn function_name(&self, func: u32) -> Option<&str> {
+    pub fn function_name(&self, func: FuncId) -> Option<&str> {
         self.function_names
             .iter()
             .find(|e| e.func == func)
@@ -1170,7 +1235,7 @@ impl Program {
 
     /// Returns the label name for `func` at `pc`, if present.
     #[must_use]
-    pub fn label_name(&self, func: u32, pc: u32) -> Option<&str> {
+    pub fn label_name(&self, func: FuncId, pc: Pc) -> Option<&str> {
         self.labels
             .iter()
             .find(|e| e.func == func && e.pc == pc)
@@ -1179,40 +1244,31 @@ impl Program {
 
     /// Returns the function input name for `func` and `arg`, if present.
     #[must_use]
-    pub fn function_input_name(&self, func: u32, arg: u32) -> Option<&str> {
-        let f = self.functions.get(func as usize)?;
+    pub fn function_input_name(&self, func: FuncId, arg: u32) -> Option<&str> {
+        let f = self.functions.get(func.0 as usize)?;
         if arg >= f.arg_count {
             return None;
         }
         let ids = self.function_arg_name_ids(f).ok()?;
-        let v = *ids.get(arg as usize)?;
-        if v == 0 {
-            return None;
-        }
-        let sym = SymbolId(NonZeroU32::new(v)?);
-        self.symbol_str(sym).ok()
+        self.symbol_str((*ids.get(arg as usize)?)?).ok()
     }
 
     /// Returns the function output name for `func` and `ret`, if present.
     #[must_use]
-    pub fn function_output_name(&self, func: u32, ret: u32) -> Option<&str> {
-        let f = self.functions.get(func as usize)?;
+    pub fn function_output_name(&self, func: FuncId, ret: u32) -> Option<&str> {
+        let f = self.functions.get(func.0 as usize)?;
         if ret >= f.ret_count {
             return None;
         }
         let ids = self.function_ret_name_ids(f).ok()?;
-        let v = *ids.get(ret as usize)?;
-        if v == 0 {
-            return None;
-        }
-        let sym = SymbolId(NonZeroU32::new(v)?);
-        self.symbol_str(sym).ok()
+        self.symbol_str((*ids.get(ret as usize)?)?).ok()
     }
 
-    /// Returns a slice of argument name ids for `func`.
-    ///
-    /// Entries are symbol table indices (so `0` means “no name”).
-    pub fn function_arg_name_ids(&self, func: &Function) -> Result<&[u32], DecodeError> {
+    /// Returns the argument names for `func`, `None` for an unnamed argument.
+    pub fn function_arg_name_ids(
+        &self,
+        func: &Function,
+    ) -> Result<&[Option<SymbolId>], DecodeError> {
         let start = func.arg_name_ids.offset as usize;
         let end = func.arg_name_ids.end()? as usize;
         self.value_name_ids
@@ -1220,10 +1276,11 @@ impl Program {
             .ok_or(DecodeError::OutOfBounds)
     }
 
-    /// Returns a slice of return name ids for `func`.
-    ///
-    /// Entries are symbol table indices (so `0` means “no name”).
-    pub fn function_ret_name_ids(&self, func: &Function) -> Result<&[u32], DecodeError> {
+    /// Returns the return names for `func`, `None` for an unnamed return.
+    pub fn function_ret_name_ids(
+        &self,
+        func: &Function,
+    ) -> Result<&[Option<SymbolId>], DecodeError> {
         let start = func.ret_name_ids.offset as usize;
         let end = func.ret_name_ids.end()? as usize;
         self.value_name_ids
@@ -1594,7 +1651,7 @@ impl Program {
                 } else {
                     payload.write_u8(1);
                     for &name in arg_names {
-                        payload.write_uleb128_u32(name);
+                        payload.write_uleb128_u32(name.map_or(0, SymbolId::index));
                     }
                 }
                 let ret_types = f
@@ -1610,7 +1667,7 @@ impl Program {
                 } else {
                     payload.write_u8(1);
                     for &name in ret_names {
-                        payload.write_uleb128_u32(name);
+                        payload.write_uleb128_u32(name.map_or(0, SymbolId::index));
                     }
                 }
             }
@@ -1729,14 +1786,14 @@ impl Program {
                         if let Some(tag) = clause.tag() {
                             payload.write_uleb128_u32(tag.0);
                         }
-                        payload.write_uleb128_u32(clause.target());
+                        payload.write_uleb128_u32(clause.target().0);
                     }
                 }
                 let runs = f.region_runs(self).expect("valid region runs");
                 payload.write_uleb128_u64(runs.len() as u64);
                 for run in runs {
-                    payload.write_uleb128_u32(run.start_pc);
-                    payload.write_uleb128_u32(run.end_pc);
+                    payload.write_uleb128_u32(run.start_pc.0);
+                    payload.write_uleb128_u32(run.end_pc.0);
                     payload.write_uleb128_u32(run.region.0);
                 }
             }
@@ -1773,7 +1830,7 @@ impl Program {
             });
             payload.write_uleb128_u64(function_names.len() as u64);
             for e in &function_names {
-                payload.write_uleb128_u32(e.func);
+                payload.write_uleb128_u32(e.func.0);
                 payload.write_uleb128_u32(e.name.index());
             }
 
@@ -1786,8 +1843,8 @@ impl Program {
             });
             payload.write_uleb128_u64(labels.len() as u64);
             for e in &labels {
-                payload.write_uleb128_u32(e.func);
-                payload.write_uleb128_u32(e.pc);
+                payload.write_uleb128_u32(e.func.0);
+                payload.write_uleb128_u32(e.pc.0);
                 payload.write_uleb128_u32(e.name.index());
             }
 
@@ -1890,7 +1947,7 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
         let func = r.read_uleb128_u32()?;
         let name = r.read_uleb128_u32_nz()?;
         function_names.push(FunctionNameEntry {
-            func,
+            func: FuncId(func),
             name: SymbolId(name),
         });
     }
@@ -1902,8 +1959,8 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
         let pc = r.read_uleb128_u32()?;
         let name = r.read_uleb128_u32_nz()?;
         labels.push(LabelNameEntry {
-            func,
-            pc,
+            func: FuncId(func),
+            pc: Pc(pc),
             name: SymbolId(name),
         });
     }
@@ -2141,7 +2198,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     // sigs (appended after the function loop) — so `decode(p.encode()) == p`
     // holds for builder-produced programs. See `ProgramBuilder::build`.
     let mut value_types: Vec<ValueType> = Vec::new();
-    let mut value_name_ids: Vec<u32> = Vec::new();
+    let mut value_name_ids: Vec<Option<SymbolId>> = Vec::new();
     let mut host_sigs: Vec<HostSigEntry> = Vec::with_capacity(host_sig_defs.len());
     for (symbol, sig_hash, args, rets) in host_sig_defs {
         let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
@@ -2381,7 +2438,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         return Err(DecodeError::OutOfBounds);
     }
     for e in &names.function_names {
-        if usize::try_from(e.func)
+        if usize::try_from(e.func.0)
             .ok()
             .and_then(|i| functions.get(i))
             .is_none()
@@ -2393,10 +2450,13 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         }
     }
     for e in &names.labels {
-        let Some(func) = usize::try_from(e.func).ok().and_then(|i| functions.get(i)) else {
+        let Some(func) = usize::try_from(e.func.0)
+            .ok()
+            .and_then(|i| functions.get(i))
+        else {
             return Err(DecodeError::OutOfBounds);
         };
-        if e.pc > func.bytecode.len {
+        if e.pc > Pc(func.bytecode.len) {
             return Err(DecodeError::OutOfBounds);
         }
         if symbols.get(e.name.index() as usize).is_none() {
@@ -2415,10 +2475,10 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 .get(start..end)
                 .ok_or(DecodeError::OutOfBounds)?;
             for &v in slice {
-                if v == 0 {
+                let Some(v) = v else {
                     continue;
-                }
-                let sym_ix = usize::try_from(v).map_err(|_| DecodeError::OutOfBounds)?;
+                };
+                let sym_ix = usize::try_from(v.index()).map_err(|_| DecodeError::OutOfBounds)?;
                 if symbols.get(sym_ix).is_none() {
                     return Err(DecodeError::OutOfBounds);
                 }
@@ -2815,7 +2875,12 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
     })
 }
 
-type DecodedFunctionSig = (Vec<ContractId>, Vec<ContractId>, Vec<u32>, Vec<u32>);
+type DecodedFunctionSig = (
+    Vec<ContractId>,
+    Vec<ContractId>,
+    Vec<Option<SymbolId>>,
+    Vec<Option<SymbolId>>,
+);
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
 type DecodedCallSig = (Vec<ContractId>, Vec<ContractId>);
 type DecodedTag = (SymbolId, Vec<ContractId>);
@@ -2838,7 +2903,7 @@ fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, Decod
         } else if has_arg_names == 1 {
             let mut names = Vec::with_capacity(argc);
             for _ in 0..argc {
-                names.push(r.read_uleb128_u32()?);
+                names.push(NonZeroU32::new(r.read_uleb128_u32()?).map(SymbolId));
             }
             names
         } else {
@@ -2855,7 +2920,7 @@ fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, Decod
         } else if has_ret_names == 1 {
             let mut names = Vec::with_capacity(retc);
             for _ in 0..retc {
-                names.push(r.read_uleb128_u32()?);
+                names.push(NonZeroU32::new(r.read_uleb128_u32()?).map(SymbolId));
             }
             names
         } else {
@@ -2988,21 +3053,21 @@ fn decode_regions(payload: &[u8]) -> Result<Vec<DecodedProtection>, DecodeError>
                 clauses.push(match r.read_u8()? {
                     0 => CatchClause::Tag {
                         tag: TagId(r.read_uleb128_u32()?),
-                        target: r.read_uleb128_u32()?,
+                        target: Pc(r.read_uleb128_u32()?),
                     },
                     1 => CatchClause::All {
-                        target: r.read_uleb128_u32()?,
+                        target: Pc(r.read_uleb128_u32()?),
                     },
                     2 => CatchClause::TagRef {
                         tag: TagId(r.read_uleb128_u32()?),
-                        target: r.read_uleb128_u32()?,
+                        target: Pc(r.read_uleb128_u32()?),
                     },
                     3 => CatchClause::AllRef {
-                        target: r.read_uleb128_u32()?,
+                        target: Pc(r.read_uleb128_u32()?),
                     },
                     4 => CatchClause::On {
                         tag: TagId(r.read_uleb128_u32()?),
-                        target: r.read_uleb128_u32()?,
+                        target: Pc(r.read_uleb128_u32()?),
                     },
                     _ => return Err(DecodeError::OutOfBounds),
                 });
@@ -3013,8 +3078,8 @@ fn decode_regions(payload: &[u8]) -> Result<Vec<DecodedProtection>, DecodeError>
         let mut runs = Vec::with_capacity(run_count);
         for _ in 0..run_count {
             runs.push(RegionRun {
-                start_pc: r.read_uleb128_u32()?,
-                end_pc: r.read_uleb128_u32()?,
+                start_pc: Pc(r.read_uleb128_u32()?),
+                end_pc: Pc(r.read_uleb128_u32()?),
                 region: RegionId(r.read_uleb128_u32()?),
             });
         }
@@ -3513,7 +3578,10 @@ mod tests {
                 }],
             }],
         );
-        p.value_name_ids = vec![3, 4];
+        p.value_name_ids = vec![
+            NonZeroU32::new(3).map(SymbolId),
+            NonZeroU32::new(4).map(SymbolId),
+        ];
         p.functions[0].arg_name_ids = ByteRange { offset: 0, len: 1 };
         p.functions[0].ret_name_ids = ByteRange { offset: 1, len: 1 };
 
@@ -3710,12 +3778,12 @@ mod tests {
         );
         p.program_name = Some(SymbolId(NonZeroU32::new(1).unwrap()));
         p.function_names = vec![FunctionNameEntry {
-            func: 0,
+            func: FuncId(0),
             name: SymbolId(NonZeroU32::new(2).unwrap()),
         }];
         p.labels = vec![LabelNameEntry {
-            func: 0,
-            pc: 0,
+            func: FuncId(0),
+            pc: Pc(0),
             name: SymbolId(NonZeroU32::new(3).unwrap()),
         }];
 
@@ -3724,8 +3792,8 @@ mod tests {
         assert_eq!(back, p);
 
         assert_eq!(back.name(), Some("my_program"));
-        assert_eq!(back.function_name(0), Some("main"));
-        assert_eq!(back.label_name(0, 0), Some("entry"));
+        assert_eq!(back.function_name(FuncId(0)), Some("main"));
+        assert_eq!(back.label_name(FuncId(0), Pc(0)), Some("entry"));
     }
 
     #[test]

@@ -3,8 +3,9 @@
 
 //! Raw containers must satisfy the same executable-body invariant as assembled functions.
 
+use execution_tape::value::FuncId;
 use execution_tape::{
-    program::{FunctionDef, Program, TypeTableDef, ValueType},
+    program::{FunctionDef, Pc, Program, TypeTableDef, ValueType},
     verifier::{
         ProgramAnalysis, VerifyConfig, VerifyError, verify_program, verify_program_owned,
         verify_program_owned_with_lints, verify_program_with_lints,
@@ -26,7 +27,10 @@ fn empty_function_is_rejected_at_every_preparation_entrypoint() {
         }],
     );
     let config = VerifyConfig::default();
-    let expected = VerifyError::MissingTerminator { func: 0, pc: 0 };
+    let expected = VerifyError::MissingTerminator {
+        func: FuncId(0),
+        pc: Pc(0),
+    };
     assert_eq!(verify_program(&program, &config), Err(expected.clone()));
     assert!(
         matches!(verify_program_owned(program.clone(), &config), Err(rejected) if rejected.error == expected)

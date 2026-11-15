@@ -6,7 +6,7 @@
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
-use execution_tape::program::ValueType;
+use execution_tape::program::{Pc, ValueType};
 use execution_tape::recording::{
     InstructionCapture, InstructionOutcome, InstructionStatus, RecordLimits, Recorder,
     ReplayOutcome,
@@ -227,7 +227,7 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
     selected.reverse();
     let duplicate = selected
         .iter()
-        .find(|watch| watch.location.func == FuncId(1) && watch.location.pc == 0)
+        .find(|watch| watch.location.func == FuncId(1) && watch.location.pc == Pc(0))
         .unwrap()
         .clone();
     selected.push(execution_tape::recording::RegisterWatch {
@@ -452,7 +452,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
     let location = TraceLocation {
         unit: UnitId(0),
         func: FuncId(0),
-        pc: 0,
+        pc: Pc(0),
     };
     recorder.run_start(p.program(), FuncRef::new(UnitId(0), FuncId(0)), 0);
     recorder.values(

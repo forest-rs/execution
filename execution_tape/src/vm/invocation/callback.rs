@@ -123,7 +123,7 @@ impl<H: Host> Running<'_, '_, H> {
         let span = self.continuation.ctx.span_at(
             self.vm.units.unit(pending.location.unit).program.program(),
             pending.location.func,
-            pending.location.pc,
+            pending.location.pc.0,
         );
         let result = self.prepare_callback(pending, &callee, args);
         match result {
@@ -132,7 +132,7 @@ impl<H: Host> Running<'_, '_, H> {
                 self.continuation.control.pending_host = None;
                 let error = self.continuation.ctx.trap(
                     pending.location.func,
-                    pending.location.pc,
+                    pending.location.pc.0,
                     span,
                     trap,
                 );
@@ -299,7 +299,7 @@ impl<H: Host> Running<'_, '_, H> {
             TraceLocation {
                 unit,
                 func: function,
-                pc: prepared.pc_at_ix(0).unwrap_or(0),
+                pc: Pc(prepared.pc_at_ix(0).unwrap_or(0)),
             },
             prepared.span_at_ix(0).map(|span| span.get()),
             Some(pending.location),
@@ -334,7 +334,7 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     let program = prepared.program();
     let unit = ctx.frames.last().expect("returning callback").unit;
     vm.check_result_contracts(ctx, budget, unit, location.func, body, base, rets)
-        .map_err(|trap| ctx.trap(location.func, location.pc, span, trap))?;
+        .map_err(|trap| ctx.trap(location.func, location.pc.0, span, trap))?;
     let mut values = Vec::with_capacity(rets.len());
     for &reg in rets {
         values.push(
@@ -344,7 +344,7 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
                 reg,
                 ValueSources::new(&vm.units, root_args, vm.memory.aggs()),
             )
-            .map_err(|trap| ctx.trap(location.func, location.pc, span, trap))?,
+            .map_err(|trap| ctx.trap(location.func, location.pc.0, span, trap))?,
         );
     }
     let callbacks = control.callbacks.as_mut().expect("callback root");

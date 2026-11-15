@@ -8,7 +8,7 @@ use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder, Reg},
     host::{HostContext, HostError, HostSig, SigHash},
-    program::ValueType,
+    program::{Pc, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMapping},
     value::FuncId,
     verifier::VerifiedProgram,
@@ -35,7 +35,7 @@ impl Host for Counter {
     }
 }
 
-fn program(trap: bool) -> (VerifiedProgram, FuncId, u32, SourceMap) {
+fn program(trap: bool) -> (VerifiedProgram, FuncId, Pc, SourceMap) {
     let mut b = ProgramBuilder::new();
     let echo = b.host_sig_for(
         "publish",

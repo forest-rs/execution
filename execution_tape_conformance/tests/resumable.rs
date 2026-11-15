@@ -7,7 +7,7 @@ use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder, Reg},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::{Program, ValueType},
+    program::{Program, SpanId, ValueType},
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink},
     value::{FuncId, Value},
@@ -140,7 +140,7 @@ impl TraceSink for Events {
         _: ScopeKind,
         _: usize,
         _location: execution_tape::trace::TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         self.entered += 1;
     }
@@ -150,7 +150,7 @@ impl TraceSink for Events {
         _: ScopeKind,
         _: usize,
         _location: execution_tape::trace::TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         self.cancelled_scopes += usize::from(matches!(outcome, TraceOutcome::Cancelled));
@@ -374,7 +374,7 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
             _: ScopeKind,
             _: usize,
             _location: execution_tape::trace::TraceLocation,
-            _: Option<u64>,
+            _: Option<SpanId>,
             outcome: TraceOutcome<'_>,
         ) {
             if !self.instruction && !self.fired && matches!(outcome, TraceOutcome::Ok) {

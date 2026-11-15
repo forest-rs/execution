@@ -12,22 +12,32 @@
 use super::{VerifyError, check_expected, tags};
 use crate::bytecode::Instr;
 use crate::contract::ContractKinds;
-use crate::program::{CallSigId, Program, Reg, RegisterTypes, TagId, ValueType};
+use crate::program::{CallSigId, Pc, Program, Reg, RegisterTypes, TagId, ValueType};
+use crate::value::FuncId;
 
-fn call_sig_in_bounds(program: &Program, func: u32, pc: u32, id: u32) -> Result<(), VerifyError> {
+fn call_sig_in_bounds(
+    program: &Program,
+    func: FuncId,
+    pc: u32,
+    id: u32,
+) -> Result<(), VerifyError> {
     if program.call_sig(CallSigId(id)).is_none() {
         return Err(VerifyError::CallSigOutOfBounds {
             func,
-            pc,
-            call_sig: id,
+            pc: Pc(pc),
+            call_sig: CallSigId(id),
         });
     }
     Ok(())
 }
 
-fn tag_in_bounds(program: &Program, func: u32, pc: u32, tag: u32) -> Result<(), VerifyError> {
+fn tag_in_bounds(program: &Program, func: FuncId, pc: u32, tag: u32) -> Result<(), VerifyError> {
     if program.tag(TagId(tag)).is_none() {
-        return Err(VerifyError::TagOutOfBounds { func, pc, tag });
+        return Err(VerifyError::TagOutOfBounds {
+            func,
+            pc: Pc(pc),
+            tag: TagId(tag),
+        });
     }
     Ok(())
 }
@@ -35,7 +45,7 @@ fn tag_in_bounds(program: &Program, func: u32, pc: u32, tag: u32) -> Result<(), 
 /// Checks that every call signature and tag an instruction names exists.
 pub(super) fn check_ids(
     program: &Program,
-    func: u32,
+    func: FuncId,
     pc: u32,
     instr: &Instr,
 ) -> Result<(), VerifyError> {
@@ -71,7 +81,7 @@ fn sig_arity(program: &Program, call_sig: u32) -> (usize, usize) {
 /// `require_r0` rejects an effect operand other than `r0`, as for calls.
 pub(super) fn check_structure(
     program: &Program,
-    func: u32,
+    func: FuncId,
     pc: u32,
     instr: &Instr,
     require_r0: impl Fn(u32, u32) -> Result<(), VerifyError>,
@@ -87,7 +97,7 @@ pub(super) fn check_structure(
         } => {
             require_r0(*eff_in, *eff_out)?;
             if (args.len(), rets.len()) != sig_arity(program, *call_sig) {
-                return Err(VerifyError::CallArityMismatch { func, pc });
+                return Err(VerifyError::CallArityMismatch { func, pc: Pc(pc) });
             }
         }
         Instr::ResumeThrow {
@@ -102,7 +112,7 @@ pub(super) fn check_structure(
             require_r0(*eff_in, *eff_out)?;
             tags::check_throw_arity(program, func, pc, TagId(*tag), args.len())?;
             if rets.len() != sig_arity(program, *call_sig).1 {
-                return Err(VerifyError::CallArityMismatch { func, pc });
+                return Err(VerifyError::CallArityMismatch { func, pc: Pc(pc) });
             }
         }
         Instr::Suspend {
@@ -116,7 +126,7 @@ pub(super) fn check_structure(
             tags::check_throw_arity(program, func, pc, TagId(*tag), args.len())?;
             let entry = program.tag(TagId(*tag)).expect("checked tag");
             if rets.len() != entry.results.len as usize {
-                return Err(VerifyError::CallArityMismatch { func, pc });
+                return Err(VerifyError::CallArityMismatch { func, pc: Pc(pc) });
             }
         }
         Instr::ContBind {
@@ -127,9 +137,9 @@ pub(super) fn check_structure(
         } => {
             let mismatch = || VerifyError::ContBindSignature {
                 func,
-                pc,
-                from_sig: *from_sig,
-                to_sig: *to_sig,
+                pc: Pc(pc),
+                from_sig: CallSigId(*from_sig),
+                to_sig: CallSigId(*to_sig),
             };
             let contracts = |id: u32| {
                 let entry = program.call_sig(CallSigId(id)).expect("checked call sig");
@@ -160,7 +170,7 @@ pub(super) fn check_structure(
 /// Checks each register's declared kind against the instruction's signature or tag.
 pub(super) fn check_types(
     program: &Program,
-    func: u32,
+    func: FuncId,
     pc: u32,
     instr: &Instr,
     types: RegisterTypes<'_>,
@@ -176,8 +186,8 @@ pub(super) fn check_types(
         let entry = program.call_sig(CallSigId(id)).expect("checked call sig");
         let malformed = |_| VerifyError::CallIndirectSigMalformed {
             func,
-            pc,
-            call_sig: id,
+            pc: Pc(pc),
+            call_sig: CallSigId(id),
         };
         let args = program.call_sig_args(entry).map_err(malformed)?;
         let rets = program.call_sig_rets(entry).map_err(malformed)?;
@@ -187,7 +197,11 @@ pub(super) fn check_types(
         let entry = program.tag(TagId(tag)).expect("checked tag");
         program
             .tag_results(entry)
-            .map_err(|_| VerifyError::TagOutOfBounds { func, pc, tag })
+            .map_err(|_| VerifyError::TagOutOfBounds {
+                func,
+                pc: Pc(pc),
+                tag: TagId(tag),
+            })
     };
     match instr {
         Instr::ContNew {

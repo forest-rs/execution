@@ -75,7 +75,7 @@ fn saved_capture_resolves_instruction_locations_against_saved_program() {
                     .unwrap();
                 let instruction = function
                     .instructions()
-                    .find(|instruction| u64::from(instruction.pc) == number("pc"))
+                    .find(|instruction| u64::from(instruction.pc.0) == number("pc"))
                     .expect("captured PC is an instruction boundary");
                 assert_eq!(u64::from(instruction.opcode.code()), number("opcode"));
                 let source = bound

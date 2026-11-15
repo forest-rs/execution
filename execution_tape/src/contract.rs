@@ -815,6 +815,7 @@ impl PartialEq<Vec<ValueType>> for ContractKinds<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::program::Pc;
     use alloc::vec;
 
     #[test]
@@ -831,8 +832,8 @@ mod tests {
         };
         assert_eq!(format!("{error}"), "value[0][0]: expected bool, found i64");
         let rejected = crate::verifier::VerifyError::ContractMismatch {
-            func: 2,
-            pc: 15,
+            func: FuncId(2),
+            pc: Pc(15),
             position: ContractPosition::Result { index: 0 },
             error: error.clone(),
         };

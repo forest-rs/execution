@@ -6,7 +6,7 @@
 use execution_tape::aggregates::{AggError, ValueSnapshot};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
-use execution_tape::program::{HostSigId, Program, ValueType};
+use execution_tape::program::{HostSigId, Pc, Program, ValueType};
 use execution_tape::trace::{
     HostCallOutcome, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
@@ -344,7 +344,7 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
             TraceLocation {
                 unit: UnitId(0),
                 func: FuncId(0),
-                pc: 0
+                pc: Pc(0)
             }
         );
         assert_eq!(*import, HostSigId(0));

@@ -4,7 +4,7 @@
 use super::*;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
-use execution_tape::program::ValueType;
+use execution_tape::program::{Pc, ValueType};
 use execution_tape::recording::{RecordLimits, RecordedValue, Recorder};
 use execution_tape::trace::CodeLocation;
 use execution_tape::trace::TraceSink;
@@ -391,7 +391,7 @@ fn compact_failures_keep_boundary_location_and_reason_visible() {
         location: Some(TraceLocation {
             unit: UnitId(0),
             func: FuncId(7),
-            pc: 42,
+            pc: Pc(42),
         }),
         reason: Divergence::Value {
             aggregate: None,
@@ -845,7 +845,7 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
             watches: vec![execution_tape::recording::RegisterWatch {
                 location: CodeLocation {
                     func: callee,
-                    pc: 0,
+                    pc: Pc(0),
                 },
                 registers: vec![Reg(1)],
             }],

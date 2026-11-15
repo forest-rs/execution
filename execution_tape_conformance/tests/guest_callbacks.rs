@@ -9,7 +9,7 @@ use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder, Reg},
     contract::Contract,
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::{HostTypeId, Program, ValueType},
+    program::{HostTypeId, Pc, Program, SpanId, ValueType},
     recording::{
         ControlAction, InstructionCapture, InstructionStatus, RecordLimits, Recorder, ReplayOutcome,
     },
@@ -575,7 +575,7 @@ struct Trace {
     panic_callback_scope: bool,
 }
 impl TraceSink for Trace {
-    fn instr(&mut self, _: &Program, _location: TraceLocation, _: u32, _: Option<u64>, _: u16) {
+    fn instr(&mut self, _: &Program, _location: TraceLocation, _: Pc, _: Option<SpanId>, _: u16) {
         self.instr += 1;
     }
     fn instr_end(
@@ -593,7 +593,7 @@ impl TraceSink for Trace {
         kind: ScopeKind,
         depth: usize,
         _location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         self.enter += 1;
         assert!(
@@ -609,7 +609,7 @@ impl TraceSink for Trace {
         _: ScopeKind,
         _: usize,
         _location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         _: TraceOutcome<'_>,
     ) {
         self.exit += 1;

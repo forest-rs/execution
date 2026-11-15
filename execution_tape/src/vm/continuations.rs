@@ -206,7 +206,7 @@ impl Continuations {
                             location: TraceLocation {
                                 unit: frame.unit,
                                 func: frame.func,
-                                pc,
+                                pc: Pc(pc),
                             },
                             started,
                             bound,
@@ -293,9 +293,9 @@ impl Registers {
         TraceLocation {
             unit: frame.unit,
             func: frame.func,
-            pc: body
+            pc: Pc(body
                 .pc_at_ix(frame.instr_ix - 1)
-                .expect("a frame resumes after its raising instruction"),
+                .expect("a frame resumes after its raising instruction")),
         }
     }
 
@@ -597,7 +597,7 @@ impl<H: Host> Vm<H> {
             let at = TraceLocation {
                 unit: frame.unit,
                 func: frame.func,
-                pc: frame.pc,
+                pc: Pc(frame.pc),
             };
             let body = self
                 .units
@@ -606,14 +606,14 @@ impl<H: Host> Vm<H> {
                 .verified(frame.func)
                 .expect("active verified function");
             let program = self.units.unit(frame.unit).program.program();
-            let span = ctx.span_at(program, at.func, at.pc);
+            let span = ctx.span_at(program, at.func, at.pc.0);
             trace.call_scope_enter_if_enabled(program, depth + 1, at, span, caller);
             caller = Some(TraceLocation {
-                pc: frame
+                pc: Pc(frame
                     .instr_ix
                     .checked_sub(1)
                     .and_then(|ix| body.pc_at_ix(ix))
-                    .unwrap_or(frame.pc),
+                    .unwrap_or(frame.pc)),
                 ..at
             });
         }
@@ -697,7 +697,7 @@ impl<H: Host> Vm<H> {
         let target = TraceLocation {
             unit: resumer_unit,
             func: resumer_func,
-            pc: body.pc_at_ix(target_ix).expect("verified handler entry"),
+            pc: Pc(body.pc_at_ix(target_ix).expect("verified handler entry")),
         };
 
         // Close the suspended activations' scopes, innermost first, while they are intact.
@@ -728,7 +728,7 @@ impl<H: Host> Vm<H> {
         ctx.write_cont(resumer_base, param, cont);
         let resumer = &mut ctx.frames[handler.resumer];
         resumer.instr_ix = target_ix;
-        resumer.pc = target.pc;
+        resumer.pc = target.pc.0;
         Ok(Some(target))
     }
 
@@ -943,7 +943,7 @@ impl TraceCtx<'_> {
                     kind,
                     depth,
                     location,
-                    span,
+                    span_id_at_boundary(span),
                     TraceOutcome::Suspended,
                 );
             }

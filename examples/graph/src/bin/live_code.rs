@@ -10,7 +10,7 @@ use execution_tape::{
     callable::{Callable, CodeSlot, CodeUpdate, CodeVersion},
     contract::Contract,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{HostTypeId, ValueType},
+    program::{HostTypeId, Pc, ValueType},
     recording::{RecordLimits, Recorder, Recording, ReplayOutcome},
     source::{SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping},
     trace::TraceSink,
@@ -84,7 +84,7 @@ struct Revision {
     factory: Callable,
     sources: SourceMap,
 }
-fn mapping(source: &str, function: FuncId, pc: u32, fragment: &str) -> SourceMapping {
+fn mapping(source: &str, function: FuncId, pc: Pc, fragment: &str) -> SourceMapping {
     let start = source.find(fragment).expect("authored demo fragment");
     SourceMapping {
         location: CodeLocation { func: function, pc },

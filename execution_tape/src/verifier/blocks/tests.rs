@@ -421,7 +421,7 @@ fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them(
             assert_eq!(
                 result.unwrap_err(),
                 VerifyError::UnknownAggregateShape {
-                    func: 0,
+                    func: FuncId(0),
                     pc: use_pc,
                     reg: Reg(5)
                 }
@@ -479,7 +479,7 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
             )
             .unwrap_err(),
             VerifyError::BlockEdge {
-                func: 0,
+                func: FuncId(0),
                 pc,
                 arm: 1,
                 target,
@@ -506,8 +506,8 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
         )
         .unwrap_err(),
         VerifyError::BlockEdge {
-            func: 0,
-            pc: 0,
+            func: FuncId(0),
+            pc: Pc(0),
             arm: 0,
             target,
             error: BlockEdgeError::Arity {
@@ -561,8 +561,8 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
         )
         .unwrap_err(),
         VerifyError::BlockEdge {
-            func: 0,
-            pc: 0,
+            func: FuncId(0),
+            pc: Pc(0),
             arm: 0,
             target,
             error: BlockEdgeError::BypassesHeader { header }
@@ -587,20 +587,20 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
 fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
     #[derive(Default)]
     struct Events {
-        attempts: Vec<(u32, u32, Option<u64>, u16)>,
-        ends: Vec<(u32, Option<u32>)>,
+        attempts: Vec<(Pc, Pc, Option<u64>, u16)>,
+        ends: Vec<(Pc, Option<Pc>)>,
     }
     impl TraceSink for Events {
         fn instr(
             &mut self,
             _: &Program,
             location: TraceLocation,
-            end: u32,
-            span: Option<u64>,
+            end: Pc,
+            span: Option<SpanId>,
             opcode: u16,
         ) {
             let (_, pc) = (location.func, location.pc);
-            self.attempts.push((pc, end, span, opcode));
+            self.attempts.push((pc, end, span.map(SpanId::get), opcode));
         }
         fn instr_end(
             &mut self,
@@ -629,7 +629,7 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
     asm.ret(Reg(0), &[Reg(1), Reg(2)]);
     let p = verify(asm, &[ValueType::I64; 2], &[ValueType::I64; 2]);
     let source = crate::disasm::disassemble_function(p.program(), FuncId(0)).unwrap();
-    assert_eq!(source.executable_pc(0), Some(branch));
+    assert_eq!(source.executable_pc(Pc(0)), Some(branch));
     assert_eq!(source.executable_pc(header), Some(body));
     let prepared = p.function(FuncId(0)).unwrap();
     let locations: Vec<_> = prepared.instructions().collect();
@@ -768,8 +768,8 @@ fn malformed_headers_lists_and_splits_fail_without_panics() {
             Opcode::BrArgs,
             &[
                 Operand::Reg(Reg(1)),
-                Operand::Pc(0),
-                Operand::Pc(0),
+                Operand::Pc(Pc(0)),
+                Operand::Pc(Pc(0)),
                 Operand::ImmU32(split),
                 Operand::RegList(&[]),
             ],
@@ -798,7 +798,7 @@ fn malformed_headers_lists_and_splits_fail_without_panics() {
 fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
     use crate::trace::ScopeKind;
     #[derive(Default)]
-    struct Scopes(Vec<(FuncId, u32, Option<u64>)>);
+    struct Scopes(Vec<(FuncId, Pc, Option<u64>)>);
     impl TraceSink for Scopes {
         fn scope_enter(
             &mut self,
@@ -806,11 +806,11 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
             kind: ScopeKind,
             _: usize,
             location: TraceLocation,
-            span: Option<u64>,
+            span: Option<SpanId>,
         ) {
             let (func, pc) = (location.func, location.pc);
             if matches!(kind, ScopeKind::CallFrame { .. }) {
-                self.0.push((func, pc, span));
+                self.0.push((func, pc, span.map(SpanId::get)));
             }
         }
     }
@@ -883,7 +883,10 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
         }
         .unwrap();
         assert_eq!(out, [Value::I64(7)]);
-        assert_eq!(scopes.0, [(entry, 0, None), (callee, body_pc, Some(22))]);
+        assert_eq!(
+            scopes.0,
+            [(entry, Pc(0), None), (callee, body_pc, Some(22))]
+        );
     }
 }
 
@@ -933,7 +936,7 @@ fn uninitialized_edge_arguments_report_the_offending_arm_and_slot() {
         )
         .unwrap_err(),
         VerifyError::BlockEdge {
-            func: 0,
+            func: FuncId(0),
             pc,
             arm: 0,
             target,

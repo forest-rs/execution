@@ -46,6 +46,7 @@
 //! The standalone sidecar codec preserves supplied source contents and is separate from tape
 //! encoding. Source maps are never attached to [`Program`] or retained by verification/VM runs.
 
+use crate::program::Pc;
 use crate::{disasm::disassemble_function, program::Program, trace::CodeLocation, value::FuncId};
 use alloc::{
     collections::BTreeMap,
@@ -305,7 +306,7 @@ impl SourceMap {
         number(&mut out, self.mappings.len());
         for mapping in &self.mappings {
             out.extend_from_slice(&mapping.location.func.0.to_le_bytes());
-            out.extend_from_slice(&mapping.location.pc.to_le_bytes());
+            out.extend_from_slice(&mapping.location.pc.0.to_le_bytes());
             out.extend_from_slice(&mapping.document.0.to_le_bytes());
             number(&mut out, mapping.range.start);
             number(&mut out, mapping.range.end);
@@ -378,7 +379,7 @@ impl SourceMap {
             mappings.push(SourceMapping {
                 location: CodeLocation {
                     func: FuncId(r.small()?),
-                    pc: r.small()?,
+                    pc: Pc(r.small()?),
                 },
                 document: SourceId(r.small()?),
                 range: r.number()?..r.number()?,
@@ -673,7 +674,7 @@ mod tests {
                 },
             )
             .unwrap();
-        (b.build_checked().unwrap(), CodeLocation { func, pc: 0 })
+        (b.build_checked().unwrap(), CodeLocation { func, pc: Pc(0) })
     }
     fn source(
         program: &Program,
@@ -740,7 +741,7 @@ mod tests {
         let bound = map.bind(&p).unwrap();
         assert_eq!(bound.context(loc, 1, 20).unwrap().lines[0].selected, "é");
         assert!(matches!(
-            source(&p, CodeLocation { pc: 1, ..loc }, "x", 0..1),
+            source(&p, CodeLocation { pc: Pc(1), ..loc }, "x", 0..1),
             Err(SourceError::InvalidLocation(_))
         ));
         let duplicate = SourceMapping {
@@ -780,7 +781,7 @@ mod tests {
         let map = source(&p, loc, "42", 0..2).unwrap();
         let bound = map.bind(&p).unwrap();
         let other = CodeLocation {
-            pc: u32::MAX,
+            pc: Pc(u32::MAX),
             ..loc
         };
         assert!(bound.lookup(other).is_none());

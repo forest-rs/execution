@@ -5,20 +5,21 @@
 
 use super::palette::LANES;
 use execution_tape::disasm::FunctionDisassembly;
+use execution_tape::program::Pc;
 use ratatui::style::Style;
 use ratatui::text::Span;
 
 #[derive(Clone, Copy, Debug)]
 struct Edge {
-    from: u32,
-    to: u32,
+    from: Pc,
+    to: Pc,
     arm: &'static str,
 }
 impl Edge {
-    fn start(self) -> u32 {
+    fn start(self) -> Pc {
         self.from.min(self.to)
     }
-    fn end(self) -> u32 {
+    fn end(self) -> Pc {
         self.from.max(self.to)
     }
 }
@@ -80,7 +81,7 @@ impl Flow {
         self.omitted
     }
 
-    pub(super) fn gutter(&self, pc: u32, first: u32, last: u32) -> Vec<Span<'static>> {
+    pub(super) fn gutter(&self, pc: Pc, first: Pc, last: Pc) -> Vec<Span<'static>> {
         let used = self
             .lanes
             .iter()
@@ -134,7 +135,7 @@ impl Flow {
 mod tests {
     use super::*;
 
-    fn row(flow: &Flow, pc: u32, first: u32, last: u32) -> String {
+    fn row(flow: &Flow, pc: Pc, first: Pc, last: Pc) -> String {
         flow.gutter(pc, first, last)
             .iter()
             .map(|span| span.content.as_ref())
@@ -143,52 +144,52 @@ mod tests {
     #[test]
     fn forward_backward_and_clipped_edges_keep_source_target_and_direction() {
         let f = Flow::assign(vec![Edge {
-            from: 10,
-            to: 40,
+            from: Pc(10),
+            to: Pc(40),
             arm: "T",
         }]);
-        assert_eq!(row(&f, 10, 10, 40), "╭T");
-        assert_eq!(row(&f, 40, 10, 40), "╰▶");
-        assert_eq!(row(&f, 20, 20, 30), "↑ ");
-        assert_eq!(row(&f, 30, 20, 30), "↓ ");
+        assert_eq!(row(&f, Pc(10), Pc(10), Pc(40)), "╭T");
+        assert_eq!(row(&f, Pc(40), Pc(10), Pc(40)), "╰▶");
+        assert_eq!(row(&f, Pc(20), Pc(20), Pc(30)), "↑ ");
+        assert_eq!(row(&f, Pc(30), Pc(20), Pc(30)), "↓ ");
         let f = Flow::assign(vec![Edge {
-            from: 40,
-            to: 10,
+            from: Pc(40),
+            to: Pc(10),
             arm: "─",
         }]);
-        assert_eq!(row(&f, 10, 10, 40), "╭▶");
-        assert_eq!(row(&f, 40, 10, 40), "╰─");
-        assert_eq!(row(&f, 25, 10, 40), "│ ");
+        assert_eq!(row(&f, Pc(10), Pc(10), Pc(40)), "╭▶");
+        assert_eq!(row(&f, Pc(40), Pc(10), Pc(40)), "╰─");
+        assert_eq!(row(&f, Pc(25), Pc(10), Pc(40)), "│ ");
     }
     #[test]
     fn crossing_and_same_target_edges_stay_independent_and_lane_reuse_is_safe() {
         let f = Flow::assign(vec![
             Edge {
-                from: 10,
-                to: 30,
+                from: Pc(10),
+                to: Pc(30),
                 arm: "T",
             },
             Edge {
-                from: 10,
-                to: 30,
+                from: Pc(10),
+                to: Pc(30),
                 arm: "F",
             },
             Edge {
-                from: 20,
-                to: 40,
+                from: Pc(20),
+                to: Pc(40),
                 arm: "─",
             },
             Edge {
-                from: 50,
-                to: 60,
+                from: Pc(50),
+                to: Pc(60),
                 arm: "─",
             },
         ]);
-        assert_eq!(row(&f, 10, 0, 60), "╭F╭T  ");
-        assert_eq!(row(&f, 30, 0, 60), "╰▶╰▶│ ");
-        assert_eq!(row(&f, 50, 0, 60), "╭─    ");
+        assert_eq!(row(&f, Pc(10), Pc(0), Pc(60)), "╭F╭T  ");
+        assert_eq!(row(&f, Pc(30), Pc(0), Pc(60)), "╰▶╰▶│ ");
+        assert_eq!(row(&f, Pc(50), Pc(0), Pc(60)), "╭─    ");
         let colors: Vec<_> = f
-            .gutter(30, 0, 60)
+            .gutter(Pc(30), Pc(0), Pc(60))
             .into_iter()
             .map(|span| span.style.fg)
             .collect();
@@ -197,31 +198,31 @@ mod tests {
     #[test]
     fn self_edges_and_excess_overlap_are_explicit_and_storage_stays_linear() {
         let f = Flow::assign(vec![Edge {
-            from: 7,
-            to: 7,
+            from: Pc(7),
+            to: Pc(7),
             arm: "─",
         }]);
-        assert_eq!(row(&f, 7, 0, 10), "↺▶");
+        assert_eq!(row(&f, Pc(7), Pc(0), Pc(10)), "↺▶");
         let f = Flow::assign(
             (0..20_000)
                 .map(|from| Edge {
-                    from,
-                    to: 30_000,
+                    from: Pc(from),
+                    to: Pc(30_000),
                     arm: "─",
                 })
                 .collect(),
         );
         assert_eq!(f.omitted(), 19_996);
         assert_eq!(f.lanes.iter().map(Vec::len).sum::<usize>(), 4);
-        assert_eq!(row(&f, 25_000, 0, 30_000), "│ │ │ │ ");
+        assert_eq!(row(&f, Pc(25_000), Pc(0), Pc(30_000)), "│ │ │ │ ");
     }
 
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use execution_tape::disasm::disassemble_function;
     use execution_tape::program::ValueType;
 
-    fn text(flow: &Flow, pc: u32) -> String {
-        flow.gutter(pc, 0, u32::MAX)
+    fn text(flow: &Flow, pc: Pc) -> String {
+        flow.gutter(pc, Pc(0), Pc(u32::MAX))
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
@@ -246,7 +247,7 @@ mod tests {
             .unwrap();
         let p = b.build_verified().unwrap();
         let source = disassemble_function(p.program(), f).unwrap();
-        assert_eq!(text(&Flow::new(&source), 0), "↺F↺T");
+        assert_eq!(text(&Flow::new(&source), Pc(0)), "↺F↺T");
     }
 
     #[test]

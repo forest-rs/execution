@@ -10,7 +10,7 @@ use execution_tape::{
     contract::{Contract, ContractPosition},
     disasm::disassemble,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{CatchClause, Program, RegionId, RegionRun, TagId, ValueType},
+    program::{CatchClause, Pc, Program, RegionId, RegionRun, SpanId, TagId, ValueType},
     recording::{
         ActivationOutcome, InstructionCapture, InstructionStatus, RecordLimits, Recorder,
         ReplayOutcome,
@@ -584,7 +584,10 @@ fn handlers_see_writes_before_the_raising_instruction_but_not_its_results() {
     assert_eq!(run(&verified, FuncId(1), &[]).unwrap(), [Value::I64(5)]);
     assert!(matches!(
         handler_reads(true),
-        Err(VerifyError::UninitializedRead { func: 1, .. })
+        Err(VerifyError::UninitializedRead {
+            func: FuncId(1),
+            ..
+        })
     ));
 }
 
@@ -635,7 +638,7 @@ impl TraceSink for Observe {
         kind: ScopeKind,
         _: usize,
         _location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         if let (ScopeKind::CallFrame { func, .. }, TraceOutcome::Caught { depth }) = (kind, outcome)
@@ -751,9 +754,12 @@ fn verifier_names_the_region_and_clause_it_rejects() {
             target: p.catch_clauses[0].target(),
         }),
         VerifyError::InvalidRegion {
-            func: 0,
-            region: 0,
-            error: RegionError::ClauseTag { clause: 0, tag: 7 },
+            func: FuncId(0),
+            region: RegionId(0),
+            error: RegionError::ClauseTag {
+                clause: 0,
+                tag: TagId(7)
+            },
         }
     );
     assert!(matches!(
@@ -761,8 +767,8 @@ fn verifier_names_the_region_and_clause_it_rejects() {
             target: p.catch_clauses[0].target(),
         }),
         VerifyError::InvalidRegion {
-            func: 0,
-            region: 0,
+            func: FuncId(0),
+            region: RegionId(0),
             error: RegionError::ClauseParams {
                 clause: 0,
                 tag: None,
@@ -775,7 +781,7 @@ fn verifier_names_the_region_and_clause_it_rejects() {
     let error = malformed(|p| {
         p.catch_clauses[0] = CatchClause::Tag {
             tag: TagId(0),
-            target: 1,
+            target: Pc(1),
         }
     });
     assert!(
@@ -784,7 +790,7 @@ fn verifier_names_the_region_and_clause_it_rejects() {
             VerifyError::InvalidRegion {
                 error: RegionError::ClauseTarget {
                     clause: 0,
-                    target: 1
+                    target: Pc(1)
                 },
                 ..
             }
@@ -795,17 +801,21 @@ fn verifier_names_the_region_and_clause_it_rejects() {
     assert_eq!(
         malformed(|p| p.regions[0].parent = Some(RegionId(0))),
         VerifyError::InvalidRegion {
-            func: 0,
-            region: 0,
-            error: RegionError::Parent { parent: 0 },
+            func: FuncId(0),
+            region: RegionId(0),
+            error: RegionError::Parent {
+                parent: RegionId(0)
+            },
         }
     );
     assert_eq!(
         malformed(|p| p.region_runs[0].region = RegionId(3)),
         VerifyError::InvalidRegionRun {
-            func: 0,
+            func: FuncId(0),
             run: 0,
-            error: RegionRunError::UnknownRegion { region: 3 },
+            error: RegionRunError::UnknownRegion {
+                region: RegionId(3)
+            },
         }
     );
     assert_eq!(
@@ -817,7 +827,7 @@ fn verifier_names_the_region_and_clause_it_rejects() {
             };
         }),
         VerifyError::InvalidRegionRun {
-            func: 0,
+            func: FuncId(0),
             run: 0,
             error: RegionRunError::Range,
         }
@@ -844,11 +854,11 @@ fn clause_parameters_must_match_the_payload_kinds() {
     assert_eq!(
         error,
         VerifyError::InvalidRegion {
-            func: 0,
-            region: 0,
+            func: FuncId(0),
+            region: RegionId(0),
             error: RegionError::ClauseParamKind {
                 clause: 0,
-                tag: 0,
+                tag: TagId(0),
                 name: "failed".into(),
                 index: 0,
                 expected: ValueType::I64,

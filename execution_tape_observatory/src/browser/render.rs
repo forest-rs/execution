@@ -12,7 +12,7 @@ use execution_tape::disasm::{
     CallTarget, FunctionDisassembly, InputIndex, InstrView, Operands, RegList,
 };
 use execution_tape::opcode::Opcode;
-use execution_tape::program::{ConstEntry, ConstId, HostSigId, Program, Reg};
+use execution_tape::program::{ConstEntry, ConstId, HostSigId, Pc, Program, Reg};
 use execution_tape::verifier::{FactOrigin, InstructionFacts, ValueFact};
 use ratatui::{
     Frame,
@@ -381,7 +381,7 @@ pub(super) fn facts(
     }
     if facts.is_block_entry() && facts.incoming_edges().len() > 0 {
         lines.push("Static incoming arms (common facts above):".into());
-        if facts.pc() == 0 {
+        if facts.pc() == Pc(0) {
             lines.push("  Also seeded by invocation arguments and the effect token.".into());
         }
         for edge in facts.incoming_edges().take(4) {
@@ -695,7 +695,7 @@ fn code(frame: &mut Frame<'_>, view: &Browser<'_>, area: Rect) {
     };
     let height = usize::from(area.height.saturating_sub(2));
     let start = view.instruction.saturating_sub(height / 2);
-    let first = source.instrs().nth(start).map_or(0, |i| i.pc());
+    let first = source.instrs().nth(start).map_or(Pc(0), |i| i.pc());
     let last = source
         .instrs()
         .skip(start)

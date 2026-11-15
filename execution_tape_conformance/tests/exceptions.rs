@@ -13,7 +13,7 @@ use execution_tape::{
     contract::{Contract, ContractId, ContractPosition},
     disasm::disassemble,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{Program, TagId, ValueType},
+    program::{Pc, Program, SpanId, TagId, ValueType},
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{FuncId, Value},
@@ -49,7 +49,7 @@ struct Fixture {
     entry: FuncId,
     raise: FuncId,
     /// `pc` of the `throw` instruction in `raise`.
-    throw_pc: u32,
+    throw_pc: Pc,
 }
 
 /// `entry(code)` calls `raise(code, "boom")`, which throws `failed(code, "boom", (code,))`.
@@ -298,7 +298,7 @@ impl TraceSink for Observe {
         kind: ScopeKind,
         _: usize,
         location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         let (func, pc) = (location.func, location.pc);
@@ -384,7 +384,7 @@ fn recorded_uncaught_exceptions_replay_with_their_payload() {
     assert_uncaught(&f, &replayed, 4);
 }
 
-fn shaped_program(statically_wrong: bool) -> Result<(VerifiedProgram, TagId, u32), BuildError> {
+fn shaped_program(statically_wrong: bool) -> Result<(VerifiedProgram, TagId, Pc), BuildError> {
     let mut b = ProgramBuilder::new();
     let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
     let pair: ContractId = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
@@ -412,7 +412,7 @@ fn payload_contracts_are_checked_statically_and_where_the_exception_is_raised() 
         panic!("a statically contradicted payload must fail verification");
     };
     assert!(matches!(position, ContractPosition::Payload { tag, index: 0 } if tag.0 == 0));
-    assert!(pc > 0);
+    assert!(pc > Pc(0));
 
     let (program, shaped, pc) = shaped_program(false).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
@@ -540,17 +540,17 @@ fn verifier_names_the_tag_in_throw_diagnostics() {
     assert_eq!(
         cases[0],
         VerifyError::TagOutOfBounds {
-            func: 0,
-            pc: 0,
-            tag: 5
+            func: FuncId(0),
+            pc: Pc(0),
+            tag: TagId(5)
         }
     );
     assert_eq!(
         cases[1],
         VerifyError::ThrowArityMismatch {
-            func: 0,
-            pc: 0,
-            tag: 0,
+            func: FuncId(0),
+            pc: Pc(0),
+            tag: TagId(0),
             name: "failed".into(),
             expected: 1,
             actual: 0,
@@ -559,9 +559,9 @@ fn verifier_names_the_tag_in_throw_diagnostics() {
     assert_eq!(
         cases[2],
         VerifyError::ThrowPayloadMismatch {
-            func: 0,
-            pc: 0,
-            tag: 0,
+            func: FuncId(0),
+            pc: Pc(0),
+            tag: TagId(0),
             name: "failed".into(),
             index: 0,
             reg: flag,
@@ -571,7 +571,7 @@ fn verifier_names_the_tag_in_throw_diagnostics() {
     );
     assert!(cases[2].to_string().contains("tag#0 (\"failed\")"));
     assert_eq!(cases[2].function(), Some(FuncId(0)));
-    assert_eq!(cases[2].pc(), Some(0));
+    assert_eq!(cases[2].pc(), Some(Pc(0)));
 
     // Tag table entries are checked even when nothing throws them.
     let mut duplicate = base.clone();
@@ -580,8 +580,8 @@ fn verifier_names_the_tag_in_throw_diagnostics() {
     assert_eq!(
         verify_program(&duplicate, &cfg),
         Err(VerifyError::DuplicateTagName {
-            tag: 1,
-            first: 0,
+            tag: TagId(1),
+            first: TagId(0),
             name: "failed".into(),
         })
     );

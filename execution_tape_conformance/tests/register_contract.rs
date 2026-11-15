@@ -6,7 +6,7 @@
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::format::{DecodeError, Reader};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
-use execution_tape::program::{HostTypeId, Program, ValueType};
+use execution_tape::program::{HostTypeId, Pc, Program, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
@@ -139,8 +139,8 @@ fn every_definition_must_match_even_without_a_typed_use() {
     assert!(matches!(
         error(&p),
         VerifyError::RegisterTypeMismatch {
-            func: 0,
-            pc: Some(0),
+            func: FuncId(0),
+            pc: Some(Pc(0)),
             reg: Reg(1),
             declared: ValueType::I64,
             required: ValueType::Bool,
@@ -291,8 +291,8 @@ fn invalid_definition_is_reported_before_dependent_shape_facts() {
     assert_eq!(
         error(&p),
         VerifyError::RegisterTypeMismatch {
-            func: 0,
-            pc: Some(0),
+            func: FuncId(0),
+            pc: Some(Pc(0)),
             reg: Reg(1),
             declared: ValueType::Bool,
             required: ValueType::I64,
@@ -422,7 +422,7 @@ fn inactive_functions_and_instructions_have_static_contracts_checked() {
     assert!(matches!(
         error(&builder.build()),
         VerifyError::RegisterTypeMismatch {
-            func: 1,
+            func: FuncId(1),
             pc: None,
             reg: Reg(1),
             ..
@@ -435,7 +435,10 @@ fn missing_declarations_are_not_inferred() {
     let mut asm = Asm::new();
     asm.ret(Reg(0), &[]);
     let p = program(asm, &[], &[], &[]);
-    assert_eq!(error(&p), VerifyError::MissingRegisterTypes { func: 0 });
+    assert_eq!(
+        error(&p),
+        VerifyError::MissingRegisterTypes { func: FuncId(0) }
+    );
 }
 
 #[test]

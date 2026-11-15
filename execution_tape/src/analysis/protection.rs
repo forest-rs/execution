@@ -55,10 +55,10 @@ fn raises(instr: &Instr) -> Option<Raises> {
 /// Returns the innermost region covering `pc`, using sorted, non-overlapping runs.
 pub(crate) fn innermost(runs: &[RegionRun], pc: u32) -> Option<RegionId> {
     let index = runs
-        .partition_point(|run| run.start_pc <= pc)
+        .partition_point(|run| run.start_pc.0 <= pc)
         .checked_sub(1)?;
     let run = runs[index];
-    (pc < run.end_pc).then_some(run.region)
+    (pc < run.end_pc.0).then_some(run.region)
 }
 
 impl Protection {

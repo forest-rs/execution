@@ -3,7 +3,7 @@
 
 use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
-use execution_tape::program::{Program, Reg};
+use execution_tape::program::{Pc, Program, Reg};
 use execution_tape::recording::{
     AggregateId, CallStack, ControlAction, ControlCommand, GuestReturn, HostCall, HostOutcome,
     Outcome, RecordedValue, Recording, ReplayOutcome,
@@ -181,7 +181,7 @@ impl<'a> View<'a> {
             return self.record.invocation().map(|entry| TraceLocation {
                 unit: entry.entry.unit,
                 func: entry.entry.func,
-                pc: 0,
+                pc: Pc(0),
             });
         }
         if let Some(boundary) = self.boundary(self.selected) {

@@ -20,6 +20,7 @@ use core::fmt;
 
 use execution_tape::aggregates::AggError;
 use execution_tape::host::{AccessSink, Host, ResourceKeyRef, SigHash};
+use execution_tape::program::SpanId;
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, FuncRef, UnitId, Value};
 use execution_tape::verifier::VerifiedProgram;
@@ -186,7 +187,7 @@ impl TapeNode {
         let mut names: Vec<Box<str>> = Vec::with_capacity(ret_count);
         for i in 0..ret_count {
             let ret = u32::try_from(i).unwrap_or(u32::MAX);
-            match program.function_output_name(self.entry.0, ret) {
+            match program.function_output_name(self.entry, ret) {
                 Some(name) if name != "ret" => names.push(name.into()),
                 _ => names.push(format!("ret{i}").into_boxed_str()),
             }
@@ -382,7 +383,7 @@ impl<H: Host, O: TapeObserver> Executor for TapeExecutor<H, O> {
 
     fn describe(&self, node: &Self::Node) -> Option<String> {
         let program = node.program.program();
-        let entry = match program.function_name(node.entry.0) {
+        let entry = match program.function_name(node.entry) {
             Some(name) => format!("entry=f{} ({name})", node.entry.0),
             None => format!("entry=f{}", node.entry.0),
         };
@@ -943,7 +944,7 @@ impl TraceSink for StrictDepsTrace<'_> {
         kind: ScopeKind,
         _depth: usize,
         _location: TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
     ) {
         let ScopeKind::HostCall {
             symbol, sig_hash, ..
@@ -960,7 +961,7 @@ impl TraceSink for StrictDepsTrace<'_> {
         kind: ScopeKind,
         _depth: usize,
         _location: TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
         outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
         let ScopeKind::HostCall { .. } = kind else {

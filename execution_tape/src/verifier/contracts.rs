@@ -888,7 +888,7 @@ fn transfer(
 
 fn validate(
     arena: &mut Arena<'_>,
-    func_id: u32,
+    func_id: FuncId,
     pc: u32,
     instr: &Instr,
     types: RegisterTypes<'_>,
@@ -928,7 +928,7 @@ fn validate(
         if actual != expected {
             return Err(VerifyError::AggKindMismatch {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 expected,
                 actual,
             });
@@ -938,7 +938,7 @@ fn validate(
                 AggType::Tuple { arity } if index >= arity => {
                     return Err(VerifyError::TupleIndexOutOfBounds {
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                         arity,
                         index,
                     });
@@ -946,8 +946,8 @@ fn validate(
                 AggType::Struct { type_id } if index as usize >= view.members.len() => {
                     return Err(VerifyError::StructFieldIndexOutOfBounds {
                         func: func_id,
-                        pc,
-                        type_id: type_id.0,
+                        pc: Pc(pc),
+                        type_id,
                         field_index: index,
                     });
                 }
@@ -961,7 +961,7 @@ fn validate(
             .and_then(|view| view.child(index as usize))
             .ok_or(VerifyError::UnknownAggregateShape {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 reg: Reg(reg),
             })?;
         check_expected(func_id, pc, dst, types.get(Reg(dst)), arena.kind(fact))?;
@@ -985,7 +985,7 @@ fn validate(
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                         position: ContractPosition::Argument {
                             callee: *callee,
                             index: u32::try_from(index)
@@ -1009,8 +1009,8 @@ fn validate(
             if matches!(actual, Fact::Refined(_)) && actual != expected {
                 return Err(VerifyError::CallIndirectContractMismatch {
                     func: func_id,
-                    pc,
-                    call_sig: *call_sig,
+                    pc: Pc(pc),
+                    call_sig: CallSigId(*call_sig),
                 });
             }
             for (index, (&reg, &contract)) in args.iter().zip(arg_contracts).enumerate() {
@@ -1018,7 +1018,7 @@ fn validate(
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                         position: ContractPosition::IndirectArgument {
                             signature: CallSigId(*call_sig),
                             index: u32::try_from(index).expect("signature arity"),
@@ -1038,8 +1038,8 @@ fn validate(
             if matches!(actual, Fact::Refined(_)) && actual != expected {
                 return Err(VerifyError::CallIndirectContractMismatch {
                     func: func_id,
-                    pc,
-                    call_sig: *call_sig,
+                    pc: Pc(pc),
+                    call_sig: CallSigId(*call_sig),
                 });
             }
         }
@@ -1056,7 +1056,7 @@ fn validate(
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                         position: ContractPosition::IndirectArgument {
                             signature: CallSigId(*call_sig),
                             index: u32::try_from(index).expect("signature arity"),
@@ -1079,7 +1079,7 @@ fn validate(
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                         position: ContractPosition::Payload {
                             tag,
                             index: u32::try_from(index).expect("verified payload arity"),
@@ -1092,7 +1092,7 @@ fn validate(
             for (index, (&reg, &contract)) in rets
                 .iter()
                 .zip(
-                    arena.program.functions[func_id as usize]
+                    arena.program.functions[func_id.0 as usize]
                         .ret_contracts(arena.program)
                         .expect("checked signature"),
                 )
@@ -1102,7 +1102,7 @@ fn validate(
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
-                        pc,
+                        pc: Pc(pc),
                         position: ContractPosition::Result {
                             index: u32::try_from(index)
                                 .expect("verified signature or schema arity"),
@@ -1118,7 +1118,7 @@ fn validate(
 
 pub(super) fn verify_flow(
     program: &Program,
-    func_id: u32,
+    func_id: FuncId,
     blocks: &[BasicBlock],
     reachable: &[bool],
     types: RegisterTypes<'_>,
@@ -1147,7 +1147,7 @@ pub(super) fn verify_flow(
 
 fn solve_flow<'a>(
     program: &'a Program,
-    func_id: u32,
+    func_id: FuncId,
     blocks: &[BasicBlock],
     reachable: &[bool],
     types: RegisterTypes<'_>,
@@ -1155,7 +1155,7 @@ fn solve_flow<'a>(
 ) -> (Arena<'a>, Vec<RefinementState>, Vec<RefinementState>) {
     let mut arena = Arena::new(program);
     let mut entry = RefinementState::unknown();
-    for (index, &id) in program.functions[func_id as usize]
+    for (index, &id) in program.functions[func_id.0 as usize]
         .arg_contracts(program)
         .expect("checked signature")
         .iter()
@@ -1192,7 +1192,7 @@ fn solve_flow<'a>(
                 }
                 if let Some(tag) = raise.handler.catch.tag() {
                     let target = raise.handler.catch.target();
-                    let params = blocks::declaration(decoded, target).unwrap_or(&[]);
+                    let params = blocks::declaration(decoded, target.0).unwrap_or(&[]);
                     let entry = program.tag(tag).expect("verified tag");
                     let contracts = program
                         .tag_payload_contracts(entry)
