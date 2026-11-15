@@ -744,7 +744,7 @@ impl Callable {
         };
         work.check(&vm.limits).map_err(trap)?;
         let checkpoint = vm.memory.checkpoint();
-        let first = vm.memory.aggs().len_u32();
+        let first = vm.memory.aggs().handle_end();
         let imported = vm
             .memory
             .aggs_mut()

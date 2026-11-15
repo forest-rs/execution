@@ -90,7 +90,10 @@ impl FuncRef {
 /// Aggregates are immutable and structural; v1 stores them out-of-line in an aggregate heap.
 /// A handle belongs to its originating heap. Copying it does not retain data or transfer it to
 /// another heap. Host-call handles are borrowed; [`crate::host::HostContext::retain`] creates
-/// an independent snapshot. Returned VM handles stay valid until the heap is explicitly cleared.
+/// an independent snapshot. Returned VM handles stay valid until the heap is explicitly cleared
+/// or collected: [`crate::vm::Vm::collect`] moves surviving aggregates and invalidates every
+/// handle copied out before it. Register values with [`crate::vm::Vm::root`] to keep them and
+/// read their current handles back with [`crate::vm::Vm::resolve`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AggHandle(pub u32);
 

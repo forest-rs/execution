@@ -16,6 +16,23 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Keep values alive across runs with registered roots, and reclaim everything else with an
+  explicit, moving collection. `Vm::root(values) -> Result<RootedValues, RootError>` registers
+  a group, `Vm::resolve(&RootedValues)` borrows its current values and
+  `Vm::release(RootedValues)` unregisters it and returns them; dropping the handle unregisters
+  it at the next collection. `Vm::collect() -> Result<CollectionReport, CollectError>` traces
+  the heap from every registered group, slides survivors down in their original order
+  (preserving sharing and distinct identity) and rewrites the groups. It is planned before
+  anything moves: a dangling handle refuses it and changes nothing. Nothing collects
+  implicitly. A collection that reclaims anything moves the survivors to a fresh handle window
+  (`AggHeap::handle_end` is the window's end; `AggHeap::len_u32` stays the node count), so a
+  handle copied out before it names nothing afterwards and fails with `AggError::BadHandle`
+  rather than reading a survivor. Windows wrap after about `2^31` handles, which caps a heap at
+  about `2^31` nodes, and a handle older than one wrap can alias again. `AggHeap::clear` and
+  `AggHeap::take_nodes` return the heap's window to zero. `CollectionReport` counts live and
+  reclaimed aggregates and logical bytes, moved aggregates, groups and traced roots;
+  `Vm::heap_stats() -> HeapStats` reports size and collection history without walking the heap.
+
 - Look up a function by id with `Program::function(FuncId) -> Option<&Function>`, like
   `Program::tag` and `Program::link`, instead of indexing `program.functions`. A verified
   function exposes its source too: `VerifiedFunction::bytecode` and `VerifiedFunction::spans`
@@ -518,6 +535,11 @@ This release has an [MSRV][] of 1.88.
   Abandoned work now closes with `TraceOutcome::Caught`.
 
 ### Changed
+
+- A host result or suspension answer whose aggregate handle or closure environment names no
+  aggregate now traps where it is delivered, with `Trap::AggError(AggError::BadHandle)`,
+  instead of passing into a register and failing when it is read or returned. A raw value
+  observer still sees the outcome first.
 
 - Every public API that names a register now takes or returns `asm::Reg` instead of a raw `u32`,
   finishing what `emit_call_with` started: a register can no longer be swapped with an immediate

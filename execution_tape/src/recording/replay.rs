@@ -1529,7 +1529,7 @@ impl Recording {
             .map_err(ReplayError::Aggregate)?;
             state.borrow_mut().bind(id, handle)?;
         }
-        state.borrow_mut().initial_count = vm.aggregates().len_u32();
+        state.borrow_mut().initial_count = vm.aggregates().handle_end();
         let args =
             state
                 .borrow_mut()

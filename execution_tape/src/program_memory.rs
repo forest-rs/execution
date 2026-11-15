@@ -4,20 +4,38 @@
 //! Program-scoped runtime memory.
 //!
 //! Owns aggregate storage for a VM or scheduler. VM runs append temporary nodes, then retain
-//! only the new graph reachable from returned values. A trap discards all nodes from that run.
-//! Existing retained nodes stay valid until the owner explicitly clears storage.
+//! only the new graph reachable from returned values: committing a run compacts its suffix,
+//! a young-generation collection rooted at its outputs. A trap discards all nodes from that run.
+//! Existing retained nodes stay valid until the owner explicitly clears storage or collects it.
+//!
+//! Both compactions share one plan-then-apply primitive. An explicit collection
+//! ([`crate::vm::Vm::collect`]) plans over the whole heap from every root and preserves node
+//! order, so retained nodes still never refer to a later run's suffix.
 
-use crate::aggregates::{AggError, AggHeap, aggregate_handle};
+use crate::aggregates::{AggError, AggHeap, Compaction, aggregate_handle};
 use crate::value::Value;
+use crate::vm::HeapStats;
 
 /// Private boundary between retained nodes and the current run's allocations.
 #[derive(Clone, Copy)]
 pub(crate) struct Checkpoint(u32);
 
 /// Shared runtime memory for program execution.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ProgramMemory {
     aggs: AggHeap,
+    /// Explicit collections so far.
+    collections: u64,
+    /// Nodes that survived the latest collection.
+    survivors: u32,
+    /// Where collections wrap the handle window.
+    window_limit: u32,
+}
+
+impl Default for ProgramMemory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProgramMemory {
@@ -26,6 +44,9 @@ impl ProgramMemory {
     pub fn new() -> Self {
         Self {
             aggs: AggHeap::new(),
+            collections: 0,
+            survivors: 0,
+            window_limit: crate::aggregates::WINDOW_LIMIT,
         }
     }
 
@@ -40,8 +61,29 @@ impl ProgramMemory {
         &mut self.aggs
     }
 
+    /// Applies a whole-heap collection plan. It cannot fail.
+    pub(crate) fn apply_collection(&mut self, plan: &Compaction) {
+        self.aggs.apply_compaction(plan);
+        self.collections += 1;
+        self.survivors = self.aggs.len_u32();
+    }
+
+    /// Where collections wrap the handle window.
+    pub(crate) fn window_limit(&self) -> u32 {
+        self.window_limit
+    }
+
+    pub(crate) fn stats(&self, root_groups: usize) -> HeapStats {
+        HeapStats {
+            aggregates: self.aggs.len_u32(),
+            live_after_collection: self.survivors,
+            collections: self.collections,
+            root_groups,
+        }
+    }
+
     pub(crate) fn checkpoint(&self) -> Checkpoint {
-        Checkpoint(self.aggs.len_u32())
+        Checkpoint(self.aggs.handle_end())
     }
 
     pub(crate) fn rollback(&mut self, checkpoint: Checkpoint) {

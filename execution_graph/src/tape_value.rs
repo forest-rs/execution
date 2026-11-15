@@ -342,7 +342,14 @@ impl TapeValue {
         if shared.is_empty() {
             return Ok(());
         }
-        let len = heap.len_u32();
+        // Origins index nodes by handle from zero. The executor clears its heap before every
+        // run and never collects it, so the window starts at zero and handles run to its end.
+        debug_assert_eq!(
+            heap.handle_end(),
+            heap.len_u32(),
+            "a workspace heap's handle window starts at zero"
+        );
+        let len = heap.handle_end();
         let (snapshot, remap) = heap.into_snapshot(shared).map_err(TapeError::Aggregate)?;
         let owned = Self::adopt(snapshot, Some(program), origins.finish(len, &remap))?;
         for (position, value) in positions.into_iter().zip(owned) {

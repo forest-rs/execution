@@ -37,6 +37,8 @@ pub(super) struct HostReturnSite<'a> {
     pub(super) signature: SigHash,
     pub(super) expected: &'a [ValueType],
     pub(super) destinations: &'a [VReg],
+    /// The heap returned aggregates must belong to, after adoption.
+    pub(super) aggregates: &'a AggHeap,
 }
 
 /// Values whose staged aggregates an outcome adopts: results, or a raised payload.
@@ -110,6 +112,7 @@ pub(super) fn admit_return(
     for (value, &expected) in values.iter().zip(site.expected) {
         value
             .check_type(expected)
+            .and_then(|()| check_handle(site.aggregates, value))
             .map_err(|error| trap(ctx, error))?;
     }
     let bytes = values

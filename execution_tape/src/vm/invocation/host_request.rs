@@ -347,7 +347,9 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// leaving Unit slots. Stack arrays and reusable buffers avoid a result-vector allocation.
     /// The raw outcome is observed before arity, type and payload-work validation. Aggregate,
     /// function, closure and nominal type IDs must belong to this request's original heap/code;
-    /// this method does not import foreign VM handles. Validation failure terminates the run,
+    /// this method does not import foreign VM handles. An aggregate handle or closure
+    /// environment naming no node traps with [`AggError::BadHandle`]. Validation failure
+    /// terminates the run,
     /// rolls back new guest aggregates, and preserves already performed external effects.
     /// Values may be handles read from any earlier request of this invocation; see
     /// [handle validity](Self#handle-validity).
@@ -715,6 +717,7 @@ fn finish_pending<P: TracePolicy>(
             signature: request.signature,
             expected: site.ret_types,
             destinations: site.destinations,
+            aggregates: heap,
         },
         values,
         outcome,

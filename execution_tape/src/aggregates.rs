@@ -64,6 +64,30 @@ pub(crate) fn aggregate_handle(value: &Value) -> Option<AggHandle> {
     }
 }
 
+/// Why a compaction could not be planned. Planning mutates nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PlanError {
+    /// A root or a reachable field names a node the heap does not hold.
+    Dangling(AggHandle),
+    /// The surviving nodes cannot be addressed.
+    Aggregate(AggError),
+}
+
+/// Logical bytes of one node: header, field slots and byte/string contents.
+fn node_bytes(node: &AggNode) -> u64 {
+    let values = node.values();
+    let payload: usize = values
+        .iter()
+        .map(|value| match value {
+            Value::Bytes(bytes) => bytes.len(),
+            Value::Str(text) => text.len(),
+            _ => 0,
+        })
+        .sum();
+    let bytes = size_of::<AggNode>() + size_of_val(values) + payload;
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
 /// The structural identity of a struct or array: what a [`ShapeId`] stands for.
 ///
 /// Struct and array types are structural. Programs refer to them with program-local
@@ -147,11 +171,28 @@ impl AggNode {
 /// v1 uses a simple `Vec`-backed store and returns stable handles. Struct and array nodes name
 /// their [`AggShape`] by a [`ShapeId`] interned in this heap; shapes are never removed, including
 /// by [`Self::clear`].
+///
+/// Handles are addresses in a window that starts at a base. A heap starts its window at zero.
+/// A VM collection that reclaims anything moves the survivors into a fresh window above every
+/// handle the old one issued, so a handle copied out before the collection names no node
+/// afterwards and fails with [`AggError::BadHandle`] instead of reaching a survivor. A
+/// collection that reclaims nothing moves nothing.
+///
+/// Windows wrap back to zero once they would pass `2^31`, so a heap holds at most about `2^31`
+/// nodes rather than `2^32`. Detection lasts one cycle: a handle older than the most recent
+/// wrap can name a node again. A cycle spans roughly `2^31` divided by the nodes each
+/// collection's window advances (the heap's length at that collection), so a 100k-node heap
+/// collected every second wraps after about six hours.
 #[derive(Clone, Debug, Default)]
 pub struct AggHeap {
     nodes: Vec<AggNode>,
+    /// Handle of `nodes[0]`.
+    base: u32,
     shapes: Arc<ShapeTable>,
 }
+
+/// Collections move survivors to a window ending no higher than this, keeping room to grow.
+pub(crate) const WINDOW_LIMIT: u32 = 1 << 31;
 
 /// Owned values and their reachable aggregate graph, independent of the source heap.
 ///
@@ -220,7 +261,7 @@ impl AggDelta {
     /// ([`Self::merge_into`]) sides on one snapshot; prefer this in execution code.
     #[must_use]
     pub fn for_base(base: &AggHeap) -> Self {
-        Self::new(base.len_u32())
+        Self::new(base.handle_end())
     }
 
     pub(crate) fn resolve<'a>(
@@ -268,7 +309,7 @@ impl AggDelta {
     pub fn overlay<'a>(&'a mut self, base: &'a AggHeap) -> AggOverlay<'a> {
         debug_assert_eq!(
             self.base_len,
-            base.len_u32(),
+            base.handle_end(),
             "delta base_len must match the base it overlays"
         );
         AggOverlay::new(base, self.base_len, &mut self.staged)
@@ -286,8 +327,13 @@ impl AggDelta {
     /// Returns [`AggError::UnresolvedStagedHandle`] if `roots` (or nested values in reachable
     /// staged nodes) contain a staged-domain handle that does not resolve to this delta.
     pub fn merge_into(self, base: &mut AggHeap, roots: &[Value]) -> Result<AggRemap, AggError> {
-        let reachable = reachable_nodes(&self.staged.nodes, self.base_len, roots)?;
-        let remap = AggRemap::from_reachable(self.base_len, base.len_u32(), &reachable)?;
+        let reachable = reachable_nodes(
+            &self.staged.nodes,
+            self.base_len,
+            roots.iter().filter_map(aggregate_handle),
+        )
+        .map_err(|_| AggError::UnresolvedStagedHandle)?;
+        let remap = AggRemap::from_reachable(self.base_len, base.handle_end(), &reachable)?;
 
         // All validation ran above, before `base` is touched, so this append loop cannot fail
         // and a rejected delta never partially mutates `base`.
@@ -315,7 +361,7 @@ impl AggDelta {
     pub(crate) fn promote_all(mut self, base: &mut AggHeap) -> Result<(), AggError> {
         // Reentry grows the base. Promote every staged handle first, including handles still
         // held by the embedding, so the former overlay domain cannot alias callback allocations.
-        if self.base_len != base.len_u32() {
+        if self.base_len != base.handle_end() {
             return Err(AggError::UnresolvedStagedHandle);
         }
         self.base_len
@@ -330,11 +376,13 @@ impl AggDelta {
 }
 
 /// Finds reachable nodes encoded relative to `base_len`, without visiting the retained base.
+///
+/// Returns the first root or edge that names a suffix node outside `nodes`.
 fn reachable_nodes(
     nodes: &[AggNode],
     base_len: u32,
-    roots: &[Value],
-) -> Result<Vec<bool>, AggError> {
+    roots: impl IntoIterator<Item = AggHandle>,
+) -> Result<Vec<bool>, AggHandle> {
     let mut reachable = vec![false; nodes.len()];
     let mut stack = Vec::new();
     for root in roots {
@@ -342,33 +390,92 @@ fn reachable_nodes(
     }
     while let Some(idx) = stack.pop() {
         for value in nodes[idx].values() {
-            mark_reachable(value, base_len, &mut reachable, &mut stack)?;
+            if let Some(handle) = aggregate_handle(value) {
+                mark_reachable(handle, base_len, &mut reachable, &mut stack)?;
+            }
         }
     }
     Ok(reachable)
 }
 
 fn mark_reachable(
-    value: &Value,
+    handle: AggHandle,
     base_len: u32,
     reachable: &mut [bool],
     stack: &mut Vec<usize>,
-) -> Result<(), AggError> {
-    let Some(handle) = aggregate_handle(value) else {
-        return Ok(());
-    };
+) -> Result<(), AggHandle> {
     if handle.0 < base_len {
         return Ok(());
     }
     let idx = usize::try_from(handle.0 - base_len)
         .ok()
         .filter(|&idx| idx < reachable.len())
-        .ok_or(AggError::UnresolvedStagedHandle)?;
+        .ok_or(handle)?;
     if !reachable[idx] {
         reachable[idx] = true;
         stack.push(idx);
     }
     Ok(())
+}
+
+/// A planned, order-preserving compaction of a heap suffix: which nodes survive and where.
+///
+/// Planning validates every root and every edge it reaches without mutating the heap, so
+/// applying a plan cannot fail. Survivors keep their relative order, so a retained prefix still
+/// cannot refer to a later suffix, and sharing and distinct identity are preserved.
+#[derive(Debug)]
+pub(crate) struct Compaction {
+    /// Maps suffix handles from `remap.base_len` on to survivors from `dest` on.
+    remap: AggRemap,
+    /// Handle of the first survivor.
+    dest: u32,
+    /// Surviving nodes of the suffix.
+    live: u32,
+    /// Survivors whose handle changes.
+    moved: u32,
+}
+
+impl Compaction {
+    /// Plans survivors of the suffix from `source` on to start at `dest`.
+    fn new(source: u32, dest: u32, reachable: &[bool]) -> Result<Self, AggError> {
+        let remap = AggRemap::from_reachable(source, dest, reachable)?;
+        let mut live = 0_u32;
+        let mut moved = 0_u32;
+        for (local, &survives) in reachable.iter().enumerate() {
+            if survives {
+                if source != dest || local != live as usize {
+                    moved += 1;
+                }
+                live += 1;
+            }
+        }
+        Ok(Self {
+            remap,
+            dest,
+            live,
+            moved,
+        })
+    }
+
+    /// The mapping from old to new handles; unreachable suffix handles have none.
+    pub(crate) fn remap(&self) -> &AggRemap {
+        &self.remap
+    }
+
+    /// Surviving suffix nodes.
+    pub(crate) fn live(&self) -> u32 {
+        self.live
+    }
+
+    /// Suffix nodes the compaction removes.
+    pub(crate) fn reclaimed(&self) -> u32 {
+        u32::try_from(self.remap.staged_to_base.len()).expect("heap lengths fit u32") - self.live
+    }
+
+    /// Survivors whose handle changes.
+    pub(crate) fn moved(&self) -> u32 {
+        self.moved
+    }
 }
 
 /// Handle remapping produced by [`AggDelta::merge_into`] or [`AggHeap::into_snapshot`].
@@ -605,7 +712,8 @@ impl AggHeap {
     ///
     /// Imported single-program captures use this to name the unit that runs their program.
     pub(crate) fn retarget_units_since(&mut self, start: u32, unit: crate::value::UnitId) {
-        for node in &mut self.nodes[start as usize..] {
+        let start = self.index(start);
+        for node in &mut self.nodes[start..] {
             for value in node.values_mut() {
                 match value {
                     Value::Func(function) => function.unit = unit,
@@ -625,8 +733,8 @@ impl AggHeap {
     pub fn object_references(
         &self,
     ) -> impl Iterator<Item = (AggHandle, usize, crate::value::Obj)> + '_ {
-        self.nodes.iter().enumerate().flat_map(|(index, node)| {
-            let handle = AggHandle(u32::try_from(index).expect("aggregate handles are bounded"));
+        (self.base..).zip(&self.nodes).flat_map(|(handle, node)| {
+            let handle = AggHandle(handle);
             node.values()
                 .iter()
                 .enumerate()
@@ -647,8 +755,14 @@ impl AggHeap {
     fn empty_with_shapes(&self) -> Self {
         Self {
             nodes: Vec::new(),
+            base: 0,
             shapes: Arc::clone(&self.shapes),
         }
+    }
+
+    /// The position in `nodes` of a handle at or above the base, clamped to the end.
+    fn index(&self, handle: u32) -> usize {
+        (handle.saturating_sub(self.base) as usize).min(self.nodes.len())
     }
 
     /// Interns `shape`, returning the existing ID for an equal shape.
@@ -694,11 +808,13 @@ impl AggHeap {
 
     /// Moves every node into a new heap, leaving this heap empty but keeping its shapes.
     ///
-    /// Shape IDs in the returned heap match this heap's, so its values keep their meaning.
+    /// Shape IDs and handles in the returned heap match this heap's, so its values keep their
+    /// meaning. This heap's handle window returns to zero, as for a new heap.
     #[must_use]
     pub fn take_nodes(&mut self) -> Self {
         Self {
             nodes: core::mem::take(&mut self.nodes),
+            base: core::mem::take(&mut self.base),
             shapes: Arc::clone(&self.shapes),
         }
     }
@@ -738,16 +854,15 @@ impl AggHeap {
         mut self,
         mut values: Vec<Value>,
     ) -> Result<(ValueSnapshot, AggRemap), AggError> {
-        let remap = self
-            .compact_since(0, &mut values, true)
-            .map_err(|error| {
-                if error == AggError::UnresolvedStagedHandle {
-                    AggError::BadHandle
-                } else {
-                    error
-                }
-            })?
-            .expect("requested remapping");
+        let plan = self
+            .plan_relocation(values.iter().filter_map(aggregate_handle), 0)
+            .map_err(|error| match error {
+                PlanError::Dangling(_) => AggError::BadHandle,
+                PlanError::Aggregate(error) => error,
+            })?;
+        self.apply_compaction(&plan);
+        let remap = plan.remap;
+        remap.remap_values_in_place(&mut values)?;
         self.nodes.shrink_to_fit();
         Ok((
             ValueSnapshot {
@@ -798,21 +913,35 @@ impl AggHeap {
         Ok(values)
     }
 
-    /// Returns the current heap length as `u32`.
+    /// Returns how many nodes the heap holds, as `u32`.
     ///
-    /// This mirrors the handle index domain used by [`AggHandle`].
+    /// Until a VM collection moves the handle window this is also one past the newest handle;
+    /// [`Self::handle_end`] is that bound in general.
     #[must_use]
     pub fn len_u32(&self) -> u32 {
         u32::try_from(self.nodes.len()).unwrap_or(u32::MAX)
     }
 
+    /// Returns one past the newest node's handle: the end of the handle window.
+    ///
+    /// Handles of this heap lie in `self.handle_end() - self.len_u32()..self.handle_end()`.
+    /// The next node allocated gets this handle. See the type documentation for windows.
+    #[must_use]
+    pub fn handle_end(&self) -> u32 {
+        u32::try_from(u64::from(self.base) + self.nodes.len() as u64).unwrap_or(u32::MAX)
+    }
+
     /// Removes all aggregate nodes while preserving allocated capacity.
+    ///
+    /// The handle window returns to zero, as for a new heap.
     pub fn clear(&mut self) {
         self.nodes.clear();
+        self.base = 0;
     }
 
     pub(crate) fn truncate(&mut self, len: u32) {
-        self.nodes.truncate(len as usize);
+        let len = self.index(len);
+        self.nodes.truncate(len);
     }
 
     /// Compacts only the run-local suffix; retained nodes cannot refer to it.
@@ -830,26 +959,127 @@ impl AggHeap {
         roots: &mut [Value],
         keep_remap: bool,
     ) -> Result<Option<AggRemap>, AggError> {
-        let start = base_len as usize;
-        let reachable = reachable_nodes(&self.nodes[start..], base_len, roots)?;
+        let start = self.index(base_len);
+        let reachable = reachable_nodes(
+            &self.nodes[start..],
+            base_len,
+            roots.iter().filter_map(aggregate_handle),
+        )
+        .map_err(|_| AggError::UnresolvedStagedHandle)?;
         if !keep_remap && reachable.iter().all(|&live| live) {
             return Ok(None);
         }
-        let remap = AggRemap::from_reachable(base_len, base_len, &reachable)?;
-        // Reachability validated every reachable edge and root before any mutation. Preserve
-        // staged-index order, sharing, and the heap's capacity without detaching the suffix.
+        let plan = Compaction::new(base_len, base_len, &reachable)?;
+        self.apply_compaction(&plan);
+        plan.remap.remap_values_in_place(roots)?;
+        Ok(Some(plan.remap))
+    }
+
+    /// Plans moving everything `roots` reach into a window starting at `dest`, without
+    /// mutating. Every root must name a node of this heap.
+    fn plan_relocation(
+        &self,
+        roots: impl IntoIterator<Item = AggHandle>,
+        dest: u32,
+    ) -> Result<Compaction, PlanError> {
+        let reachable = self.reachable_from(roots)?;
+        Compaction::new(self.base, dest, &reachable).map_err(PlanError::Aggregate)
+    }
+
+    /// Which nodes `roots` reach. A root below the window's base names no node either.
+    fn reachable_from(
+        &self,
+        roots: impl IntoIterator<Item = AggHandle>,
+    ) -> Result<Vec<bool>, PlanError> {
+        let mut stale = None;
+        let roots = roots.into_iter().inspect(|&handle| {
+            if stale.is_none() && handle.0 < self.base {
+                stale = Some(handle);
+            }
+        });
+        let reachable =
+            reachable_nodes(&self.nodes, self.base, roots).map_err(PlanError::Dangling)?;
+        match stale {
+            Some(handle) => Err(PlanError::Dangling(handle)),
+            None => Ok(reachable),
+        }
+    }
+
+    /// Plans a whole-heap collection: survivors move to a fresh handle window, so handles
+    /// issued before it name nothing afterwards. Mutates nothing.
+    ///
+    /// Windows start below `limit`, normally [`WINDOW_LIMIT`]; tests lower it to reach a wrap.
+    pub(crate) fn plan_collection(
+        &self,
+        roots: impl IntoIterator<Item = AggHandle>,
+        limit: u32,
+    ) -> Result<Compaction, PlanError> {
+        let reachable = self.reachable_from(roots)?;
+        let live = u32::try_from(reachable.iter().filter(|&&live| live).count())
+            .expect("heap lengths fit u32");
+        let end = self.handle_end();
+        // Otherwise the next window starts above every handle this one issued. Past the limit
+        // it wraps to zero, which still leaves the current window empty when the survivors fit
+        // below its base; failing that, survivors stay in this window and stale handles go
+        // undetected.
+        let dest = if live as usize == self.nodes.len() {
+            // Nothing is reclaimed, so nothing moves and every handle keeps its node.
+            self.base
+        } else if end.checked_add(live).is_some_and(|top| top <= limit) {
+            end
+        } else if live <= self.base {
+            0
+        } else {
+            self.base
+        };
+        Compaction::new(self.base, dest, &reachable).map_err(PlanError::Aggregate)
+    }
+
+    /// Applies a plan made for this heap's current contents. It cannot fail.
+    ///
+    /// Survivors keep their order and sharing, and the heap keeps its capacity; their own
+    /// field and payload allocations do not move.
+    pub(crate) fn apply_compaction(&mut self, plan: &Compaction) {
+        let source = plan.remap.base_len;
+        let identity = plan.live as usize == plan.remap.staged_to_base.len();
+        if identity && plan.dest == source {
+            // Every node survives in place; every handle maps to itself.
+            return;
+        }
+        let start = self.index(source);
         let mut next = start;
-        for (local, live) in reachable.into_iter().enumerate() {
-            if live {
+        for (local, mapped) in plan.remap.staged_to_base.iter().enumerate() {
+            if mapped.is_some() {
                 let current = start + local;
-                remap.remap_values_in_place(self.nodes[current].values_mut())?;
+                plan.remap
+                    .remap_values_in_place(self.nodes[current].values_mut())
+                    .expect("planning traced every edge of a surviving node");
                 self.nodes.swap(next, current);
                 next += 1;
             }
         }
         self.nodes.truncate(next);
-        remap.remap_values_in_place(roots)?;
-        Ok(Some(remap))
+        if source == self.base {
+            // The whole heap moved into the plan's window.
+            self.base = plan.dest;
+        }
+    }
+
+    /// Logical bytes of the suffix nodes a plan keeps and removes: node headers, field slots and
+    /// byte/string contents, excluding allocator overhead and spare capacity.
+    pub(crate) fn measure(&self, plan: &Compaction) -> (u64, u64) {
+        let start = self.index(plan.remap.base_len);
+        let mut live = 0_u64;
+        let mut reclaimed = 0_u64;
+        for (node, mapped) in self.nodes[start..].iter().zip(&plan.remap.staged_to_base) {
+            let bytes = node_bytes(node);
+            if mapped.is_some() {
+                live += bytes;
+            } else {
+                reclaimed += bytes;
+            }
+        }
+        (live, reclaimed)
     }
 
     /// Returns the aggregate type for `handle`.
@@ -988,7 +1218,7 @@ impl AggHeap {
     }
 
     fn check_capacity(&self) -> Result<(), AggError> {
-        if self.nodes.len() >= u32::MAX as usize {
+        if self.handle_end() == u32::MAX {
             Err(AggError::HandleOverflow)
         } else {
             Ok(())
@@ -996,7 +1226,7 @@ impl AggHeap {
     }
 
     fn push(&mut self, node: AggNode) -> AggHandle {
-        let idx = u32::try_from(self.nodes.len()).unwrap_or(u32::MAX);
+        let idx = self.handle_end();
         self.nodes.push(node);
         AggHandle(idx)
     }
@@ -1010,7 +1240,8 @@ impl AggHeap {
     }
 
     fn node(&self, handle: AggHandle) -> Result<&AggNode, AggError> {
-        self.nodes.get(handle.0 as usize).ok_or(AggError::BadHandle)
+        let index = handle.0.checked_sub(self.base).ok_or(AggError::BadHandle)?;
+        self.nodes.get(index as usize).ok_or(AggError::BadHandle)
     }
 }
 
@@ -1020,7 +1251,7 @@ fn copy_roots_into<'a>(
     roots: &mut [Value],
     mut shape: impl FnMut(ShapeId) -> Result<ShapeId, AggError>,
 ) -> Result<(), AggError> {
-    let base_len = target.len_u32();
+    let base_len = target.handle_end();
     let mut indices = BTreeMap::new();
     let mut pending = Vec::new();
     let remap = |value: &mut Value,
@@ -1069,6 +1300,7 @@ fn copy_roots_into<'a>(
         base_len,
         staged: AggHeap {
             nodes,
+            base: 0,
             shapes: Arc::clone(&target.shapes),
         },
     };
@@ -1481,6 +1713,70 @@ mod tests {
     }
 
     #[test]
+    fn collections_move_survivors_to_a_fresh_window_and_stale_handles_name_nothing() {
+        let mut heap = AggHeap::new();
+        let dead = heap.tuple_new(vec![]).unwrap();
+        let child = heap.tuple_new(vec![Value::I64(1)]).unwrap();
+        let parent = heap.tuple_new(vec![Value::Agg(child)]).unwrap();
+        let plan = heap.plan_collection([parent], WINDOW_LIMIT).unwrap();
+        assert_eq!((plan.live(), plan.reclaimed(), plan.moved()), (2, 1, 2));
+        // Survivors land above every earlier handle, in order.
+        let moved = 4; // The parent follows its child, in order.
+        heap.apply_compaction(&plan);
+        assert_eq!((heap.len_u32(), heap.handle_end()), (2, 5));
+        for stale in [dead, child, parent] {
+            assert_eq!(heap.agg_type(stale), Err(AggError::BadHandle));
+        }
+        let Value::Agg(child) = heap.tuple_get(AggHandle(moved), 0).unwrap() else {
+            panic!("child edge")
+        };
+        assert_eq!(heap.tuple_get(child, 0).unwrap(), Value::I64(1));
+        assert_eq!(heap.tuple_new(vec![]).unwrap(), AggHandle(5));
+
+        // An owned snapshot starts its own window again.
+        let (snapshot, remap) = heap
+            .into_snapshot(vec![Value::Agg(AggHandle(moved))])
+            .unwrap();
+        assert_eq!(snapshot.values(), [Value::Agg(AggHandle(1))]);
+        assert_eq!(remap.remap_handle(child), Ok(AggHandle(0)));
+        assert_eq!(snapshot.aggregates().len_u32(), 2);
+    }
+
+    #[test]
+    fn clearing_or_taking_nodes_returns_the_window_to_zero() {
+        let mut heap = AggHeap::new();
+        heap.tuple_new(vec![]).unwrap();
+        let kept = heap.tuple_new(vec![Value::I64(1)]).unwrap();
+        let plan = heap.plan_collection([kept], WINDOW_LIMIT).unwrap();
+        heap.apply_compaction(&plan);
+        assert_eq!((heap.len_u32(), heap.handle_end()), (1, 3));
+
+        // Taken nodes keep their handles; the emptied heap starts again at zero.
+        let taken = heap.take_nodes();
+        assert_eq!((taken.len_u32(), taken.handle_end()), (1, 3));
+        assert_eq!(taken.tuple_get(AggHandle(2), 0).unwrap(), Value::I64(1));
+        assert_eq!(heap.handle_end(), 0);
+        assert_eq!(heap.tuple_new(vec![]).unwrap(), AggHandle(0));
+
+        let mut cleared = taken;
+        cleared.clear();
+        assert_eq!(cleared.handle_end(), 0);
+        assert_eq!(cleared.tuple_new(vec![]).unwrap(), AggHandle(0));
+    }
+
+    #[test]
+    fn a_window_past_the_limit_wraps_below_the_old_one() {
+        let mut heap = AggHeap::new();
+        heap.base = WINDOW_LIMIT - 1;
+        let kept = heap.tuple_new(vec![]).unwrap();
+        heap.tuple_new(vec![]).unwrap();
+        let plan = heap.plan_collection([kept], WINDOW_LIMIT).unwrap();
+        heap.apply_compaction(&plan);
+        assert_eq!(heap.agg_type(kept), Err(AggError::BadHandle));
+        assert!(heap.agg_type(AggHandle(0)).is_ok());
+    }
+
+    #[test]
     fn len_u32_tracks_nodes() {
         let mut h = AggHeap::new();
         assert_eq!(h.len_u32(), 0);
@@ -1724,6 +2020,7 @@ mod tests {
         let delta = AggDelta {
             base_len,
             staged: AggHeap {
+                base: 0,
                 shapes: Arc::default(),
                 nodes: vec![AggNode::Tuple {
                     values: vec![Value::Agg(AggHandle(base_len + 99))],
@@ -1750,6 +2047,7 @@ mod tests {
         let delta = AggDelta {
             base_len,
             staged: AggHeap {
+                base: 0,
                 shapes: Arc::default(),
                 nodes: vec![
                     AggNode::Tuple {
