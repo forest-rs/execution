@@ -88,3 +88,7 @@ harness = false
 [[bench]]
 name = "checked_conversions"
 harness = false
+
+[[bench]]
+name = "host_imports"
+harness = false
