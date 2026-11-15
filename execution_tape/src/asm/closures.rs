@@ -183,7 +183,7 @@ impl ProgramBuilder {
     /// let [captured] = increment.load_captures(&mut body)?;
     /// let argument = increment.argument(0)?;
     /// let answer = body.alloc_register(ValueType::I64);
-    /// body.i64_add(answer, captured, argument).ret(Reg(0), &[answer]);
+    /// body.i64_add(answer, captured, argument).ret(Reg::EFFECT, &[answer]);
     /// program.define_function(increment.function(), body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -271,7 +271,7 @@ mod tests {
         let answer = body.alloc_register(ValueType::I64);
         body.tuple_get(captured, captured_tuple, 0)
             .i64_add(answer, captured, increment.argument(0).unwrap())
-            .ret(Reg(0), &[answer]);
+            .ret(Reg::EFFECT, &[answer]);
         program.define_function(increment.function(), body).unwrap();
         let entry = program
             .declare_function(FunctionSig {
@@ -297,7 +297,7 @@ mod tests {
                 &[two],
             )
             .unwrap();
-        body.ret(Reg(0), &[answer]);
+        body.ret(Reg::EFFECT, &[answer]);
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         assert_eq!(
@@ -368,7 +368,7 @@ mod tests {
             )
             .unwrap();
         let mut body = program.function_asm(block.function()).unwrap();
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         program.define_function(block.function(), body).unwrap();
         let entry = program
             .declare_function(FunctionSig {
@@ -392,7 +392,7 @@ mod tests {
                 &[],
             )
             .unwrap();
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         let failure = {

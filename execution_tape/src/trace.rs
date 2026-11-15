@@ -109,7 +109,7 @@ impl<'a> RegisterValues<'a> {
     /// a sink must not invent one or treat it as an uninitialized register's default contents.
     pub fn iter(&self) -> impl Iterator<Item = (Reg, Option<ValueRef<'a>>)> + '_ {
         self.registers
-            .filter(|&reg| reg != Reg(0))
+            .filter(|&reg| reg != Reg::EFFECT)
             .map(|reg| (reg, (self.read)(reg.0)))
     }
 }

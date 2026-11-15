@@ -52,7 +52,7 @@ fn program(input: ValueType, conversions: &[(Emit, ValueType)]) -> VerifiedProgr
         let value = body.alloc_register(output);
         let flag = body.alloc_register(Bool);
         emit(&mut body, value, flag, Reg(1));
-        body.ret(Reg(0), &[value, flag]);
+        body.ret(Reg::EFFECT, &[value, flag]);
         builder.define_function(id, body).unwrap();
     }
     let bytes = builder.build().encode();
@@ -492,9 +492,9 @@ fn a_branch_on_the_flag_replaces_the_trap() {
     a.i64_to_i32_ovf(value, overflow, Reg(1))
         .br(overflow, fail, done);
     a.place(fail).unwrap();
-    a.const_i32(fallback, -1).ret(Reg(0), &[fallback]);
+    a.const_i32(fallback, -1).ret(Reg::EFFECT, &[fallback]);
     a.place(done).unwrap();
-    a.ret(Reg(0), &[value]);
+    a.ret(Reg::EFFECT, &[value]);
     builder.define_function(id, a).unwrap();
     let checked = builder.build_verified().unwrap();
 
@@ -507,7 +507,7 @@ fn a_branch_on_the_flag_replaces_the_trap() {
         .unwrap();
     let mut a = builder.function_asm(id).unwrap();
     let value = a.alloc_register(I32);
-    a.i64_to_i32(value, Reg(1)).ret(Reg(0), &[value]);
+    a.i64_to_i32(value, Reg(1)).ret(Reg::EFFECT, &[value]);
     builder.define_function(id, a).unwrap();
     let trapping = builder.build_verified().unwrap();
 
@@ -603,7 +603,7 @@ fn verifier_requires_a_bool_flag_and_matching_types() {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, operand, result, flag]);
         emit(&mut a, Reg(2), Reg(3), Reg(1));
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
             a,

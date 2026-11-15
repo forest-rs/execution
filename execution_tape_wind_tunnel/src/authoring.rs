@@ -35,7 +35,7 @@ pub(super) fn streaming(steps: u32) -> Program {
             value = next;
         }
     }
-    body.ret(Reg(0), &[value]);
+    body.ret(Reg::EFFECT, &[value]);
     builder.define_function(function, body).unwrap();
     builder.build()
 }
@@ -80,7 +80,7 @@ pub(super) fn lowered(callers: u32) -> Program {
     ]);
     body.tuple_get(Reg(3), Reg(1), 0)
         .i64_add(Reg(4), Reg(2), Reg(3))
-        .ret(Reg(0), &[Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(4)]);
     builder.define_function(callee, body).unwrap();
     for function in functions {
         let mut body = Asm::new();
@@ -98,8 +98,8 @@ pub(super) fn lowered(callers: u32) -> Program {
             .tuple_new(Reg(3), &[Reg(2)])
             .const_func(Reg(4), callee)
             .closure_new(Reg(5), Reg(4), Reg(3))
-            .call_indirect(Reg(0), call, Reg(5), Reg(0), &[Reg(1)], &[Reg(6)])
-            .ret(Reg(0), &[Reg(6)]);
+            .call_indirect(Reg::EFFECT, call, Reg(5), Reg::EFFECT, &[Reg(1)], &[Reg(6)])
+            .ret(Reg::EFFECT, &[Reg(6)]);
         builder.define_function(function, body).unwrap();
     }
     builder.build()

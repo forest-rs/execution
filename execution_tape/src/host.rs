@@ -180,11 +180,11 @@ use crate::value::Value;
 ///     ValueType::I64, ValueType::I64, ValueType::Unit,
 /// ]);
 /// a.const_u64(Reg(1), 42); // r1 = 42
-/// a.host_call(Reg(0), get_host, Reg(0), &[Reg(1)], &[Reg(2)]); // r2 = kv.get(r1)
+/// a.host_call(Reg::EFFECT, get_host, Reg::EFFECT, &[Reg(1)], &[Reg(2)]); // r2 = kv.get(r1)
 /// a.const_i64(Reg(3), 1); // r3 = 1
 /// a.i64_add(Reg(4), Reg(2), Reg(3)); // r4 = r2 + r3
-/// a.host_call(Reg(0), set_host, Reg(0), &[Reg(1), Reg(4)], &[Reg(5)]); // r5 = kv.set(r1, r4)
-/// a.ret(Reg(0), &[Reg(4)]); // return r4
+/// a.host_call(Reg::EFFECT, set_host, Reg::EFFECT, &[Reg(1), Reg(4)], &[Reg(5)]); // r5 = kv.set(r1, r4)
+/// a.ret(Reg::EFFECT, &[Reg(4)]); // return r4
 ///
 /// pb.push_function_checked(
 ///     a,
@@ -383,7 +383,7 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     /// let mut body = pb.function_asm(entry)?;
     /// let [] = pb.emit_call_with(&mut body, log, ("adding",))?;
     /// let [total] = pb.emit_call_with(&mut body, add, (n,))?;
-    /// body.ret(Reg(0), &[total]);
+    /// body.ret(Reg::EFFECT, &[total]);
     /// pb.define_function(entry, body)?;
     /// let program = pb.build_verified()?;
     /// program.check_host_calls(&SURFACE, |_| Ok::<(), &str>(()))?;

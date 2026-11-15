@@ -26,7 +26,7 @@
 //! let mut body = builder.function_asm(function)?;
 //! let result = body.alloc_register(ValueType::I64);
 //! let location = CodeLocation { func: function, pc: body.pc() };
-//! body.const_i64(result, 42).ret(Reg(0), &[result]);
+//! body.const_i64(result, 42).ret(Reg::EFFECT, &[result]);
 //! builder.define_function(function, body)?;
 //! let program = builder.build_verified()?;
 //! let sources = SourceMap::new(program.program(), vec![SourceDocument {
@@ -663,7 +663,7 @@ mod tests {
     fn fixture(value: i64) -> (Program, CodeLocation) {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.const_i64(Reg(1), value).ret(Reg(0), &[Reg(1)]);
+        a.const_i64(Reg(1), value).ret(Reg::EFFECT, &[Reg(1)]);
         let mut b = ProgramBuilder::new();
         let func = b
             .push_function_checked(

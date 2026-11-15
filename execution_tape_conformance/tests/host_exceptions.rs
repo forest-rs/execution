@@ -90,19 +90,19 @@ fn fixture() -> Fixture {
     asm.begin_region(&[Catch::Tag(failed, handler)]);
     let [result] = b.emit_call(&mut asm, import, &[code]).unwrap();
     asm.end_region();
-    asm.ret(Reg(0), &[result]);
+    asm.ret(Reg::EFFECT, &[result]);
     asm.place(handler).unwrap();
     asm.tuple_get(field, caught, 0)
         .const_i64(hundred, 100)
         .i64_add(field, field, hundred)
-        .ret(Reg(0), &[field]);
+        .ret(Reg::EFFECT, &[field]);
     b.define_function(protected, asm).unwrap();
 
     let mut asm = b.function_asm(bare).unwrap();
     let code = b.argument(bare, 0).unwrap();
     let call_pc = asm.pc();
     let [result] = b.emit_call(&mut asm, import, &[code]).unwrap();
-    asm.ret(Reg(0), &[result]);
+    asm.ret(Reg::EFFECT, &[result]);
     b.define_function(bare, asm).unwrap();
 
     Fixture {

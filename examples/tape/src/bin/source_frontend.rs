@@ -176,7 +176,7 @@ fn compile(name: String, source: String) -> Result<(Program, SourceMap), Box<dyn
     }
     let result = emit(&expression, &mut body, &mut kinds, &mut ranges);
     ranges.push((body.pc(), expression.range.clone()));
-    body.ret(Reg(0), &[result]);
+    body.ret(Reg::EFFECT, &[result]);
     body.set_register_types(kinds);
     let mut builder = ProgramBuilder::new();
     builder.set_program_name("Arithmetic source frontend");

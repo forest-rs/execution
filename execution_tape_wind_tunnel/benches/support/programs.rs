@@ -10,7 +10,7 @@ pub(super) fn straight_line(instructions: u32) -> Program {
     for dst in 2..instructions + 2 {
         asm.i64_add(Reg(dst), Reg(dst - 1), Reg(1));
     }
-    asm.ret(Reg(0), &[Reg(instructions + 1)]);
+    asm.ret(Reg::EFFECT, &[Reg(instructions + 1)]);
     let mut kinds = vec![ValueType::I64; instructions as usize + 2];
     kinds[0] = ValueType::Unit;
     asm.set_register_types(kinds);
@@ -38,7 +38,7 @@ pub(super) fn diamonds(count: u32, registers: u32) -> Program {
         asm.jmp(join);
         asm.place(join).unwrap();
     }
-    asm.ret(Reg(0), &[Reg(2)]);
+    asm.ret(Reg::EFFECT, &[Reg(2)]);
     let mut kinds = vec![ValueType::I64; registers as usize + 1];
     kinds[0] = ValueType::Unit;
     kinds[1] = ValueType::Bool;
@@ -57,7 +57,7 @@ pub(super) fn tuples(count: u32) -> Program {
         asm.mov(Reg(dst + 1), Reg(dst));
         asm.tuple_get(Reg(dst + 2), Reg(dst + 1), 0);
     }
-    asm.ret(Reg(0), &[Reg(count * 3 + 2)]);
+    asm.ret(Reg::EFFECT, &[Reg(count * 3 + 2)]);
     let mut kinds = Vec::with_capacity(3 + count as usize * 3);
     kinds.extend_from_slice(&[ValueType::Unit, ValueType::I64, ValueType::Bool]);
     for _ in 0..count {

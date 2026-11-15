@@ -78,13 +78,13 @@ fn compile() -> Result<Compiled, Box<dyn Error>> {
     ranges.push((body.pc(), source_range("density * levels")));
     body.i64_mul(Reg(4), Reg(1), Reg(2));
     ranges.push((body.pc(), source_range("quality()")));
-    body.host_call_sig_id(Reg(0), quality, Reg(0), &[], &[Reg(5)]);
+    body.host_call_sig_id(Reg::EFFECT, quality, Reg::EFFECT, &[], &[Reg(5)]);
     ranges.push((body.pc(), source_range("density * levels + quality()")));
     body.i64_add(Reg(6), Reg(4), Reg(5));
     ranges.push((body.pc(), source_range("(amplitude,)")));
     body.tuple_new(Reg(7), &[Reg(3)]);
     ranges.push((body.pc(), source_range("return segments, deformation")));
-    body.ret(Reg(0), &[Reg(6), Reg(7)]);
+    body.ret(Reg::EFFECT, &[Reg(6), Reg(7)]);
     let floating = builder.contract(Contract::Kind(ValueType::F64))?;
     let deformation = builder.contract(Contract::Tuple(&[Some(floating)]))?;
     let entry = builder.push_function_checked(

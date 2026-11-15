@@ -73,8 +73,8 @@ pub fn program() -> VerifiedProgram {
     );
     let mut callee = Asm::new();
     callee.set_register_types(vec![Unit, I64, I64]);
-    callee.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
-    callee.ret(Reg(0), &[Reg(2)]);
+    callee.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    callee.ret(Reg::EFFECT, &[Reg(2)]);
     let callee = builder
         .push_function_checked(
             callee,
@@ -96,13 +96,13 @@ pub fn program() -> VerifiedProgram {
     let join = body.block(&[Reg(5)]);
     body.br(Reg(1), yes, no);
     body.place(yes).expect("fresh label");
-    body.call(Reg(0), callee, Reg(0), &[Reg(2)], &[Reg(3)]);
+    body.call(Reg::EFFECT, callee, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);
     body.jmp(join.with_args(&[Reg(3)]));
     body.place(no).expect("fresh label");
     body.const_i64(Reg(4), 0);
     body.jmp(join.with_args(&[Reg(4)]));
     body.place(join).expect("fresh join");
-    body.ret(Reg(0), &[Reg(5)]);
+    body.ret(Reg::EFFECT, &[Reg(5)]);
     assert_eq!(
         builder
             .push_function_checked(
@@ -124,7 +124,7 @@ pub fn program() -> VerifiedProgram {
     trap.const_i64(Reg(1), 1);
     trap.const_i64(Reg(2), 0);
     trap.i64_div(Reg(3), Reg(1), Reg(2));
-    trap.ret(Reg(0), &[Reg(3)]);
+    trap.ret(Reg::EFFECT, &[Reg(3)]);
     assert_eq!(
         builder
             .push_function_checked(

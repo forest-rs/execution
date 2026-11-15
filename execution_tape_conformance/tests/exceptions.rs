@@ -80,7 +80,7 @@ fn fixture() -> Fixture {
     let text = body.alloc_register(ValueType::Str);
     body.const_pool(text, boom);
     let [result] = b.emit_call(&mut body, raise, &[code, text]).unwrap();
-    body.ret(Reg(0), &[result]);
+    body.ret(Reg::EFFECT, &[result]);
     b.define_function(entry, body).unwrap();
 
     let mut body = b.function_asm(raise).unwrap();
@@ -212,7 +212,7 @@ fn an_exception_escaping_a_guest_callback_ends_the_whole_invocation() {
     let raise = b.declare_function(sig(&[ValueType::I64], &[])).unwrap();
     let mut body = b.function_asm(outer).unwrap();
     let [] = b.emit_call(&mut body, wait, &[]).unwrap();
-    body.ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[]);
     b.define_function(outer, body).unwrap();
     let mut body = b.function_asm(raise).unwrap();
     let code = b.argument(raise, 0).unwrap();
@@ -532,7 +532,7 @@ fn verifier_names_the_tag_in_throw_diagnostics() {
     let mut cases = Vec::new();
     for (tag, payload) in [(TagId(5), vec![]), (failed, vec![]), (failed, vec![flag])] {
         let mut body = b.function_asm(function).unwrap();
-        body.throw(Reg(0), tag, &payload);
+        body.throw(Reg::EFFECT, tag, &payload);
         let mut builder = b.clone();
         builder.define_function(function, body).unwrap();
         cases.push(verify_program(&builder.build(), &cfg).unwrap_err());

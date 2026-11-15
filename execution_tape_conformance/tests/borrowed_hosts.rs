@@ -69,9 +69,9 @@ fn program() -> Arc<VerifiedProgram> {
     let mut asm = builder.function_asm(entry).unwrap();
     let len = asm.alloc_register(ValueType::I64);
     let tuple = asm.alloc_register(ValueType::Agg);
-    asm.host_call_sig_id(Reg(0), log, Reg(0), &[Reg(1)], &[len])
+    asm.host_call_sig_id(Reg::EFFECT, log, Reg::EFFECT, &[Reg(1)], &[len])
         .tuple_new(tuple, &[Reg(1)])
-        .ret(Reg(0), &[len, tuple]);
+        .ret(Reg::EFFECT, &[len, tuple]);
     builder.define_function(entry, asm).unwrap();
     Arc::new(builder.build_verified().unwrap())
 }

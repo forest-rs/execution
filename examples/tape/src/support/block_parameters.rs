@@ -82,7 +82,7 @@ pub fn rotation(width: u32, rounds: i64, typed: bool) -> Program {
         asm.mov(Reg(width), Reg(temporary)).jmp(head);
     }
     asm.place(exit).unwrap();
-    asm.ret(Reg(0), &values);
+    asm.ret(Reg::EFFECT, &values);
     let register_count = if typed { condition + 1 } else { temporary + 1 };
     let mut kinds = vec![ValueType::I64; register_count as usize];
     kinds[0] = ValueType::Unit;

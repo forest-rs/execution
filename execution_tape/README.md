@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut asm = builder.function_asm(entry)?;
     let one = asm.alloc_register(ValueType::I64);
     let result = asm.alloc_register(ValueType::I64);
-    asm.const_i64(one, 1).i64_add(result, Reg(1), one).ret(Reg(0), &[result]);
+    asm.const_i64(one, 1).i64_add(result, Reg(1), one).ret(Reg::EFFECT, &[result]);
     builder.define_function(entry, asm)?;
     builder.set_function_input_name(entry, 0, "x")?;
     builder.set_function_output_name(entry, 0, "y")?;
@@ -267,7 +267,7 @@ let mut body = Asm::new();
 body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
 body.const_i64(Reg(1), 42).tuple_new(Reg(2), &[Reg(1)]);
 let pc = body.pc();
-body.tuple_get(Reg(1), Reg(2), 0).ret(Reg(0), &[Reg(1)]);
+body.tuple_get(Reg(1), Reg(2), 0).ret(Reg::EFFECT, &[Reg(1)]);
 let mut builder = ProgramBuilder::new();
 let entry = builder.push_function_checked(body, FunctionSig {
     arg_types: vec![], ret_types: vec![ValueType::I64],

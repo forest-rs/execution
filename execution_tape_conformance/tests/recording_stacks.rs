@@ -72,11 +72,11 @@ fn recursive() -> Arc<VerifiedProgram> {
     a.place(descend).unwrap();
     a.const_i64(Reg(2), 1)
         .i64_sub(Reg(4), Reg(1), Reg(2))
-        .call(Reg(0), f, Reg(0), &[Reg(4)], &[Reg(5)])
+        .call(Reg::EFFECT, f, Reg::EFFECT, &[Reg(4)], &[Reg(5)])
         .jmp(observe);
     a.place(observe).unwrap();
-    a.host_call_sig_id(Reg(0), h, Reg(0), &[Reg(1)], &[Reg(5)])
-        .ret(Reg(0), &[Reg(5)]);
+    a.host_call_sig_id(Reg::EFFECT, h, Reg::EFFECT, &[Reg(1)], &[Reg(5)])
+        .ret(Reg::EFFECT, &[Reg(5)]);
     b.define_function(f, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }

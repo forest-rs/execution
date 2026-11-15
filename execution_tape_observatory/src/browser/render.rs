@@ -185,7 +185,7 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                         .map_or_else(|| "invalid / unavailable".into(), describe::type_name);
                     lines.push(format!(
                         "  {reg}: {kind}{}",
-                        if reg == Reg(0) {
+                        if reg == Reg::EFFECT {
                             " · effect token"
                         } else {
                             ""
@@ -303,7 +303,10 @@ pub(super) fn facts(
     let mut lines = vec!["Verifier facts · before → after local instruction:".into()];
     let mut unknown_members = false;
     let (registers, truncated) = operand_registers(instruction);
-    let registers: Vec<_> = registers.into_iter().filter(|&reg| reg != Reg(0)).collect();
+    let registers: Vec<_> = registers
+        .into_iter()
+        .filter(|&reg| reg != Reg::EFFECT)
+        .collect();
     for &reg in registers.iter().take(4) {
         let Some(fact) = facts.register(reg) else {
             continue;

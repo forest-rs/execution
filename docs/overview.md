@@ -36,7 +36,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - **Host call**: effectful operation implemented by the embedder.
 - Host-call arguments are passed as borrowed views (bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning).
 - Hosts receive program metadata, immutable aggregate readers, staged tuple/struct/array construction, and optional incremental access recording.
-- **Effect token**: the initialized Unit register r0 required by call/return instructions.
+- **Effect token**: the initialized Unit register r0 (`Reg::EFFECT`) required by call/return instructions.
 
 ## Execution model
 - Register-based VM with function frames and recursion.
@@ -128,7 +128,7 @@ asm.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64,
 let join = asm.block(&[Reg(4), Reg(5)]);
 asm.br(Reg(1), join.with_args(&[Reg(2), Reg(3)]), join.with_args(&[Reg(3), Reg(2)]));
 asm.place(join)?;
-asm.ret(Reg(0), &[Reg(4), Reg(5)]);
+asm.ret(Reg::EFFECT, &[Reg(4), Reg(5)]);
 ```
 
 Kinds, register bounds, and call/return arity are checked even in unreachable instructions.
@@ -235,9 +235,10 @@ owns snapshots, rejects values scoped to a different program, and names the exec
 its node program on import.
 
 ## Effects
-Calls use a single reserved Unit register, r0. The verifier requires call/host-call `eff_in`
-and `eff_out` operands, and the return effect operand, to name r0. It is initialized on entry
-and has no runtime payload. Pure operations do not carry effect operands.
+Calls use a single reserved Unit register, r0, which `Asm` code names `Reg::EFFECT`. The
+verifier requires call/host-call `eff_in` and `eff_out` operands, and the return effect operand,
+to name r0. It is initialized on entry and has no runtime payload. Pure operations do not carry
+effect operands.
 
 Host effects execute synchronously in verified control-flow order. These operands express the
 calling convention; they do not implement distinct SSA effect values, independent effect lanes,

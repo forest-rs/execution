@@ -90,7 +90,7 @@ pub(super) fn caller(selector: &str) -> Result<Compiled> {
     a.source(SourceId(0), fragment(&source, "(first, second)"))
         .tuple_new(tuple, &[first, second]);
     a.source(SourceId(0), fragment(&source, "return (first, second);"))
-        .ret(Reg(0), &[tuple]);
+        .ret(Reg::EFFECT, &[tuple]);
     let mappings = a.source_mappings(entry).collect();
     b.define_function(entry, a)?;
     b.set_function_name(entry, "main")?;
@@ -130,7 +130,7 @@ pub(super) fn method(delta: i64) -> Result<Compiled> {
             &format!("return CounterCell.add(receiver, {delta});"),
         ),
     )
-    .ret(Reg(0), &[result]);
+    .ret(Reg::EFFECT, &[result]);
     let mappings = a.source_mappings(entry).collect();
     b.define_function(entry, a)?;
     b.set_function_name(entry, "increment")?;

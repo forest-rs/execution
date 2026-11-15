@@ -42,7 +42,8 @@ fn fixture() -> Arc<VerifiedProgram> {
         .unwrap();
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-    a.i64_add(Reg(2), Reg(1), Reg(1)).ret(Reg(0), &[Reg(2)]);
+    a.i64_add(Reg(2), Reg(1), Reg(1))
+        .ret(Reg::EFFECT, &[Reg(2)]);
     b.define_function(child, a).unwrap();
     let mut a = Asm::new();
     a.set_register_types(vec![
@@ -60,8 +61,8 @@ fn fixture() -> Arc<VerifiedProgram> {
     a.place(no).unwrap();
     a.const_i64(Reg(2), 7).jmp(join.with_args(&[Reg(2)]));
     a.place(join).unwrap();
-    a.call(Reg(0), child, Reg(0), &[Reg(2)], &[Reg(3)])
-        .ret(Reg(0), &[Reg(3)]);
+    a.call(Reg::EFFECT, child, Reg::EFFECT, &[Reg(2)], &[Reg(3)])
+        .ret(Reg::EFFECT, &[Reg(3)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -213,7 +214,7 @@ fn watches(program: &VerifiedProgram) -> Vec<execution_tape::recording::Register
                     registers: i
                         .reads()
                         .chain(i.writes())
-                        .filter(|&r| r != Reg(0))
+                        .filter(|&r| r != Reg::EFFECT)
                         .collect(),
                 })
                 .collect::<Vec<_>>()
@@ -231,7 +232,7 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
         .unwrap()
         .clone();
     selected.push(execution_tape::recording::RegisterWatch {
-        registers: vec![Reg(0), Reg(1), Reg(1)],
+        registers: vec![Reg::EFFECT, Reg(1), Reg(1)],
         ..duplicate
     });
     let config = InstructionCapture {
@@ -292,7 +293,7 @@ fn trapping_instruction_has_inputs_but_never_successful_writes() {
     ]);
     a.const_i64(Reg(2), 0)
         .i64_div(Reg(3), Reg(1), Reg(2))
-        .ret(Reg(0), &[Reg(3)]);
+        .ret(Reg::EFFECT, &[Reg(3)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -348,7 +349,7 @@ fn aliased_aggregate_watches_preserve_before_after_graph_identity() {
         .tuple_new(Reg(3), &[Reg(2)])
         .tuple_get(Reg(3), Reg(3), 0)
         .tuple_get(Reg(1), Reg(3), 0)
-        .ret(Reg(0), &[Reg(1)]);
+        .ret(Reg::EFFECT, &[Reg(1)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -433,7 +434,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
     a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     a.const_i64(Reg(1), 42);
     let ret = a.pc();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     b.push_function_checked(
         a,
         FunctionSig {

@@ -120,9 +120,9 @@ fn fixture() -> (Arc<VerifiedProgram>, FuncId) {
         ValueType::I64,
     ]);
     body.i64_add(Reg(2), Reg(1), Reg(1))
-        .host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(3)])
+        .host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, &[], &[Reg(3)])
         .i64_add(Reg(4), Reg(2), Reg(3))
-        .ret(Reg(0), &[Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(4)]);
     let entry = builder
         .push_function_checked(
             body,

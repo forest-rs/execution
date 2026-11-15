@@ -50,11 +50,11 @@ fn emit_generator(b: &mut ProgramBuilder, yield_tag: TagId) -> FuncId {
     asm.i64_ge(done, i, n);
     asm.br(done, exit, body);
     asm.place(body).unwrap();
-    asm.suspend(Reg(0), yield_tag, Reg(0), &[i], &[]);
+    asm.suspend(Reg::EFFECT, yield_tag, Reg::EFFECT, &[i], &[]);
     asm.i64_add(i, i, one);
     asm.jmp(check);
     asm.place(exit).unwrap();
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(generator, asm).unwrap();
     generator
 }
@@ -69,7 +69,7 @@ fn protected_resume(
     rets: &[Reg],
 ) {
     asm.begin_region(clauses);
-    asm.resume(Reg(0), call_sig, cont, Reg(0), args, rets);
+    asm.resume(Reg::EFFECT, call_sig, cont, Reg::EFFECT, args, rets);
     asm.end_region();
 }
 
@@ -108,7 +108,7 @@ fn generators() -> Generators {
         &[n],
         &[],
     );
-    asm.ret(Reg(0), &[total]);
+    asm.ret(Reg::EFFECT, &[total]);
     asm.place(yielded).unwrap();
     asm.i64_add(total, total, value);
     protected_resume(
@@ -119,7 +119,7 @@ fn generators() -> Generators {
         &[],
         &[],
     );
-    asm.ret(Reg(0), &[total]);
+    asm.ret(Reg::EFFECT, &[total]);
     b.define_function(sum, asm).unwrap();
 
     Generators {
@@ -205,10 +205,10 @@ fn effects() -> Effects {
         asm.alloc_register(ValueType::I64),
         asm.alloc_register(ValueType::I64),
     );
-    asm.suspend(Reg(0), ask, Reg(0), &[], &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[], &[answer]);
     asm.const_i64(one, 1);
     asm.i64_add(answer, answer, one);
-    asm.ret(Reg(0), &[answer]);
+    asm.ret(Reg::EFFECT, &[answer]);
     b.define_function(leaf, asm).unwrap();
 
     let body = b
@@ -220,7 +220,7 @@ fn effects() -> Effects {
     let [second] = b.emit_call(&mut asm, leaf, &[]).unwrap();
     asm.i64_add(first, first, second);
     asm.i64_add(first, first, x);
-    asm.ret(Reg(0), &[first]);
+    asm.ret(Reg::EFFECT, &[first]);
     b.define_function(body, asm).unwrap();
 
     // `driver(answer, x)` runs `target(x)` as a continuation, answering every `ask`.
@@ -248,7 +248,7 @@ fn effects() -> Effects {
             &[x],
             &[out],
         );
-        asm.ret(Reg(0), &[out]);
+        asm.ret(Reg::EFFECT, &[out]);
         asm.place(asked).unwrap();
         // A stale driver resumes the consumed original instead of the suspended rest.
         let resumed = if stale { cont } else { rest };
@@ -260,7 +260,7 @@ fn effects() -> Effects {
             &[answer],
             &[out],
         );
-        asm.ret(Reg(0), &[out]);
+        asm.ret(Reg::EFFECT, &[out]);
         b.define_function(driver, asm).unwrap();
         driver
     };
@@ -274,10 +274,10 @@ fn effects() -> Effects {
     let mut asm = b.function_asm(logged).unwrap();
     let x = b.argument(logged, 0).unwrap();
     let answer = asm.alloc_register(ValueType::I64);
-    asm.suspend(Reg(0), ask, Reg(0), &[], &[answer]);
-    asm.suspend(Reg(0), log, Reg(0), &[answer], &[]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[], &[answer]);
+    asm.suspend(Reg::EFFECT, log, Reg::EFFECT, &[answer], &[]);
     asm.i64_add(answer, answer, x);
-    asm.ret(Reg(0), &[answer]);
+    asm.ret(Reg::EFFECT, &[answer]);
     b.define_function(logged, asm).unwrap();
 
     let middle = b
@@ -303,7 +303,7 @@ fn effects() -> Effects {
         &[x],
         &[out],
     );
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     asm.place(logged_block).unwrap();
     protected_resume(
         &mut asm,
@@ -313,7 +313,7 @@ fn effects() -> Effects {
         &[],
         &[out],
     );
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     b.define_function(middle, asm).unwrap();
     let outer = driver(&mut b, middle, false, i64_to_i64);
     // `leaf` takes no argument, so its continuation is not resumable as `i64_to_i64`.
@@ -438,9 +438,9 @@ fn a_continuation_of_one_unit_suspends_to_a_handler_in_another() {
     let mut asm = a.function_asm(asker).unwrap();
     let x = a.argument(asker, 0).unwrap();
     let answer = asm.alloc_register(ValueType::I64);
-    asm.suspend(Reg(0), ask, Reg(0), &[], &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[], &[answer]);
     asm.i64_add(answer, answer, x);
-    asm.ret(Reg(0), &[answer]);
+    asm.ret(Reg::EFFECT, &[answer]);
     a.define_function(asker, asm).unwrap();
     let a = Arc::new(a.build_verified().unwrap());
 
@@ -476,7 +476,7 @@ fn a_continuation_of_one_unit_suspends_to_a_handler_in_another() {
         &[x],
         &[out],
     );
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     asm.place(asked).unwrap();
     protected_resume(
         &mut asm,
@@ -486,7 +486,7 @@ fn a_continuation_of_one_unit_suspends_to_a_handler_in_another() {
         &[answer],
         &[out],
     );
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     b.define_function(drive, asm).unwrap();
     let b = Arc::new(b.build_verified().unwrap());
 
@@ -661,11 +661,11 @@ fn exceptional() -> Exceptional {
     let code = asm.alloc_register(ValueType::I64);
     let stopped = asm.block(&[code]);
     asm.begin_region(&[Catch::Tag(stop, stopped)]);
-    asm.suspend(Reg(0), yield_tag, Reg(0), &[n], &[]);
+    asm.suspend(Reg::EFFECT, yield_tag, Reg::EFFECT, &[n], &[]);
     asm.end_region();
-    asm.ret(Reg(0), &[n]);
+    asm.ret(Reg::EFFECT, &[n]);
     asm.place(stopped).unwrap();
-    asm.ret(Reg(0), &[code]);
+    asm.ret(Reg::EFFECT, &[code]);
     b.define_function(guarded, asm).unwrap();
 
     let thrower = b.declare_function(&one_to_one).unwrap();
@@ -704,31 +704,47 @@ fn exceptional() -> Exceptional {
         asm.begin_region(&clauses);
         match start {
             Start::Resume => {
-                asm.resume(Reg(0), i64_to_i64, cont, Reg(0), &[x], &[out]);
+                asm.resume(Reg::EFFECT, i64_to_i64, cont, Reg::EFFECT, &[x], &[out]);
             }
             Start::Throw => {
-                asm.resume_throw(Reg(0), i64_to_i64, cont, Reg(0), stop, &[x], &[out]);
+                asm.resume_throw(
+                    Reg::EFFECT,
+                    i64_to_i64,
+                    cont,
+                    Reg::EFFECT,
+                    stop,
+                    &[x],
+                    &[out],
+                );
             }
             Start::Bind => {
                 asm.cont_bind(cont, i64_to_i64, unit_to_i64, cont, &[x]);
-                asm.resume(Reg(0), unit_to_i64, cont, Reg(0), &[], &[out]);
+                asm.resume(Reg::EFFECT, unit_to_i64, cont, Reg::EFFECT, &[], &[out]);
             }
         }
         asm.end_region();
-        asm.ret(Reg(0), &[out]);
+        asm.ret(Reg::EFFECT, &[out]);
         asm.place(yielded).unwrap();
         asm.begin_region(&clauses);
         match start {
             // A bound continuation's suspension resumes normally; others raise `stop` into it.
-            Start::Bind => asm.resume(Reg(0), unit_to_i64, rest, Reg(0), &[], &[out]),
-            _ => asm.resume_throw(Reg(0), unit_to_i64, rest, Reg(0), stop, &[value], &[out]),
+            Start::Bind => asm.resume(Reg::EFFECT, unit_to_i64, rest, Reg::EFFECT, &[], &[out]),
+            _ => asm.resume_throw(
+                Reg::EFFECT,
+                unit_to_i64,
+                rest,
+                Reg::EFFECT,
+                stop,
+                &[value],
+                &[out],
+            ),
         };
         asm.end_region();
-        asm.ret(Reg(0), &[out]);
+        asm.ret(Reg::EFFECT, &[out]);
         asm.place(stopped).unwrap();
         asm.const_i64(thousand, 1000);
         asm.i64_add(code, code, thousand);
-        asm.ret(Reg(0), &[code]);
+        asm.ret(Reg::EFFECT, &[code]);
         b.define_function(driver, asm).unwrap();
         driver
     };
@@ -860,13 +876,13 @@ fn a_guest_callback_cannot_suspend_its_pending_host_request() {
     let asker = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
     let mut asm = b.function_asm(asker).unwrap();
     let answer = asm.alloc_register(ValueType::I64);
-    asm.suspend(Reg(0), ask, Reg(0), &[], &[answer]);
-    asm.ret(Reg(0), &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[], &[answer]);
+    asm.ret(Reg::EFFECT, &[answer]);
     b.define_function(asker, asm).unwrap();
     let waiter = b.declare_function(sig(&[], &[])).unwrap();
     let mut asm = b.function_asm(waiter).unwrap();
-    asm.host_call(Reg(0), wait, Reg(0), &[], &[]);
-    asm.ret(Reg(0), &[]);
+    asm.host_call(Reg::EFFECT, wait, Reg::EFFECT, &[], &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(waiter, asm).unwrap();
     // `drive()` handles `ask` around a continuation that waits on the host.
     let drive = b.declare_function(sig(&[], &[])).unwrap();
@@ -885,9 +901,9 @@ fn a_guest_callback_cannot_suspend_its_pending_host_request() {
         &[],
         &[],
     );
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     asm.place(asked).unwrap();
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(drive, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
 
@@ -974,9 +990,9 @@ fn verifier_keeps_continuations_inside_guest_registers_and_checks_their_instruct
             &[],
             &[],
         );
-        asm.ret(Reg(0), &[]);
+        asm.ret(Reg::EFFECT, &[]);
         asm.place(handler).unwrap();
-        asm.ret(Reg(0), &[]);
+        asm.ret(Reg::EFFECT, &[]);
         b.define_function(f, asm).unwrap();
     });
     assert!(
@@ -1009,7 +1025,7 @@ fn verifier_keeps_continuations_inside_guest_registers_and_checks_their_instruct
         asm.const_i64(value, 1);
         asm.cont_new(cont, from, func);
         asm.cont_bind(cont, from, to, cont, &[value]);
-        asm.ret(Reg(0), &[]);
+        asm.ret(Reg::EFFECT, &[]);
         b.define_function(f, asm).unwrap();
     });
     assert!(
@@ -1047,7 +1063,7 @@ fn suspended_registers_survive_resumption_at_another_depth() {
     let mut asm = b.function_asm(five).unwrap();
     let value = asm.alloc_register(ValueType::I64);
     asm.const_i64(value, 5);
-    asm.ret(Reg(0), &[value]);
+    asm.ret(Reg::EFFECT, &[value]);
     b.define_function(five, asm).unwrap();
 
     let holder = b
@@ -1062,7 +1078,7 @@ fn suspended_registers_survive_resumption_at_another_depth() {
     let ignored = asm.block(&[done]);
     asm.const_func(f, five);
     asm.cont_new(inner, unit_to_i64, f);
-    asm.suspend(Reg(0), tick, Reg(0), &[], &[]);
+    asm.suspend(Reg::EFFECT, tick, Reg::EFFECT, &[], &[]);
     protected_resume(
         &mut asm,
         &[Catch::On(tick, ignored)],
@@ -1071,7 +1087,7 @@ fn suspended_registers_survive_resumption_at_another_depth() {
         &[],
         &[out],
     );
-    asm.ret(Reg(0), &[x, out]);
+    asm.ret(Reg::EFFECT, &[x, out]);
     asm.place(ignored).unwrap();
     asm.trap(1);
     b.define_function(holder, asm).unwrap();
@@ -1088,8 +1104,8 @@ fn suspended_registers_survive_resumption_at_another_depth() {
         asm.alloc_register(ValueType::I32),
         asm.alloc_register(ValueType::I64),
     );
-    asm.resume(Reg(0), held_sig, cont, Reg(0), &[], &[a, c]);
-    asm.ret(Reg(0), &[a, c]);
+    asm.resume(Reg::EFFECT, held_sig, cont, Reg::EFFECT, &[], &[a, c]);
+    asm.ret(Reg::EFFECT, &[a, c]);
     b.define_function(helper, asm).unwrap();
 
     let drive = b
@@ -1115,10 +1131,10 @@ fn suspended_registers_survive_resumption_at_another_depth() {
         &[x],
         &[a, c],
     );
-    asm.ret(Reg(0), &[a, c]);
+    asm.ret(Reg::EFFECT, &[a, c]);
     asm.place(ticked).unwrap();
     let [a, c] = b.emit_call(&mut asm, helper, &[rest]).unwrap();
-    asm.ret(Reg(0), &[a, c]);
+    asm.ret(Reg::EFFECT, &[a, c]);
     b.define_function(drive, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     assert_eq!(
@@ -1153,7 +1169,7 @@ fn a_closure_continuation_receives_its_environment_first() {
     let captured = asm.alloc_register(ValueType::I64);
     asm.tuple_get(captured, env, 0);
     asm.i64_add(captured, captured, x);
-    asm.ret(Reg(0), &[captured]);
+    asm.ret(Reg::EFFECT, &[captured]);
     b.define_function(body, asm).unwrap();
     let drive = b
         .declare_function(sig(&[ValueType::I64, ValueType::I64], &[ValueType::I64]))
@@ -1169,8 +1185,8 @@ fn a_closure_continuation_receives_its_environment_first() {
     asm.tuple_new(env, &[captured]);
     asm.closure_new(closure, f, env);
     asm.cont_new(cont, i64_to_i64, closure);
-    asm.resume(Reg(0), i64_to_i64, cont, Reg(0), &[x], &[out]);
-    asm.ret(Reg(0), &[out]);
+    asm.resume(Reg::EFFECT, i64_to_i64, cont, Reg::EFFECT, &[x], &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     b.define_function(drive, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     assert_eq!(
@@ -1190,7 +1206,7 @@ fn continuations_cannot_cross_the_invocation_boundary() {
     let mut b = ProgramBuilder::new();
     let takes = b.declare_function(sig(&[ValueType::Cont], &[])).unwrap();
     let mut asm = b.function_asm(takes).unwrap();
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(takes, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let result = run(&program, takes, &[Value::Unit], Limits::default());
@@ -1253,7 +1269,7 @@ fn abandoned_continuations_hold_their_frames_until_the_invocation_ends() {
     asm.i64_sub(n, n, one);
     asm.jmp(check);
     asm.place(exit).unwrap();
-    asm.ret(Reg(0), &[n]);
+    asm.ret(Reg::EFFECT, &[n]);
     b.define_function(take_first, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let limits = Limits {
@@ -1277,8 +1293,8 @@ fn recordings_replay_continuation_traps() {
     let ask = b.declare_tag("ask", &[]).unwrap();
     let f = b.declare_function(sig(&[], &[])).unwrap();
     let mut asm = b.function_asm(f).unwrap();
-    asm.suspend(Reg(0), ask, Reg(0), &[], &[]);
-    asm.ret(Reg(0), &[]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[], &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(f, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
 
@@ -1323,7 +1339,7 @@ fn verifier_checks_a_known_callable_against_its_continuation_signature() {
         let cont = asm.alloc_register(ValueType::Cont);
         asm.const_func(func, f);
         asm.cont_new(cont, unit_to_i64, func);
-        asm.ret(Reg(0), &[x]);
+        asm.ret(Reg::EFFECT, &[x]);
         b.define_function(f, asm).unwrap();
     });
     assert!(
@@ -1413,13 +1429,13 @@ fn resume_throw_consumes_its_continuation() {
     asm.const_func(func, f);
     asm.cont_new(cont, unit_to_unit, func);
     asm.begin_region(&[Catch::Tag(stop, stopped)]);
-    asm.resume_throw(Reg(0), unit_to_unit, cont, Reg(0), stop, &[], &[]);
+    asm.resume_throw(Reg::EFFECT, unit_to_unit, cont, Reg::EFFECT, stop, &[], &[]);
     asm.end_region();
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     asm.place(stopped).unwrap();
     // The unstarted continuation was discarded; using it again traps.
-    asm.resume(Reg(0), unit_to_unit, cont, Reg(0), &[], &[]);
-    asm.ret(Reg(0), &[]);
+    asm.resume(Reg::EFFECT, unit_to_unit, cont, Reg::EFFECT, &[], &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(f, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let result = run(&program, f, &[], Limits::default());
@@ -1453,9 +1469,9 @@ fn bind_to_suspension(bound: impl FnOnce(&mut Asm, Reg, Reg)) -> Result<Vec<Valu
         asm.alloc_register(ValueType::Agg),
         asm.alloc_register(ValueType::I64),
     );
-    asm.suspend(Reg(0), ask, Reg(0), &[], &[tuple]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[], &[tuple]);
     asm.tuple_get(first, tuple, 0);
-    asm.ret(Reg(0), &[first]);
+    asm.ret(Reg::EFFECT, &[first]);
     b.define_function(leaf, asm).unwrap();
 
     let driver = b
@@ -1479,12 +1495,12 @@ fn bind_to_suspension(bound: impl FnOnce(&mut Asm, Reg, Reg)) -> Result<Vec<Valu
         &[],
         &[out],
     );
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     asm.place(asked).unwrap();
     bound(&mut asm, value, pick);
     asm.cont_bind(rest, tuple_to_i64, unit_to_i64, rest, &[value]);
-    asm.resume(Reg(0), unit_to_i64, rest, Reg(0), &[], &[out]);
-    asm.ret(Reg(0), &[out]);
+    asm.resume(Reg::EFFECT, unit_to_i64, rest, Reg::EFFECT, &[], &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     b.define_function(driver, asm).unwrap();
     let program = Arc::new(b.build_verified().map_err(|error| format!("{error:?}"))?);
     run(&program, driver, &[Value::Bool(true)], Limits::default())
@@ -1540,8 +1556,8 @@ fn cont_bind_consumes_its_continuation() {
     asm.const_func(func, f);
     asm.cont_new(cont, i64_to_i64, func);
     asm.cont_bind(bound, i64_to_i64, unit_to_i64, cont, &[x]);
-    asm.resume(Reg(0), i64_to_i64, cont, Reg(0), &[x], &[x]);
-    asm.ret(Reg(0), &[x]);
+    asm.resume(Reg::EFFECT, i64_to_i64, cont, Reg::EFFECT, &[x], &[x]);
+    asm.ret(Reg::EFFECT, &[x]);
     b.define_function(f, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let result = run(&program, f, &[Value::I64(1)], Limits::default());
@@ -1581,7 +1597,7 @@ fn droppers() -> Droppers {
     let mut asm = b.function_asm(seven).unwrap();
     let out = asm.alloc_register(ValueType::I64);
     asm.const_i64(out, 7);
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     b.define_function(seven, asm).unwrap();
 
     // Both loops count `n` down to zero around `body`, which may use `f` and `cont`.
@@ -1612,7 +1628,7 @@ fn droppers() -> Droppers {
             asm.i64_sub(n, n, one);
             asm.jmp(check);
             asm.place(exit).unwrap();
-            asm.ret(Reg(0), &[n]);
+            asm.ret(Reg::EFFECT, &[n]);
             b.define_function(func, asm).unwrap();
             func
         };
@@ -1652,7 +1668,7 @@ fn droppers() -> Droppers {
         asm.const_func(f, seven);
         asm.cont_new(cont, unit_to_i64, f);
         edit(&mut asm, cont, out);
-        asm.ret(Reg(0), &[out]);
+        asm.ret(Reg::EFFECT, &[out]);
         b.define_function(func, asm).unwrap();
         func
     };
@@ -1663,10 +1679,10 @@ fn droppers() -> Droppers {
     });
     let resume_dropped = misuse(&mut b, &|asm, cont, out| {
         asm.cont_drop(cont);
-        asm.resume(Reg(0), unit_to_i64, cont, Reg(0), &[], &[out]);
+        asm.resume(Reg::EFFECT, unit_to_i64, cont, Reg::EFFECT, &[], &[out]);
     });
     let drop_returned = misuse(&mut b, &|asm, cont, out| {
-        asm.resume(Reg(0), unit_to_i64, cont, Reg(0), &[], &[out]);
+        asm.resume(Reg::EFFECT, unit_to_i64, cont, Reg::EFFECT, &[], &[out]);
         asm.cont_drop(cont);
     });
 
@@ -1688,11 +1704,11 @@ fn droppers() -> Droppers {
     asm.cont_new(second, unit_to_i64, f);
     asm.br(stale, old, new);
     asm.place(old).unwrap();
-    asm.resume(Reg(0), unit_to_i64, first, Reg(0), &[], &[out]);
-    asm.ret(Reg(0), &[out]);
+    asm.resume(Reg::EFFECT, unit_to_i64, first, Reg::EFFECT, &[], &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     asm.place(new).unwrap();
-    asm.resume(Reg(0), unit_to_i64, second, Reg(0), &[], &[out]);
-    asm.ret(Reg(0), &[out]);
+    asm.resume(Reg::EFFECT, unit_to_i64, second, Reg::EFFECT, &[], &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     b.define_function(reuse, asm).unwrap();
 
     Droppers {
@@ -1782,7 +1798,7 @@ fn cont_drop_is_verified_disassembled_encoded_and_recorded() {
         let value = asm.alloc_register(ValueType::I64);
         asm.const_i64(value, 1);
         asm.cont_drop(value);
-        asm.ret(Reg(0), &[]);
+        asm.ret(Reg::EFFECT, &[]);
         b.define_function(f, asm).unwrap();
     });
     assert!(
@@ -1801,7 +1817,7 @@ fn cont_drop_is_verified_disassembled_encoded_and_recorded() {
         let mut asm = b.function_asm(f).unwrap();
         let cont = asm.alloc_register(ValueType::Cont);
         asm.cont_drop(cont);
-        asm.ret(Reg(0), &[]);
+        asm.ret(Reg::EFFECT, &[]);
         b.define_function(f, asm).unwrap();
     });
     assert!(

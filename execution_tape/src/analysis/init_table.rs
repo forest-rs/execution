@@ -214,7 +214,7 @@ mod tests {
             .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
             .unwrap();
         let mut a = b.function_asm(helper).unwrap();
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         b.define_function(helper, a).unwrap();
         let probe = b.host_sig_for(
             "probe",
@@ -241,7 +241,7 @@ mod tests {
         a.const_i64(i, 0).const_i64(one, 1);
         for (n, &register) in wide.iter().enumerate() {
             if n % 16 == 0 {
-                a.call(Reg(0), helper, Reg(0), &[i], &[register]);
+                a.call(Reg::EFFECT, helper, Reg::EFFECT, &[i], &[register]);
             } else {
                 a.mov(register, i);
             }
@@ -251,17 +251,17 @@ mod tests {
         a.i64_ge(done, i, Reg(1));
         a.br(done, exit.with_args(&[i]), body);
         a.place(body).unwrap();
-        a.host_call(Reg(0), probe, Reg(0), &[i], &[text])
-            .call(Reg(0), helper, Reg(0), &[i], &[late])
+        a.host_call(Reg::EFFECT, probe, Reg::EFFECT, &[i], &[text])
+            .call(Reg::EFFECT, helper, Reg::EFFECT, &[i], &[late])
             .i64_add(i, i, one)
             .jmp(check);
         a.place(exit).unwrap();
         a.i64_add(carried, carried, wide[69])
-            .ret(Reg(0), &[carried]);
+            .ret(Reg::EFFECT, &[carried]);
         a.place(dead).unwrap();
         a.const_i64(late, 3)
-            .call(Reg(0), helper, Reg(0), &[late], &[late])
-            .ret(Reg(0), &[late]);
+            .call(Reg::EFFECT, helper, Reg::EFFECT, &[late], &[late])
+            .ret(Reg::EFFECT, &[late]);
         b.define_function(entry, a).unwrap();
         assert_matches_analysis(&b.build_verified().unwrap());
     }
@@ -288,11 +288,11 @@ mod tests {
         a.i64_ge(done, i, Reg(1));
         a.br(done, exit, body);
         a.place(body).unwrap();
-        a.suspend(Reg(0), yield_tag, Reg(0), &[i], &[])
+        a.suspend(Reg::EFFECT, yield_tag, Reg::EFFECT, &[i], &[])
             .i64_add(i, i, one)
             .jmp(check);
         a.place(exit).unwrap();
-        a.throw(Reg(0), failed, &[i]);
+        a.throw(Reg::EFFECT, failed, &[i]);
         b.define_function(generator, a).unwrap();
 
         // Drives the generator under `on` and `catch` clauses; a raise mid-block leaves the
@@ -316,17 +316,18 @@ mod tests {
         a.const_func(f, generator).cont_new(cont, start, f);
         a.begin_region(&[Catch::On(yield_tag, yielded), Catch::Tag(failed, handler)]);
         a.const_i64(before, 1)
-            .resume(Reg(0), start, cont, Reg(0), &[Reg(1)], &[])
+            .resume(Reg::EFFECT, start, cont, Reg::EFFECT, &[Reg(1)], &[])
             .const_i64(after, 2);
         a.end_region();
-        a.const_i64(total, 0).ret(Reg(0), &[total]);
+        a.const_i64(total, 0).ret(Reg::EFFECT, &[total]);
         a.place(yielded).unwrap();
         a.begin_region(&[Catch::On(yield_tag, yielded), Catch::Tag(failed, handler)]);
-        a.resume(Reg(0), next, rest, Reg(0), &[], &[]);
+        a.resume(Reg::EFFECT, next, rest, Reg::EFFECT, &[], &[]);
         a.end_region();
-        a.ret(Reg(0), &[value]);
+        a.ret(Reg::EFFECT, &[value]);
         a.place(handler).unwrap();
-        a.i64_add(caught, caught, before).ret(Reg(0), &[caught]);
+        a.i64_add(caught, caught, before)
+            .ret(Reg::EFFECT, &[caught]);
         b.define_function(driver, a).unwrap();
         assert_matches_analysis(&b.build_verified().unwrap());
     }
@@ -349,15 +350,15 @@ mod tests {
         let mut b = ProgramBuilder::new();
         let helper = b.declare_function(sig(&[], &[])).unwrap();
         let mut a = b.function_asm(helper).unwrap();
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         b.define_function(helper, a).unwrap();
         let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
         let mut a = b.function_asm(entry).unwrap();
         let value = a.alloc_register(ValueType::I64);
         a.const_i64(value, 1);
         let call = a.pc();
-        a.call(Reg(0), helper, Reg(0), &[], &[])
-            .ret(Reg(0), &[value]);
+        a.call(Reg::EFFECT, helper, Reg::EFFECT, &[], &[])
+            .ret(Reg::EFFECT, &[value]);
         b.define_function(entry, a).unwrap();
         let verified = b.build_verified().unwrap();
         let table = verified.init_table(entry).unwrap();

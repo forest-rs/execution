@@ -52,7 +52,8 @@ fn program(trap: bool) -> (VerifiedProgram, FuncId, Pc, SourceMap) {
         .unwrap();
     let mut a = b.function_asm(child).unwrap();
     let result = a.alloc_register(ValueType::I64);
-    a.i64_add(result, Reg(1), Reg(1)).ret(Reg(0), &[result]);
+    a.i64_add(result, Reg(1), Reg(1))
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(child, a).unwrap();
     b.set_function_name(child, "double").unwrap();
     let entry = b
@@ -67,13 +68,13 @@ fn program(trap: bool) -> (VerifiedProgram, FuncId, Pc, SourceMap) {
     let tuple = a.alloc_register(ValueType::Agg);
     a.const_i64(arg, 21);
     let call = a.pc();
-    a.call(Reg(0), child, Reg(0), &[arg], &[result]);
+    a.call(Reg::EFFECT, child, Reg::EFFECT, &[arg], &[result]);
     let publish = a.pc();
-    a.host_call_sig_id(Reg(0), echo, Reg(0), &[result], &[result]);
+    a.host_call_sig_id(Reg::EFFECT, echo, Reg::EFFECT, &[result], &[result]);
     if trap {
         a.trap(17);
     }
-    a.tuple_new(tuple, &[result]).ret(Reg(0), &[tuple]);
+    a.tuple_new(tuple, &[result]).ret(Reg::EFFECT, &[tuple]);
     b.define_function(entry, a).unwrap();
     b.set_function_name(entry, "main").unwrap();
     let p = b.build_verified().unwrap();
@@ -121,7 +122,7 @@ fn object_program() -> (VerifiedProgram, FuncId) {
         })
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     b.define_function(entry, a).unwrap();
     (b.build_verified().unwrap(), entry)
 }
@@ -478,7 +479,7 @@ fn join_declarations_cannot_create_unreachable_breakpoints_and_transfers_are_ato
         .jmp(join.with_args(&[y, x]));
     let declaration = a.pc();
     a.place(join).unwrap();
-    a.ret(Reg(0), &[x, y]);
+    a.ret(Reg::EFFECT, &[x, y]);
     b.define_function(entry, a).unwrap();
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
@@ -530,7 +531,7 @@ fn applies() -> VerifiedProgram {
             &[twenty],
         )
         .unwrap();
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(apply, a).unwrap();
     b.set_function_name(apply, "apply").unwrap();
     b.build_verified().unwrap()

@@ -96,7 +96,7 @@ fn program() -> Result<(VerifiedProgram, FuncId, SourceMap), Box<dyn std::error:
     let answer = a.alloc_register(ValueType::I64);
     a.i64_add(answer, sample, sample);
     a.source(SourceId(0), source("return sample + sample;"));
-    a.ret(Reg(0), &[answer]);
+    a.ret(Reg::EFFECT, &[answer]);
     let mut mappings: Vec<_> = a.source_mappings(double).collect();
     b.define_function(double, a)?;
     b.set_function_name(double, "double")?;
@@ -114,7 +114,7 @@ fn program() -> Result<(VerifiedProgram, FuncId, SourceMap), Box<dyn std::error:
     let tuple = a.alloc_register(ValueType::Agg);
     a.tuple_new(tuple, &[receiver, answer]);
     a.source(SourceId(0), source("return (receiver, answer);"));
-    a.ret(Reg(0), &[tuple]);
+    a.ret(Reg::EFFECT, &[tuple]);
     mappings.extend(a.source_mappings(main));
     b.define_function(main, a)?;
     b.set_function_name(main, "main")?;

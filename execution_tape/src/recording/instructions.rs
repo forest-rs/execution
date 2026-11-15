@@ -168,7 +168,7 @@ impl History {
         for watch in &mut watches {
             watch.registers.sort_unstable();
             watch.registers.dedup();
-            watch.registers.retain(|&reg| reg != Reg(0));
+            watch.registers.retain(|&reg| reg != Reg::EFFECT);
         }
         watches.retain(|watch| !watch.registers.is_empty());
         config.watches = watches;

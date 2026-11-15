@@ -80,7 +80,7 @@ fn numeric(c: &mut Criterion) {
                     _ => unreachable!(),
                 }
             }
-            body.ret(Reg(0), &[Reg(1)]);
+            body.ret(Reg::EFFECT, &[Reg(1)]);
             let mut builder = ProgramBuilder::new();
             let entry = builder
                 .push_function_checked(
@@ -177,11 +177,11 @@ fn boundaries(c: &mut Criterion) {
                         body.const_pool(Reg(1), literal);
                     }
                     _ => {
-                        body.host_call_sig_id(Reg(0), host, Reg(0), &[Reg(1)], &[Reg(1)]);
+                        body.host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, &[Reg(1)], &[Reg(1)]);
                     }
                 }
             }
-            body.ret(Reg(0), &[Reg(1)]);
+            body.ret(Reg::EFFECT, &[Reg(1)]);
             let entry = builder
                 .push_function_checked(
                     body,

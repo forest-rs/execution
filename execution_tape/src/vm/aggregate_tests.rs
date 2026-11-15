@@ -47,7 +47,7 @@ fn construction(kind: &str, width: usize, count: usize) -> VerifiedProgram {
             _ => unreachable!(),
         };
     }
-    body.ret(Reg(0), &[aggregate]);
+    body.ret(Reg::EFFECT, &[aggregate]);
     builder.define_function(entry, body).unwrap();
     builder.build_verified().unwrap()
 }
@@ -133,14 +133,14 @@ fn aggregate_budget_is_shared_by_guest_calls_and_checked_replay() {
     let helper = builder.declare_function(sig).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let dst = body.alloc_register(ValueType::Agg);
-    body.call(Reg(0), helper, Reg(0), &[], &[dst]);
-    body.call(Reg(0), helper, Reg(0), &[], &[dst]);
-    body.ret(Reg(0), &[dst]);
+    body.call(Reg::EFFECT, helper, Reg::EFFECT, &[], &[dst]);
+    body.call(Reg::EFFECT, helper, Reg::EFFECT, &[], &[dst]);
+    body.ret(Reg::EFFECT, &[dst]);
     builder.define_function(entry, body).unwrap();
     let mut body = builder.function_asm(helper).unwrap();
     let dst = body.alloc_register(ValueType::Agg);
     body.tuple_new(dst, &[]);
-    body.ret(Reg(0), &[dst]);
+    body.ret(Reg::EFFECT, &[dst]);
     builder.define_function(helper, body).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     for limit in [0, 1, 2] {
@@ -213,7 +213,7 @@ fn borrowed_nested_aggregates_charge_only_new_immediate_fields() {
     let mut body = builder.function_asm(entry).unwrap();
     let dst = body.alloc_register(ValueType::Agg);
     body.tuple_new(dst, &[Reg(1), Reg(1)]);
-    body.ret(Reg(0), &[dst]);
+    body.ret(Reg::EFFECT, &[dst]);
     builder.define_function(entry, body).unwrap();
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(

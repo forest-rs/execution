@@ -22,7 +22,7 @@
 //! let tuple = contracts.intern(Contract::Tuple(&[Some(integer)])).unwrap();
 //! let mut body = Asm::new();
 //! body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-//! body.ret(Reg(0), &[Reg(1)]);
+//! body.ret(Reg::EFFECT, &[Reg(1)]);
 //! let parts = body.finish_parts().unwrap();
 //! let mut program = Program::new(vec![], vec![], vec![], TypeTableDef::default(), vec![FunctionDef {
 //!     arg_types: vec![ValueType::Agg], ret_types: vec![ValueType::Agg],

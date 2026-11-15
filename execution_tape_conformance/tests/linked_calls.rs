@@ -46,7 +46,9 @@ fn scale(b: &mut ProgramBuilder, factor: i64) -> FuncId {
     let x = b.argument(scale, 0).unwrap();
     let k = body.alloc_register(ValueType::I64);
     let y = body.alloc_register(ValueType::I64);
-    body.const_i64(k, factor).i64_mul(y, x, k).ret(Reg(0), &[y]);
+    body.const_i64(k, factor)
+        .i64_mul(y, x, k)
+        .ret(Reg::EFFECT, &[y]);
     b.define_function(scale, body).unwrap();
     scale
 }
@@ -63,7 +65,7 @@ fn linked(factor: i64) -> Arc<VerifiedProgram> {
     let mut body = b.function_asm(caller).unwrap();
     let x = b.argument(caller, 0).unwrap();
     let [y] = b.emit_call(&mut body, link, &[x]).unwrap();
-    body.ret(Reg(0), &[y]);
+    body.ret(Reg::EFFECT, &[y]);
     b.define_function(caller, body).unwrap();
     Arc::new(b.build_verified().unwrap())
 }
@@ -181,7 +183,7 @@ fn relinking_rejects_anything_but_an_installed_function_of_the_exact_signature()
         .unwrap();
     let mut body = b.function_asm(wrong).unwrap();
     let x = b.argument(wrong, 0).unwrap();
-    body.ret(Reg(0), &[x]);
+    body.ret(Reg::EFFECT, &[x]);
     b.define_function(wrong, body).unwrap();
     let other = vm.install(b.build_verified().unwrap()).unwrap();
 
@@ -279,12 +281,12 @@ fn verification_requires_the_target_to_have_the_link_signature() {
         .unwrap();
     let mut body = b.function_asm(wrong).unwrap();
     let x = b.argument(wrong, 0).unwrap();
-    body.ret(Reg(0), &[x]);
+    body.ret(Reg::EFFECT, &[x]);
     b.define_function(wrong, body).unwrap();
     let right = b.declare_function(i64_to_i64()).unwrap();
     let mut body = b.function_asm(right).unwrap();
     let x = b.argument(right, 0).unwrap();
-    body.ret(Reg(0), &[x]);
+    body.ret(Reg::EFFECT, &[x]);
     b.define_function(right, body).unwrap();
     b.declare_link("right", right).unwrap();
     let mut program = b.build();
@@ -304,7 +306,7 @@ fn verification_requires_the_target_to_have_the_link_signature() {
 fn verification_rejects_duplicate_link_names_and_unknown_links() {
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    body.ret(Reg(0), &[Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(1)]);
     let mut program = with_links(body, |b| {
         b.declare_link("a", FuncId(0)).unwrap();
         b.declare_link("b", FuncId(0)).unwrap();
@@ -322,8 +324,8 @@ fn verification_rejects_duplicate_link_names_and_unknown_links() {
 
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-    body.call_link(Reg(0), LinkId(3), Reg(0), &[Reg(1)], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+    body.call_link(Reg::EFFECT, LinkId(3), Reg::EFFECT, &[Reg(1)], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let program = with_links(body, |b| {
         b.declare_link("a", FuncId(0)).unwrap();
     });
@@ -348,8 +350,8 @@ fn verification_checks_linked_calls_against_the_link_signature() {
         ValueType::I64,
     ]);
     body.const_u64(Reg(2), 1)
-        .call_link(Reg(0), LinkId(0), Reg(0), &[Reg(2)], &[Reg(3)])
-        .ret(Reg(0), &[Reg(3)]);
+        .call_link(Reg::EFFECT, LinkId(0), Reg::EFFECT, &[Reg(2)], &[Reg(3)])
+        .ret(Reg::EFFECT, &[Reg(3)]);
     let program = with_links(body, |b| {
         b.declare_link("self", FuncId(0)).unwrap();
     });
@@ -423,7 +425,7 @@ fn takes(argument: impl FnOnce(&mut ProgramBuilder) -> FunctionAbi) -> Arc<Verif
     let function = b.declare_function(abi).unwrap();
     let mut body = b.function_asm(function).unwrap();
     let zero = body.alloc_register(ValueType::I64);
-    body.const_i64(zero, 0).ret(Reg(0), &[zero]);
+    body.const_i64(zero, 0).ret(Reg::EFFECT, &[zero]);
     b.define_function(function, body).unwrap();
     b.declare_link("takes", function).unwrap();
     Arc::new(b.build_verified().unwrap())
@@ -502,12 +504,12 @@ fn an_exception_from_a_link_target_unwinds_to_the_caller() {
     let offset = body.alloc_register(ValueType::I64);
     body.const_i64(offset, 1000)
         .i64_add(caught, caught, offset)
-        .ret(Reg(0), &[caught]);
+        .ret(Reg::EFFECT, &[caught]);
     body.place(start).unwrap();
     body.begin_region(&[Catch::Tag(failed, handler)]);
     let [] = b.emit_call(&mut body, link, &[value]).unwrap();
     body.end_region();
-    body.ret(Reg(0), &[value]);
+    body.ret(Reg::EFFECT, &[value]);
     b.define_function(entry, body).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(b.build_verified().unwrap()).unwrap();
@@ -558,7 +560,7 @@ fn reader(b: &mut ProgramBuilder, name: &str, decoys: usize, factor: i64) -> (Fu
     a.struct_get(value, Reg(1), 0)
         .const_i64(k, factor)
         .i64_mul(result, value, k)
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(read, a).unwrap();
     (read, ty)
 }
@@ -582,7 +584,7 @@ fn relinking_matches_struct_types_by_shape_across_programs() {
     );
     a.const_i64(seven, 7).struct_new(point, ty, &[seven]);
     let [result] = b.emit_call(&mut a, link, &[point]).unwrap();
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(entry, a).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let caller = vm.install(b.build_verified().unwrap()).unwrap();
@@ -631,7 +633,7 @@ fn verification_names_the_link_when_an_argument_breaks_its_contract() {
         .unwrap();
     let mut a = b.function_asm(first).unwrap();
     let value = a.alloc_register(ValueType::I64);
-    a.tuple_get(value, Reg(1), 0).ret(Reg(0), &[value]);
+    a.tuple_get(value, Reg(1), 0).ret(Reg::EFFECT, &[value]);
     b.define_function(first, a).unwrap();
     let link = b.declare_link("first", first).unwrap();
     let entry = b
@@ -648,7 +650,7 @@ fn verification_names_the_link_when_an_argument_breaks_its_contract() {
     // A tuple of `bool` where the link takes a tuple of `i64`.
     a.const_bool(flag, true).tuple_new(tuple, &[flag]);
     let [result] = b.emit_call(&mut a, link, &[tuple]).unwrap();
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(entry, a).unwrap();
     let error = verify_program(&b.build(), &VerifyConfig::default()).unwrap_err();
     assert!(
@@ -667,7 +669,7 @@ fn verification_names_the_link_when_an_argument_breaks_its_contract() {
 fn malformed_target_signatures_report_the_function_not_the_link() {
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    body.ret(Reg(0), &[Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(1)]);
     let mut program = with_links(body, |b| {
         b.declare_link("self", FuncId(0)).unwrap();
     });
@@ -830,10 +832,10 @@ fn pausing_scale(b: &mut ProgramBuilder, factor: i64) -> FuncId {
     let x = b.argument(scale, 0).unwrap();
     let k = body.alloc_register(ValueType::I64);
     let y = body.alloc_register(ValueType::I64);
-    body.host_call(Reg(0), wait, Reg(0), &[], &[])
+    body.host_call(Reg::EFFECT, wait, Reg::EFFECT, &[], &[])
         .const_i64(k, factor)
         .i64_mul(y, x, k)
-        .ret(Reg(0), &[y]);
+        .ret(Reg::EFFECT, &[y]);
     b.define_function(scale, body).unwrap();
     scale
 }
@@ -854,7 +856,7 @@ fn twice(factor: i64) -> Arc<VerifiedProgram> {
     let x = b.argument(caller, 0).unwrap();
     let [first] = b.emit_call(&mut body, link, &[x]).unwrap();
     let [second] = b.emit_call(&mut body, link, &[x]).unwrap();
-    body.ret(Reg(0), &[first, second]);
+    body.ret(Reg::EFFECT, &[first, second]);
     b.define_function(caller, body).unwrap();
     Arc::new(b.build_verified().unwrap())
 }
@@ -967,9 +969,9 @@ fn asking(factor: i64) -> Arc<VerifiedProgram> {
     let mut body = b.function_asm(caller).unwrap();
     let x = b.argument(caller, 0).unwrap();
     let answer = body.alloc_register(ValueType::I64);
-    body.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
+    body.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[x], &[answer]);
     let [y] = b.emit_call(&mut body, link, &[answer]).unwrap();
-    body.ret(Reg(0), &[y]);
+    body.ret(Reg::EFFECT, &[y]);
     b.define_function(caller, body).unwrap();
     Arc::new(b.build_verified().unwrap())
 }

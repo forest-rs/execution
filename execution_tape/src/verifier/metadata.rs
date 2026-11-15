@@ -317,7 +317,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         pb.push_function_checked(
             a,
             FunctionSig {

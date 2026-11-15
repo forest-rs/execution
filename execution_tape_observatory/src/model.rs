@@ -332,7 +332,7 @@ impl<'a> View<'a> {
             .writes()
             .take(64)
             .chain(instruction.reads().take(64))
-            .filter(|&r| r != Reg(0))
+            .filter(|&r| r != Reg::EFFECT)
             .filter(|r| seen.insert(*r))
             .take(2)
         {

@@ -56,7 +56,7 @@ fn maker(b: &mut ProgramBuilder, result: ContractId) -> FuncId {
     a.const_i64(Reg(1), 42)
         .tuple_new(Reg(2), &[Reg(1)])
         .tuple_new(Reg(3), &[Reg(2)])
-        .ret(Reg(0), &[Reg(3)]);
+        .ret(Reg::EFFECT, &[Reg(3)]);
     b.push_function_checked(
         a,
         FunctionAbi {
@@ -90,10 +90,10 @@ fn rich_indirect_results_roundtrip_and_feed_projection_and_inspection() {
         ValueType::I64,
     ]);
     let pc = a.pc();
-    a.call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+    a.call_indirect(Reg::EFFECT, call, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
         .tuple_get(Reg(2), Reg(2), 0)
         .tuple_get(Reg(3), Reg(2), 0)
-        .ret(Reg(0), &[Reg(3)]);
+        .ret(Reg::EFFECT, &[Reg(3)]);
     let entry = b
         .push_function_checked(
             a,
@@ -154,10 +154,10 @@ fn callable_values_survive_aggregate_projection_and_aliasing() {
     a.const_func(Reg(1), target)
         .tuple_new(Reg(2), &[Reg(1)])
         .tuple_get(Reg(1), Reg(2), 0)
-        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
+        .call_indirect(Reg::EFFECT, call, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
         .tuple_get(Reg(2), Reg(2), 0)
         .tuple_get(Reg(3), Reg(2), 0)
-        .ret(Reg(0), &[Reg(3)]);
+        .ret(Reg::EFFECT, &[Reg(3)]);
     let entry = b
         .push_function_checked(a, sig(&[], &[ValueType::I64]))
         .unwrap();
@@ -174,7 +174,7 @@ fn callable_values_survive_aggregate_projection_and_aliasing() {
 }
 fn closure_body(b: &mut ProgramBuilder, environment: ContractId) -> FuncId {
     let mut a = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    a.tuple_get(Reg(2), Reg(1), 0).ret(Reg(0), &[Reg(2)]);
+    a.tuple_get(Reg(2), Reg(1), 0).ret(Reg::EFFECT, &[Reg(2)]);
     b.push_function_checked(
         a,
         FunctionAbi {
@@ -200,8 +200,8 @@ fn closure_construction_preserves_exposed_signature_and_checks_concrete_environm
     ]);
     a.const_func(Reg(2), target)
         .closure_new(Reg(3), Reg(2), Reg(1))
-        .call_indirect(Reg(0), call, Reg(3), Reg(0), &[], &[Reg(4)])
-        .ret(Reg(0), &[Reg(4)]);
+        .call_indirect(Reg::EFFECT, call, Reg(3), Reg::EFFECT, &[], &[Reg(4)])
+        .ret(Reg::EFFECT, &[Reg(4)]);
     let entry = b
         .push_function_checked(a, sig(&[ValueType::Agg], &[ValueType::I64]))
         .unwrap();
@@ -236,7 +236,7 @@ fn rich_closure_boundaries_check_hidden_environments_and_do_not_reuse_another_ta
     let bools = b.contract(Contract::Tuple(&[Some(boolean)])).unwrap();
     let first = closure_body(&mut b, ints);
     let mut other = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    other.const_i64(Reg(2), 7).ret(Reg(0), &[Reg(2)]);
+    other.const_i64(Reg(2), 7).ret(Reg::EFFECT, &[Reg(2)]);
     let second = b
         .push_function_checked(
             other,
@@ -253,7 +253,7 @@ fn rich_closure_boundaries_check_hidden_environments_and_do_not_reuse_another_ta
         })
         .unwrap();
     let mut a = body(&[ValueType::Unit, ValueType::Closure, ValueType::Closure]);
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     let entry = b
         .push_function_checked(
             a,
@@ -316,8 +316,8 @@ fn exact_rich_identity_rejects_equal_kind_hashes_before_dispatch() {
         })
         .unwrap();
     let mut a = body(&[ValueType::Unit, ValueType::Func, ValueType::Agg]);
-    a.call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
-        .ret(Reg(0), &[]);
+    a.call_indirect(Reg::EFFECT, call, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
+        .ret(Reg::EFFECT, &[]);
     let entry = b
         .push_function_checked(a, sig(&[ValueType::Func], &[]))
         .unwrap();
@@ -336,8 +336,8 @@ fn statically_known_incompatible_indirect_targets_are_rejected() {
     let call = b.call_sig(sig(&[], &[ValueType::Agg])).unwrap();
     let mut a = body(&[ValueType::Unit, ValueType::Func, ValueType::Agg]);
     a.const_func(Reg(1), target)
-        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
-        .ret(Reg(0), &[]);
+        .call_indirect(Reg::EFFECT, call, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
+        .ret(Reg::EFFECT, &[]);
     b.push_function_checked(a, sig(&[], &[])).unwrap();
     assert!(matches!(
         b.build_verified(),
@@ -358,12 +358,12 @@ fn higher_order_returns_and_nested_callable_failures_keep_their_contracts() {
         .unwrap();
     let tuple = b.contract(Contract::Tuple(&[Some(callable)])).unwrap();
     let mut target = body(&[ValueType::Unit, ValueType::I64]);
-    target.const_i64(Reg(1), 42).ret(Reg(0), &[Reg(1)]);
+    target.const_i64(Reg(1), 42).ret(Reg::EFFECT, &[Reg(1)]);
     let target = b
         .push_function_checked(target, sig(&[], &[ValueType::I64]))
         .unwrap();
     let mut get = body(&[ValueType::Unit, ValueType::Func]);
-    get.const_func(Reg(1), target).ret(Reg(0), &[Reg(1)]);
+    get.const_func(Reg(1), target).ret(Reg::EFFECT, &[Reg(1)]);
     let get = b
         .push_function_checked(
             get,
@@ -375,14 +375,14 @@ fn higher_order_returns_and_nested_callable_failures_keep_their_contracts() {
         .unwrap();
     let call = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
     let mut main = body(&[ValueType::Unit, ValueType::Func, ValueType::I64]);
-    main.call(Reg(0), get, Reg(0), &[], &[Reg(1)])
-        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+    main.call(Reg::EFFECT, get, Reg::EFFECT, &[], &[Reg(1)])
+        .call_indirect(Reg::EFFECT, call, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let entry = b
         .push_function_checked(main, sig(&[], &[ValueType::I64]))
         .unwrap();
     let mut take = body(&[ValueType::Unit, ValueType::Agg]);
-    take.ret(Reg(0), &[]);
+    take.ret(Reg::EFFECT, &[]);
     let take = b
         .push_function_checked(
             take,
@@ -429,12 +429,12 @@ fn callable_signature_positions_and_cached_visits_are_budgeted() {
         })
         .unwrap();
     let mut target = body(&[ValueType::Unit, ValueType::I64]);
-    target.ret(Reg(0), &[Reg(1)]);
+    target.ret(Reg::EFFECT, &[Reg(1)]);
     let target = b
         .push_function_checked(target, sig(&[ValueType::I64], &[ValueType::I64]))
         .unwrap();
     let mut entry = body(&[ValueType::Unit, ValueType::Func, ValueType::Func]);
-    entry.ret(Reg(0), &[]);
+    entry.ret(Reg::EFFECT, &[]);
     let entry = b
         .push_function_checked(
             entry,
@@ -480,15 +480,15 @@ fn callable_signature_positions_and_cached_visits_are_budgeted() {
 fn opaque_closures_validate_even_an_unused_unrefined_environment_before_entry() {
     let mut b = ProgramBuilder::new();
     let mut target = body(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
-    target.const_i64(Reg(2), 42).ret(Reg(0), &[Reg(2)]);
+    target.const_i64(Reg(2), 42).ret(Reg::EFFECT, &[Reg(2)]);
     let target = b
         .push_function_checked(target, sig(&[ValueType::Agg], &[ValueType::I64]))
         .unwrap();
     let call = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
     let mut entry = body(&[ValueType::Unit, ValueType::Closure, ValueType::I64]);
     entry
-        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+        .call_indirect(Reg::EFFECT, call, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let entry = b
         .push_function_checked(entry, sig(&[ValueType::Closure], &[ValueType::I64]))
         .unwrap();
@@ -518,7 +518,7 @@ fn selects_and_nominal_arrays_keep_signatures_without_merging_function_identity(
     let mut targets = Vec::new();
     for number in [42, 7] {
         let mut target = body(&[ValueType::Unit, ValueType::I64]);
-        target.const_i64(Reg(1), number).ret(Reg(0), &[Reg(1)]);
+        target.const_i64(Reg(1), number).ret(Reg::EFFECT, &[Reg(1)]);
         targets.push(
             b.push_function_checked(target, sig(&[], &[ValueType::I64]))
                 .unwrap(),
@@ -540,8 +540,8 @@ fn selects_and_nominal_arrays_keep_signatures_without_merging_function_identity(
         .select(Reg(2), Reg(1), Reg(2), Reg(3))
         .array_new(Reg(4), element, &[Reg(2), Reg(3)])
         .array_get_imm(Reg(2), Reg(4), 0)
-        .call_indirect(Reg(0), call, Reg(2), Reg(0), &[], &[Reg(5)])
-        .ret(Reg(0), &[Reg(5)]);
+        .call_indirect(Reg::EFFECT, call, Reg(2), Reg::EFFECT, &[], &[Reg(5)])
+        .ret(Reg::EFFECT, &[Reg(5)]);
     let entry = b
         .push_function_checked(entry, sig(&[ValueType::Bool], &[ValueType::I64]))
         .unwrap();
@@ -581,12 +581,12 @@ fn an_opaque_host_write_erases_the_destinations_previous_callable_proof() {
     }
     let mut b = ProgramBuilder::new();
     let mut good = body(&[ValueType::Unit, ValueType::I64]);
-    good.const_i64(Reg(1), 42).ret(Reg(0), &[Reg(1)]);
+    good.const_i64(Reg(1), 42).ret(Reg::EFFECT, &[Reg(1)]);
     let good = b
         .push_function_checked(good, sig(&[], &[ValueType::I64]))
         .unwrap();
     let mut bad = body(&[ValueType::Unit, ValueType::Bool]);
-    bad.const_bool(Reg(1), true).ret(Reg(0), &[Reg(1)]);
+    bad.const_bool(Reg(1), true).ret(Reg::EFFECT, &[Reg(1)]);
     let bad = b
         .push_function_checked(bad, sig(&[], &[ValueType::Bool]))
         .unwrap();
@@ -601,9 +601,9 @@ fn an_opaque_host_write_erases_the_destinations_previous_callable_proof() {
     let mut entry = body(&[ValueType::Unit, ValueType::Func, ValueType::I64]);
     entry
         .const_func(Reg(1), good)
-        .host_call(Reg(0), host, Reg(0), &[], &[Reg(1)])
-        .call_indirect(Reg(0), call, Reg(1), Reg(0), &[], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+        .host_call(Reg::EFFECT, host, Reg::EFFECT, &[], &[Reg(1)])
+        .call_indirect(Reg::EFFECT, call, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let entry = b
         .push_function_checked(entry, sig(&[], &[ValueType::I64]))
         .unwrap();

@@ -111,7 +111,7 @@ impl Op {
             Self::Sin => &[Reg(1)],
             Self::ExpNeg => &[Reg(3)],
         };
-        body.host_call_sig_id(Reg(0), host, Reg(0), args, &[Reg(1)]);
+        body.host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, args, &[Reg(1)]);
     }
 }
 
@@ -181,7 +181,7 @@ fn chain(c: &mut Criterion) {
             for _ in 0..CHAIN {
                 op.emit(&mut body, width, (path == "host").then_some(host));
             }
-            body.ret(Reg(0), &[Reg(1)]);
+            body.ret(Reg::EFFECT, &[Reg(1)]);
             let entry = builder
                 .push_function_checked(
                     body,

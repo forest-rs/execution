@@ -127,7 +127,7 @@ impl Author {
         } else {
             value
         };
-        body.ret(Reg(0), &[answer]);
+        body.ret(Reg::EFFECT, &[answer]);
         self.define(
             block.function(),
             &format!(
@@ -161,9 +161,9 @@ impl Author {
         body.i64_eq(mine, region.target, home)
             .br(mine, here, onward);
         body.place(here)?;
-        body.ret(Reg(0), &[region.boxed]);
+        body.ret(Reg::EFFECT, &[region.boxed]);
         body.place(onward)?;
-        body.throw_ref(Reg(0), region.other);
+        body.throw_ref(Reg::EFFECT, region.other);
         Ok(())
     }
     /// Opens an `ensure:` region; [`Self::cleanup_on_exit`] closes it.
@@ -191,7 +191,7 @@ impl Author {
         body.jmp(after);
         body.place(region.label)?;
         let [] = self.program.emit_call(body, target, &[])?;
-        body.throw_ref(Reg(0), region.unwound);
+        body.throw_ref(Reg::EFFECT, region.unwound);
         body.place(after)?;
         Ok(())
     }
@@ -223,7 +223,7 @@ impl Author {
         let [] = self
             .program
             .emit_call(&mut body, imports.cleaned, &[counter, tag_value])?;
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         self.define(cleanup.function(), &format!("ensure / cleanup {tag}"), body)?;
         Ok(cleanup)
     }
@@ -313,7 +313,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     let [answer] = author
         .program
         .emit_call(&mut body, imports.write, &[counter, total])?;
-    body.ret(Reg(0), &[answer]);
+    body.ret(Reg::EFFECT, &[answer]);
     author.define(
         increment.function(),
         "makeIncrement: / increment block",
@@ -331,7 +331,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     );
     let counter = author.program.argument(factory, 0)?;
     let block = increment.instantiate(&mut body, &[counter])?;
-    body.ret(Reg(0), &[block]);
+    body.ret(Reg::EFFECT, &[block]);
     author.define(factory, "makeIncrement:", body)?;
 
     // Both normal and non-local completion pass through the same nested ensure regions.
@@ -386,7 +386,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
         .emit_call(&mut body, imports.after_ensure, &[])?;
     author.at(&mut body, "answerUsing: counter", "^ answer");
     let boxed = body.alloc_register(ValueType::Agg);
-    body.tuple_new(boxed, &[answer]).ret(Reg(0), &[boxed]);
+    body.tuple_new(boxed, &[answer]).ret(Reg::EFFECT, &[boxed]);
     author.answer_from_home(&mut body, returned, home)?;
     author.define(answer_method, "answerUsing:", body)?;
 
@@ -403,7 +403,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     author.at(&mut body, "makeEscaped: counter", "^ [ ^ counter value ]");
     let block = escaped.instantiate(&mut body, &[home, counter])?;
     let boxed = body.alloc_register(ValueType::Agg);
-    body.tuple_new(boxed, &[block]).ret(Reg(0), &[boxed]);
+    body.tuple_new(boxed, &[block]).ret(Reg::EFFECT, &[boxed]);
     author.at(&mut body, "makeEscaped: counter", "makeEscaped: counter");
     author.answer_from_home(&mut body, returned, home)?;
     author.define(make_escaped, "makeEscaped:", body)?;
@@ -467,7 +467,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     author.at(&mut body, "run", "^ { first. second. answer. late }");
     let results = body.alloc_register(ValueType::Agg);
     body.tuple_new(results, &[first, second, answer, late])
-        .ret(Reg(0), &[results]);
+        .ret(Reg::EFFECT, &[results]);
     author.define(entry, "run", body)?;
     let program = Arc::new(author.program.build_verified()?);
     let sources = SourceMap::new(

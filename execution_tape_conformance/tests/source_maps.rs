@@ -36,7 +36,7 @@ fn headless_source_lookup_borrows_exact_text_and_byte_coordinates() {
         func: function,
         pc: body.pc(),
     };
-    body.ret(Reg(0), &[result]);
+    body.ret(Reg::EFFECT, &[result]);
     builder.define_function(function, body).unwrap();
     let program = builder.build_verified().unwrap();
     let snapshot = "heading\né界 = 42\n";

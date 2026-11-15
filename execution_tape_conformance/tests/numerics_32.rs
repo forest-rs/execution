@@ -65,7 +65,13 @@ fn program() -> Arc<VerifiedProgram> {
     let projected: Vec<Reg> = W32.iter().map(|&t| body.alloc_register(t)).collect();
     let selected: Vec<Reg> = W32.iter().map(|&t| body.alloc_register(t)).collect();
     let moved: Vec<Reg> = W32.iter().map(|&t| body.alloc_register(t)).collect();
-    body.host_call_sig_id(Reg(0), echo, Reg(0), &[Reg(2), Reg(3), Reg(4)], &echoed);
+    body.host_call_sig_id(
+        Reg::EFFECT,
+        echo,
+        Reg::EFFECT,
+        &[Reg(2), Reg(3), Reg(4)],
+        &echoed,
+    );
     body.tuple_new(tuple, &echoed);
     for (index, &dst) in (0..).zip(&projected) {
         body.tuple_get(dst, tuple, index);
@@ -75,7 +81,7 @@ fn program() -> Arc<VerifiedProgram> {
         body.select(selected[i], Reg(1), projected[i], echoed[i]);
         body.mov(moved[i], selected[i]);
     }
-    body.ret(Reg(0), &moved);
+    body.ret(Reg::EFFECT, &moved);
     builder.define_function(id, body).unwrap();
     let bytes = builder.build().encode();
     let program = Program::decode(&bytes).unwrap();

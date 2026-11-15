@@ -1656,7 +1656,7 @@ mod tape_tests {
         a.const_i64(Reg(1), 1);
         a.const_i64(Reg(2), 0);
         a.i64_div(Reg(3), Reg(1), Reg(2));
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -1676,7 +1676,7 @@ mod tape_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(Reg(1), v);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -1811,7 +1811,7 @@ mod tape_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(Reg(1), 7);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let a_node = pb
             .push_function_checked(
                 a,
@@ -1841,7 +1841,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -1923,7 +1923,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -1999,7 +1999,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -2035,7 +2035,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -2119,7 +2119,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -2215,8 +2215,8 @@ mod tape_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(Reg(1), 42);
-        a.host_call(Reg(0), host_sig, Reg(0), &[Reg(1)], &[Reg(2)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let f = pb
             .push_function_checked(
@@ -2296,8 +2296,8 @@ mod tape_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(Reg(1), 42);
-        a.host_call(Reg(0), host_sig, Reg(0), &[Reg(1)], &[Reg(2)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let f = pb
             .push_function_checked(
@@ -2343,7 +2343,7 @@ mod tape_tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -2461,7 +2461,7 @@ mod tape_tests {
                 ValueType::I64,
             ]);
             a.i64_add(Reg(3), Reg(1), Reg(2));
-            a.ret(Reg(0), &[Reg(3)]);
+            a.ret(Reg::EFFECT, &[Reg(3)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -2511,7 +2511,7 @@ mod tape_tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit]);
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         pb.push_function_checked(
             a,
             FunctionSig {
@@ -2536,7 +2536,7 @@ mod tape_tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -2559,7 +2559,7 @@ mod tape_tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -2586,7 +2586,7 @@ mod tape_tests {
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.const_i64(Reg(1), v);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -2604,7 +2604,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -2683,8 +2683,8 @@ mod tape_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         a.const_u64(Reg(1), 1);
-        a.host_call(Reg(0), get_host, Reg(0), &[Reg(1)], &[Reg(2)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.host_call(Reg::EFFECT, get_host, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let f = pb
             .push_function_checked(
@@ -2808,8 +2808,8 @@ mod tape_tests {
         let mut get_asm = Asm::new();
         get_asm.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         get_asm.const_u64(Reg(1), 1);
-        get_asm.host_call(Reg(0), get_host, Reg(0), &[Reg(1)], &[Reg(2)]);
-        get_asm.ret(Reg(0), &[Reg(2)]);
+        get_asm.host_call(Reg::EFFECT, get_host, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        get_asm.ret(Reg::EFFECT, &[Reg(2)]);
         let get_entry = get_builder
             .push_function_checked(
                 get_asm,
@@ -2835,8 +2835,14 @@ mod tape_tests {
         ]);
         set_asm.const_u64(Reg(1), 1);
         set_asm.const_i64(Reg(2), 8);
-        set_asm.host_call(Reg(0), set_host, Reg(0), &[Reg(1), Reg(2)], &[Reg(3)]);
-        set_asm.ret(Reg(0), &[Reg(3)]);
+        set_asm.host_call(
+            Reg::EFFECT,
+            set_host,
+            Reg::EFFECT,
+            &[Reg(1), Reg(2)],
+            &[Reg(3)],
+        );
+        set_asm.ret(Reg::EFFECT, &[Reg(3)]);
         let set_entry = set_builder
             .push_function_checked(
                 set_asm,
@@ -2946,8 +2952,8 @@ mod tape_tests {
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         asm.const_u64(Reg(1), 1);
-        asm.host_call(Reg(0), bump_host, Reg(0), &[Reg(1)], &[Reg(2)]);
-        asm.ret(Reg(0), &[Reg(2)]);
+        asm.host_call(Reg::EFFECT, bump_host, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        asm.ret(Reg::EFFECT, &[Reg(2)]);
         let entry = pb
             .push_function_checked(
                 asm,
@@ -3033,8 +3039,8 @@ mod tape_tests {
         let publish = pb.host_sig_for("publish", publish_sig);
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        asm.host_call(Reg(0), publish, Reg(0), &[Reg(1)], &[Reg(2)]);
-        asm.ret(Reg(0), &[Reg(2)]);
+        asm.host_call(Reg::EFFECT, publish, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        asm.ret(Reg::EFFECT, &[Reg(2)]);
         let entry = pb
             .push_function_checked(
                 asm,
@@ -3135,8 +3141,8 @@ mod tape_tests {
         let op = pb.host_sig_for("flip.reads", host_sig);
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.host_call(Reg(0), op, Reg(0), &[], &[Reg(1)]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.host_call(Reg::EFFECT, op, Reg::EFFECT, &[], &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -3218,8 +3224,8 @@ mod tape_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         a.const_u64(Reg(1), 1);
-        a.host_call(Reg(0), get_host, Reg(0), &[Reg(1)], &[Reg(2)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.host_call(Reg::EFFECT, get_host, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let f = pb
             .push_function_checked(
@@ -3274,7 +3280,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -3342,7 +3348,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -3361,7 +3367,7 @@ mod tape_tests {
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.const_i64(Reg(1), v);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -3421,7 +3427,7 @@ mod tape_tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         // Return arg1 where both args are named "x". If aliasing is broken, run fails with
         // MissingInput for the second slot.
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -3459,7 +3465,7 @@ mod tape_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(Reg(1), 42);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -3490,7 +3496,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -3531,7 +3537,7 @@ mod tape_tests {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
             let f = pb
                 .push_function_checked(
                     a,
@@ -4155,7 +4161,7 @@ mod mixed_tests {
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         asm.i64_add(Reg(2), Reg(1), Reg(1));
-        asm.ret(Reg(0), &[Reg(2)]);
+        asm.ret(Reg::EFFECT, &[Reg(2)]);
         let entry = pb
             .push_function_checked(
                 asm,
@@ -4249,7 +4255,7 @@ mod mixed_tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.i64_add(Reg(2), Reg(1), Reg(1));
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         let entry = pb
             .push_function_checked(
                 a,

@@ -91,11 +91,11 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
         ValueType::I64,
         ValueType::I64,
     ]);
-    sample.host_call_sig_id(Reg(0), read, Reg(0), &[Reg(1)], &[Reg(2)]);
+    sample.host_call_sig_id(Reg::EFFECT, read, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
     sample
         .const_i64(Reg(3), 2)
         .i64_mul(Reg(4), Reg(2), Reg(3))
-        .ret(Reg(0), &[Reg(2), Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(2), Reg(4)]);
     let sample = builder.push_function_checked(
         sample,
         FunctionSig {
@@ -127,9 +127,15 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
         .const_i64(Reg(9), 1)
         .jmp(head);
     body.place(head)?;
-    body.call(Reg(0), sample, Reg(0), &[Reg(1)], &[Reg(3), Reg(4)])
-        .tuple_new(Reg(5), &[Reg(1), Reg(3), Reg(4)]);
-    body.host_call_sig_id(Reg(0), store, Reg(0), &[Reg(5)], &[Reg(6)])
+    body.call(
+        Reg::EFFECT,
+        sample,
+        Reg::EFFECT,
+        &[Reg(1)],
+        &[Reg(3), Reg(4)],
+    )
+    .tuple_new(Reg(5), &[Reg(1), Reg(3), Reg(4)]);
+    body.host_call_sig_id(Reg::EFFECT, store, Reg::EFFECT, &[Reg(5)], &[Reg(6)])
         .br(Reg(6), accepted, rejected);
     body.place(accepted)?;
     body.i64_add(Reg(7), Reg(7), Reg(4))
@@ -139,7 +145,7 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
     body.place(rejected)?;
     body.trap(1);
     body.place(done)?;
-    body.ret(Reg(0), &[Reg(7)]);
+    body.ret(Reg::EFFECT, &[Reg(7)]);
     let entry = builder.push_function_checked(
         body,
         FunctionSig {
@@ -164,7 +170,7 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
                     registers: i
                         .reads()
                         .chain(i.writes())
-                        .filter(|&reg| reg != Reg(0))
+                        .filter(|&reg| reg != Reg::EFFECT)
                         .collect(),
                 })
                 .collect::<Vec<_>>()

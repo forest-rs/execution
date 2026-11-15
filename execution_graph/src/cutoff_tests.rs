@@ -559,7 +559,7 @@ mod tape {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(Reg(2), 7);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         let entry = pb
             .push_function_checked(
                 a,

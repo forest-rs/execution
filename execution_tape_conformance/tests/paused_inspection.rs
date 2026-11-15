@@ -48,7 +48,7 @@ fn calls() -> (VerifiedProgram, FuncId, Pc, Pc) {
         .unwrap();
     let mut a = b.function_asm(child).unwrap();
     let result = a.alloc_register(ValueType::I64);
-    a.const_i64(result, 7).ret(Reg(0), &[result]);
+    a.const_i64(result, 7).ret(Reg::EFFECT, &[result]);
     b.define_function(child, a).unwrap();
     let entry = b
         .declare_function(FunctionSig {
@@ -62,11 +62,11 @@ fn calls() -> (VerifiedProgram, FuncId, Pc, Pc) {
     let old = a.alloc_register(ValueType::I64); // r4 has a value before the second call
     a.const_i64(old, 99);
     let first = a.pc();
-    a.call(Reg(0), child, Reg(0), &[Reg(1)], &[result]);
+    a.call(Reg::EFFECT, child, Reg::EFFECT, &[Reg(1)], &[result]);
     let second = a.pc();
-    a.call(Reg(0), child, Reg(0), &[Reg(1)], &[old])
+    a.call(Reg::EFFECT, child, Reg::EFFECT, &[Reg(1)], &[old])
         .i64_add(result, result, old)
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(entry, a).unwrap();
     (b.build_verified().unwrap(), entry, first, second)
 }
@@ -116,7 +116,7 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
                 .is_none()
         );
         assert_eq!(
-            inspection.register(&root, Reg(0)).unwrap().value,
+            inspection.register(&root, Reg::EFFECT).unwrap().value,
             Some(ValueRef::Unit)
         );
         frames[0].activation.clone()
@@ -309,13 +309,13 @@ fn conservative_roots_support_a_real_host_collection_between_quanta() {
     let tuple = a.alloc_register(ValueType::Agg);
     let result = a.alloc_register(ValueType::I64);
     let _unused = a.alloc_register(ValueType::Obj(OBJECT));
-    a.host_call_sig_id(Reg(0), new, Reg(0), &[], &[temp])
+    a.host_call_sig_id(Reg::EFFECT, new, Reg::EFFECT, &[], &[temp])
         .tuple_new(tuple, &[temp])
         .mov(temp, Reg(1))
-        .host_call_sig_id(Reg(0), check, Reg(0), &[Reg(1)], &[result])
+        .host_call_sig_id(Reg::EFFECT, check, Reg::EFFECT, &[Reg(1)], &[result])
         .tuple_get(temp, tuple, 0)
-        .host_call_sig_id(Reg(0), check, Reg(0), &[temp], &[result])
-        .ret(Reg(0), &[result]);
+        .host_call_sig_id(Reg::EFFECT, check, Reg::EFFECT, &[temp], &[result])
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(entry, a).unwrap();
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(
@@ -390,7 +390,7 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
             .unwrap();
         let mut a = b.function_asm(child).unwrap();
         let result = a.alloc_register(ValueType::I64);
-        a.const_i64(result, 7).ret(Reg(0), &[result]);
+        a.const_i64(result, 7).ret(Reg::EFFECT, &[result]);
         b.define_function(child, a).unwrap();
         let signature = b
             .call_sig(FunctionSig {
@@ -423,14 +423,14 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
         let result = a.alloc_register(ValueType::I64);
         let call_pc = a.pc();
         a.call_indirect(
-            Reg(0),
+            Reg::EFFECT,
             signature,
             callee,
-            Reg(0),
+            Reg::EFFECT,
             if closure { &[] } else { &[Reg(1)] },
             &[result],
         )
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
         b.define_function(entry, a).unwrap();
         let p = b.build_verified().unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());

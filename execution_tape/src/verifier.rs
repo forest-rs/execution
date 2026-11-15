@@ -5370,7 +5370,7 @@ mod tests {
         let finish = pb.argument(entry, 0).unwrap();
         let mut a = pb.function_asm(entry).unwrap();
         let sum = a.alloc_register(ValueType::F32);
-        a.f32_add(sum, finish, finish).ret(Reg(0), &[]);
+        a.f32_add(sum, finish, finish).ret(Reg::EFFECT, &[]);
         pb.define_function(entry, a).unwrap();
         pb
     }
@@ -5497,7 +5497,7 @@ mod tests {
             asm.tuple_new(Reg(4), &[Reg(1)]);
             asm.select(Reg(3), Reg(1), Reg(4), Reg(4));
             asm.tuple_get(Reg(5), Reg(3), 0);
-            asm.ret(Reg(0), &[Reg(5)]);
+            asm.ret(Reg::EFFECT, &[Reg(5)]);
             let mut builder = ProgramBuilder::new();
             builder
                 .push_function_checked(
@@ -5555,7 +5555,7 @@ mod tests {
             asm.jmp(join);
             asm.place(join).unwrap();
             asm.i64_add(Reg(3), Reg(2), Reg(2));
-            asm.ret(Reg(0), &[Reg(3)]);
+            asm.ret(Reg::EFFECT, &[Reg(3)]);
 
             let mut builder = ProgramBuilder::new();
             builder
@@ -6045,7 +6045,7 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(Reg(1), 1);
         a.const_i64(Reg(2), 2);
-        a.ret(Reg(0), &[Reg(1), Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(1), Reg(2)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -6073,7 +6073,7 @@ mod tests {
 
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let f = pb
             .push_function_checked(
                 a,
@@ -6137,7 +6137,7 @@ mod tests {
         // No terminator here; block falls through to l2.
 
         a.place(l2).unwrap();
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6188,10 +6188,10 @@ mod tests {
         // Missing terminator: falls through to l_next.
 
         a.place(l_next).unwrap();
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
 
         a.place(l_ret).unwrap();
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6382,7 +6382,7 @@ mod tests {
             {
                 let mut callee = Asm::new();
                 callee.set_register_types(vec![ValueType::Unit]);
-                callee.ret(Reg(0), &[]);
+                callee.ret(Reg::EFFECT, &[]);
                 callee
             },
             FunctionSig {
@@ -6397,8 +6397,8 @@ mod tests {
                 let mut caller = Asm::new();
                 caller.set_register_types(vec![ValueType::Unit, ValueType::Unit]);
                 // eff_in = r1 (invalid), eff_out = r0
-                caller.call(Reg(0), FuncId(0), Reg(1), &[], &[]);
-                caller.ret(Reg(0), &[]);
+                caller.call(Reg::EFFECT, FuncId(0), Reg(1), &[], &[]);
+                caller.ret(Reg::EFFECT, &[]);
                 caller
             },
             FunctionSig {
@@ -6429,8 +6429,8 @@ mod tests {
             // call r0, func=1, r0, argc=0, retc=0; ret r0
             bytecode: {
                 let mut a = Asm::new();
-                a.call(Reg(0), FuncId(1), Reg(0), &[], &[]);
-                a.ret(Reg(0), &[]);
+                a.call(Reg::EFFECT, FuncId(1), Reg::EFFECT, &[], &[]);
+                a.ret(Reg::EFFECT, &[]);
                 a.finish().unwrap()
             },
             spans: vec![],
@@ -6467,8 +6467,8 @@ mod tests {
             bytecode: {
                 let mut a = Asm::new();
                 a.set_register_types(vec![ValueType::Unit, ValueType::Unit]);
-                a.call(Reg(0), FuncId(99), Reg(0), &[], &[]);
-                a.ret(Reg(0), &[]);
+                a.call(Reg::EFFECT, FuncId(99), Reg::EFFECT, &[], &[]);
+                a.ret(Reg::EFFECT, &[]);
                 a.finish().unwrap()
             },
             spans: vec![],
@@ -6509,7 +6509,7 @@ mod tests {
         a.const_bool(Reg(1), true);
         a.const_i64(Reg(2), 1);
         a.i64_add(Reg(3), Reg(1), Reg(2));
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6545,7 +6545,7 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
         a.const_i64(Reg(1), 7);
         a.array_new(Reg(2), elem, &[Reg(1)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         pb.push_function_checked(
             a,
@@ -6583,7 +6583,7 @@ mod tests {
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
         a.const_i64(Reg(1), 1);
         a.struct_new(Reg(2), st, &[Reg(1)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         pb.push_function_checked(
             a,
@@ -6616,7 +6616,7 @@ mod tests {
         a.tuple_new(Reg(3), &[Reg(1), Reg(2)]);
         a.tuple_get(Reg(4), Reg(3), 0);
         a.i64_add(Reg(5), Reg(4), Reg(2));
-        a.ret(Reg(0), &[Reg(5)]);
+        a.ret(Reg::EFFECT, &[Reg(5)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6643,7 +6643,7 @@ mod tests {
         ]);
         a.tuple_get(Reg(2), Reg(1), 0)
             .i64_add(Reg(3), Reg(2), Reg(2))
-            .ret(Reg(0), &[Reg(3)]);
+            .ret(Reg::EFFECT, &[Reg(3)]);
         pb.push_function_checked(
             a,
             crate::asm::FunctionAbi {
@@ -6677,7 +6677,7 @@ mod tests {
             let required = tuple_contract(&mut pb, &expected);
             let mut callee = Asm::new();
             callee.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-            callee.ret(Reg(0), &[]);
+            callee.ret(Reg::EFFECT, &[]);
             let target = pb
                 .push_function_checked(
                     callee,
@@ -6691,8 +6691,8 @@ mod tests {
             let mut caller = Asm::new();
             caller.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
             caller
-                .call(Reg(0), target, Reg(0), &[Reg(1)], &[])
-                .ret(Reg(0), &[]);
+                .call(Reg::EFFECT, target, Reg::EFFECT, &[Reg(1)], &[])
+                .ret(Reg::EFFECT, &[]);
             let arg = actual.map_or(
                 crate::asm::ContractRef::Kind(ValueType::Agg),
                 crate::asm::ContractRef::Id,
@@ -6731,7 +6731,7 @@ mod tests {
         let tuple = tuple_contract(&mut pb, &[]);
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         pb.push_function_checked(
             a,
             crate::asm::FunctionAbi {
@@ -6766,7 +6766,7 @@ mod tests {
         a.const_i64(Reg(1), 3);
         a.tuple_new(Reg(2), &[Reg(1)]);
         a.tuple_get(Reg(3), Reg(2), 9);
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6808,10 +6808,10 @@ mod tests {
         a.struct_get(Reg(4), Reg(3), 0);
         a.br(Reg(4), l_then, l_else);
         a.place(l_then).unwrap();
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         a.place(l_else).unwrap();
         a.const_i64(Reg(5), 2);
-        a.ret(Reg(0), &[Reg(5)]);
+        a.ret(Reg::EFFECT, &[Reg(5)]);
 
         pb.push_function_checked(
             a,
@@ -6842,7 +6842,7 @@ mod tests {
         a.const_i64(Reg(1), 0);
         a.struct_new(Reg(2), st, &[Reg(1)]);
         a.struct_get(Reg(3), Reg(2), 7);
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
 
         pb.push_function_checked(
             a,
@@ -6873,7 +6873,7 @@ mod tests {
         a.const_i64(Reg(1), 3);
         a.tuple_new(Reg(2), &[Reg(1)]);
         a.struct_get(Reg(3), Reg(2), 0);
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -6909,7 +6909,7 @@ mod tests {
             }
             asm.const_i64(Reg(2), 7);
             asm.i64_add(Reg(3), Reg(1), Reg(2));
-            asm.ret(Reg(0), &[Reg(3)]);
+            asm.ret(Reg::EFFECT, &[Reg(3)]);
             let mut builder = ProgramBuilder::new();
             builder
                 .push_function_checked(
@@ -6957,7 +6957,7 @@ mod tests {
                 let mut a = Asm::new();
                 a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
                 a.const_i64(Reg(1), 5);
-                a.ret(Reg(0), &[Reg(1)]);
+                a.ret(Reg::EFFECT, &[Reg(1)]);
                 a
             },
             FunctionSig {
@@ -6985,15 +6985,15 @@ mod tests {
                 a.const_i64(Reg(2), 0);
                 a.const_i64(Reg(4), 0);
                 a.mov(Reg(2), Reg(2)); // redundant
-                a.call(Reg(0), FuncId(0), Reg(0), &[], &[Reg(3)]); // unused call ret r3
+                a.call(Reg::EFFECT, FuncId(0), Reg::EFFECT, &[], &[Reg(3)]); // unused call ret r3
                 a.jmp(l_ret);
 
                 a.place(l_unreach).unwrap();
                 a.const_i64(Reg(4), 99);
-                a.ret(Reg(0), &[]);
+                a.ret(Reg::EFFECT, &[]);
 
                 a.place(l_ret).unwrap();
-                a.ret(Reg(0), &[]);
+                a.ret(Reg::EFFECT, &[]);
                 a
             },
             FunctionSig {

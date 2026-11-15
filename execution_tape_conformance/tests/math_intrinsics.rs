@@ -103,7 +103,7 @@ fn program(emit: impl FnOnce(&mut Asm), arg: ValueType, ret: ValueType) -> Arc<V
     let mut asm = Asm::new();
     asm.set_register_types(vec![Unit, arg, arg, arg, ret]);
     emit(&mut asm);
-    asm.ret(Reg(0), &[Reg(4)]);
+    asm.ret(Reg::EFFECT, &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -473,7 +473,7 @@ fn intrinsics_disassemble_with_their_operands() {
         .f32_atan2(Reg(4), Reg(1), Reg(2))
         .f32_clamp(Reg(4), Reg(1), Reg(2), Reg(3))
         .f32_round_half_away(Reg(4), Reg(4))
-        .ret(Reg(0), &[Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -505,7 +505,8 @@ fn intrinsics_disassemble_with_their_operands() {
 fn verifier_rejects_f64_operands_to_f32_intrinsics() {
     let mut asm = Asm::new();
     asm.set_register_types(vec![Unit, F32, F64, F32]);
-    asm.f32_pow(Reg(3), Reg(1), Reg(2)).ret(Reg(0), &[Reg(3)]);
+    asm.f32_pow(Reg(3), Reg(1), Reg(2))
+        .ret(Reg::EFFECT, &[Reg(3)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -920,7 +921,7 @@ fn f64_intrinsics_and_clamp_traps_replay_from_a_recording() {
         .f64_atan2(Reg(4), Reg(4), Reg(2))
         .f64_cos(Reg(4), Reg(4))
         .f64_clamp(Reg(4), Reg(4), Reg(2), Reg(3))
-        .ret(Reg(0), &[Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -980,7 +981,7 @@ fn f64_intrinsics_have_their_opcodes_and_disassemble() {
         .f64_atan2(Reg(4), Reg(1), Reg(2))
         .f64_clamp(Reg(4), Reg(1), Reg(2), Reg(3))
         .f64_ln(Reg(4), Reg(4))
-        .ret(Reg(0), &[Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(4)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -1021,7 +1022,7 @@ fn verifier_rejects_f32_operands_to_f64_intrinsics() {
         let mut asm = Asm::new();
         asm.set_register_types(vec![Unit, F64, F32, F64]);
         emit(&mut asm);
-        asm.ret(Reg(0), &[Reg(3)]);
+        asm.ret(Reg::EFFECT, &[Reg(3)]);
         let mut builder = ProgramBuilder::new();
         builder
             .push_function_checked(

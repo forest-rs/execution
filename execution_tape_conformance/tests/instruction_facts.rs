@@ -59,7 +59,7 @@ fn nested() -> (Program, FuncId, Vec<Pc>) {
         .const_bool(Reg(2), true)
         .tuple_new(Reg(3), &[Reg(1)])
         .tuple_new(Reg(4), &[Reg(3), Reg(2)])
-        .ret(Reg(0), &[Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(4)]);
     let make = b
         .push_function_checked(
             make,
@@ -71,13 +71,13 @@ fn nested() -> (Program, FuncId, Vec<Pc>) {
         .unwrap();
     let mut main = asm(&[ValueType::Unit, ValueType::Agg, ValueType::I64]);
     let mut pcs = vec![main.pc()];
-    main.call(Reg(0), make, Reg(0), &[], &[Reg(1)]);
+    main.call(Reg::EFFECT, make, Reg::EFFECT, &[], &[Reg(1)]);
     pcs.push(main.pc());
     main.tuple_get(Reg(1), Reg(1), 0);
     pcs.push(main.pc());
     main.tuple_get(Reg(2), Reg(1), 0);
     pcs.push(main.pc());
-    main.ret(Reg(0), &[Reg(2)]);
+    main.ret(Reg::EFFECT, &[Reg(2)]);
     let entry = b
         .push_function_checked(main, signature(&[], &[ValueType::I64]))
         .unwrap();
@@ -174,9 +174,9 @@ fn prepared_programs_lend_their_proof_without_cloning_source() {
 fn unreachable_and_uninitialized_are_distinct_from_declared_kinds() {
     let mut b = ProgramBuilder::new();
     let mut a = asm(&[ValueType::Unit, ValueType::I64]);
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     let dead = a.pc();
-    a.const_i64(Reg(1), 1).ret(Reg(0), &[]);
+    a.const_i64(Reg(1), 1).ret(Reg::EFFECT, &[]);
     let entry = b.push_function_checked(a, signature(&[], &[])).unwrap();
     let p = b.build_checked().unwrap();
     let mut f = ProgramAnalysis::new(&p, &VerifyConfig::default())
@@ -190,7 +190,7 @@ fn unreachable_and_uninitialized_are_distinct_from_declared_kinds() {
             ValueFact::Uninitialized
         );
         assert_eq!(
-            live.register(Reg(0)).unwrap().origin_before,
+            live.register(Reg::EFFECT).unwrap().origin_before,
             Some(FactOrigin::Effect)
         );
     }
@@ -210,7 +210,7 @@ fn arguments_start_initialized_but_unused_registers_do_not() {
     let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
     let tuple = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
     let mut a = asm(&[ValueType::Unit, ValueType::Agg, ValueType::Agg]);
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     let entry = b
         .push_function_checked(
             a,
@@ -243,15 +243,15 @@ fn arguments_start_initialized_but_unused_registers_do_not() {
 fn opaque_call_overwrites_clear_prior_structure_without_uninitializing() {
     let mut b = ProgramBuilder::new();
     let mut make = asm(&[ValueType::Unit, ValueType::Agg]);
-    make.tuple_new(Reg(1), &[]).ret(Reg(0), &[Reg(1)]);
+    make.tuple_new(Reg(1), &[]).ret(Reg::EFFECT, &[Reg(1)]);
     let make = b
         .push_function_checked(make, signature(&[], &[ValueType::Agg]))
         .unwrap();
     let mut a = asm(&[ValueType::Unit, ValueType::I64, ValueType::Agg]);
     a.const_i64(Reg(1), 7).tuple_new(Reg(2), &[Reg(1)]);
     let call = a.pc();
-    a.call(Reg(0), make, Reg(0), &[], &[Reg(2)])
-        .ret(Reg(0), &[]);
+    a.call(Reg::EFFECT, make, Reg::EFFECT, &[], &[Reg(2)])
+        .ret(Reg::EFFECT, &[]);
     let entry = b.push_function_checked(a, signature(&[], &[])).unwrap();
     let p = b.build_checked().unwrap();
     let mut f = ProgramAnalysis::new(&p, &VerifyConfig::default())
@@ -294,7 +294,7 @@ fn same_target_typed_edges_keep_their_simultaneous_bindings_and_common_join_fact
     );
     let header = a.pc();
     a.place(join).unwrap();
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     let entry = b
         .push_function_checked(a, signature(&[ValueType::Bool], &[]))
         .unwrap();
@@ -380,7 +380,7 @@ fn loop_queries_preserve_parallel_swaps_and_share_deep_contract_graphs() {
     a.place(head).unwrap();
     a.br(Reg(3), head.with_args(&[Reg(2), Reg(1)]), done);
     a.place(done).unwrap();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     let entry = b
         .push_function_checked(
             a,
@@ -450,7 +450,7 @@ fn untyped_joins_exclude_dead_predecessors_and_intersect_initialization() {
     a.tuple_new(Reg(4), &[Reg(3)]).jmp(join);
     let header = a.pc();
     a.place(join).unwrap();
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     a.tuple_new(Reg(4), &[Reg(2)]).jmp(join); // This syntactic predecessor is unreachable.
     let entry = b
         .push_function_checked(a, signature(&[ValueType::Bool], &[]))
@@ -507,7 +507,7 @@ fn nominal_struct_and_array_facts_preserve_nested_member_contracts() {
     a.array_get_imm(Reg(4), Reg(3), 0)
         .struct_get(Reg(1), Reg(4), 0)
         .tuple_get(Reg(5), Reg(1), 0)
-        .ret(Reg(0), &[Reg(5)]);
+        .ret(Reg::EFFECT, &[Reg(5)]);
     let entry = b
         .push_function_checked(
             a,
@@ -570,10 +570,10 @@ fn block_zero_meets_invocation_seeds_with_backedges_without_fabricating_a_cfg_ed
     let head = a.label();
     let done = a.label();
     a.place(head).unwrap();
-    a.host_call(Reg(0), host, Reg(0), &[], &[Reg(1)])
+    a.host_call(Reg::EFFECT, host, Reg::EFFECT, &[], &[Reg(1)])
         .br(Reg(2), head, done);
     a.place(done).unwrap();
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     let entry = b
         .push_function_checked(
             a,

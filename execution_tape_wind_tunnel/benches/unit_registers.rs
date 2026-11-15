@@ -58,7 +58,7 @@ fn program(units: usize) -> (VerifiedProgram, FuncId) {
         },
     );
     let mut body = builder.function_asm(helper).unwrap();
-    body.ret(Reg(0), &[Reg(2), Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(2), Reg(1)]);
     builder.define_function(helper, body).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     for _ in 3..units {
@@ -70,10 +70,22 @@ fn program(units: usize) -> (VerifiedProgram, FuncId) {
         let join = body.block(&[Reg(1), Reg(2)]);
         body.jmp(join.with_args(&[Reg(2), Reg(1)]));
         body.place(join).unwrap();
-        body.call(Reg(0), helper, Reg(0), &[Reg(1), Reg(2)], &[Reg(1), Reg(2)]);
-        body.host_call_sig_id(Reg(0), host, Reg(0), &[Reg(1), Reg(2)], &[Reg(1), Reg(2)]);
+        body.call(
+            Reg::EFFECT,
+            helper,
+            Reg::EFFECT,
+            &[Reg(1), Reg(2)],
+            &[Reg(1), Reg(2)],
+        );
+        body.host_call_sig_id(
+            Reg::EFFECT,
+            host,
+            Reg::EFFECT,
+            &[Reg(1), Reg(2)],
+            &[Reg(1), Reg(2)],
+        );
     }
-    body.ret(Reg(0), &[Reg(1), Reg(2)]);
+    body.ret(Reg::EFFECT, &[Reg(1), Reg(2)]);
     builder.define_function(entry, body).unwrap();
     (builder.build_verified().unwrap(), entry)
 }

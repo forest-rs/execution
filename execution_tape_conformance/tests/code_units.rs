@@ -43,7 +43,7 @@ fn constant(number: i64) -> Arc<VerifiedProgram> {
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let value = a.alloc_register(ValueType::I64);
-    a.const_i64(value, number).ret(Reg(0), &[value]);
+    a.const_i64(value, number).ret(Reg::EFFECT, &[value]);
     b.define_function(entry, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }
@@ -146,7 +146,7 @@ fn struct_unit(field: &str) -> (Arc<VerifiedProgram>, FuncId, FuncId) {
     let result = a.alloc_register(ValueType::Agg);
     a.const_i64(value, 7)
         .struct_new(result, ty, &[value])
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(make, a).unwrap();
     let check = b
         .declare_function(FunctionAbi {
@@ -156,7 +156,7 @@ fn struct_unit(field: &str) -> (Arc<VerifiedProgram>, FuncId, FuncId) {
         .unwrap();
     let mut a = b.function_asm(check).unwrap();
     let field = a.alloc_register(ValueType::I64);
-    a.struct_get(field, Reg(1), 0).ret(Reg(0), &[field]);
+    a.struct_get(field, Reg(1), 0).ret(Reg::EFFECT, &[field]);
     b.define_function(check, a).unwrap();
     (Arc::new(b.build_verified().unwrap()), make, check)
 }
@@ -233,7 +233,9 @@ fn adds(amount: i64) -> Arc<VerifiedProgram> {
     let mut a = b.function_asm(f).unwrap();
     let x = b.argument(f, 0).unwrap();
     let k = a.alloc_register(ValueType::I64);
-    a.const_i64(k, amount).i64_add(x, x, k).ret(Reg(0), &[x]);
+    a.const_i64(k, amount)
+        .i64_add(x, x, k)
+        .ret(Reg::EFFECT, &[x]);
     b.define_function(f, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }
@@ -253,7 +255,7 @@ fn applies(kind: ValueType) -> Arc<VerifiedProgram> {
     let [result] = b
         .emit_call(&mut a, CallTarget::Indirect { signature, callee }, &[x])
         .unwrap();
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(f, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }
@@ -312,7 +314,9 @@ fn closures_keep_their_body_unit_and_environment_across_units() {
     let env = b.argument(body, 0).unwrap();
     let x = b.argument(body, 1).unwrap();
     let k = a.alloc_register(ValueType::I64);
-    a.tuple_get(k, env, 0).i64_add(x, x, k).ret(Reg(0), &[x]);
+    a.tuple_get(k, env, 0)
+        .i64_add(x, x, k)
+        .ret(Reg::EFFECT, &[x]);
     b.define_function(body, a).unwrap();
     let make = b
         .declare_function(sig(&[ValueType::I64], &[ValueType::Closure]))
@@ -327,7 +331,7 @@ fn closures_keep_their_body_unit_and_environment_across_units() {
     a.const_func(function, body)
         .tuple_new(env, &[k])
         .closure_new(closure, function, env)
-        .ret(Reg(0), &[closure]);
+        .ret(Reg::EFFECT, &[closure]);
     b.define_function(make, a).unwrap();
     let maker = Arc::new(b.build_verified().unwrap());
 
@@ -366,7 +370,7 @@ fn indirect_calls_check_signatures_across_units() {
         .unwrap();
     let mut a = b.function_asm(f).unwrap();
     let flag = a.alloc_register(ValueType::Bool);
-    a.const_bool(flag, true).ret(Reg(0), &[flag]);
+    a.const_bool(flag, true).ret(Reg::EFFECT, &[flag]);
     b.define_function(f, a).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let caller = vm.install(applies(ValueType::Func)).unwrap();
@@ -404,7 +408,7 @@ fn indirect_calls_check_signatures_across_units() {
     let [result] = b
         .emit_call(&mut a, CallTarget::Indirect { signature, callee }, &[x])
         .unwrap();
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(f, a).unwrap();
     let opaque = vm.install(b.build_verified().unwrap()).unwrap();
     let mut b = ProgramBuilder::new();
@@ -417,7 +421,7 @@ fn indirect_calls_check_signatures_across_units() {
         })
         .unwrap();
     let mut a = b.function_asm(identity).unwrap();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     b.define_function(identity, a).unwrap();
     let refined = vm.install(b.build_verified().unwrap()).unwrap();
     let tuple = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
@@ -477,7 +481,7 @@ fn dispatcher() -> Arc<VerifiedProgram> {
         )
         .unwrap();
     let pair = a.alloc_register(ValueType::Agg);
-    a.tuple_new(pair, &[one, two]).ret(Reg(0), &[pair]);
+    a.tuple_new(pair, &[one, two]).ret(Reg::EFFECT, &[pair]);
     b.define_function(main, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }
@@ -499,7 +503,7 @@ fn pausing_method() -> Arc<VerifiedProgram> {
     let x = b.argument(f, 0).unwrap();
     let [] = b.emit_call(&mut a, pause, &[]).unwrap();
     let k = a.alloc_register(ValueType::I64);
-    a.const_i64(k, 1).i64_add(x, x, k).ret(Reg(0), &[x]);
+    a.const_i64(k, 1).i64_add(x, x, k).ret(Reg::EFFECT, &[x]);
     b.define_function(f, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }
@@ -563,7 +567,7 @@ fn a_host_request_can_call_back_into_another_unit() {
     let main = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
     let mut a = b.function_asm(main).unwrap();
     let [answer] = b.emit_call(&mut a, ask, &[]).unwrap();
-    a.ret(Reg(0), &[answer]);
+    a.ret(Reg::EFFECT, &[answer]);
     b.define_function(main, a).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let caller = vm.install(b.build_verified().unwrap()).unwrap();
@@ -627,7 +631,7 @@ fn exceptions() -> Exceptions {
     a.place(handler).unwrap();
     let minus = a.alloc_register(ValueType::I64);
     a.const_i64(minus, -1);
-    a.ret(Reg(0), &[minus]);
+    a.ret(Reg::EFFECT, &[minus]);
     a.place(start).unwrap();
     let seven = a.alloc_register(ValueType::I64);
     a.const_i64(seven, 7);
@@ -636,7 +640,7 @@ fn exceptions() -> Exceptions {
         .emit_call(&mut a, CallTarget::Indirect { signature, callee }, &[seven])
         .unwrap();
     a.end_region();
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(all, a).unwrap();
     Exceptions {
         program: Arc::new(b.build_verified().unwrap()),
@@ -760,7 +764,7 @@ fn function_contracts_compare_signatures_of_other_units() {
         })
         .unwrap();
     let mut a = b.function_asm(accept).unwrap();
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     b.define_function(accept, a).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let checker = vm.install(b.build_verified().unwrap()).unwrap();
@@ -811,7 +815,7 @@ fn bumps() -> Arc<VerifiedProgram> {
     let mut a = b.function_asm(f).unwrap();
     let x = b.argument(f, 0).unwrap();
     let [result] = b.emit_call(&mut a, bump, &[x]).unwrap();
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(f, a).unwrap();
     Arc::new(b.build_verified().unwrap())
 }

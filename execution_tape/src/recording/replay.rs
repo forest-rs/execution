@@ -1893,11 +1893,11 @@ mod tests {
                     rets: vec![kind],
                 },
             );
-            body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
-            body.ret(Reg(0), &[Reg(2)]);
+            body.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+            body.ret(Reg::EFFECT, &[Reg(2)]);
         } else {
             body.const_i64(Reg(2), 7);
-            body.ret(Reg(0), &[Reg(2)]);
+            body.ret(Reg::EFFECT, &[Reg(2)]);
         }
         builder
             .push_function_checked(
@@ -1984,15 +1984,15 @@ mod tests {
         );
         let mut a = b.function_asm(root).unwrap();
         let result = a.alloc_register(ValueType::I64);
-        a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[result])
-            .ret(Reg(0), &[result]);
+        a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[result])
+            .ret(Reg::EFFECT, &[result]);
         b.define_function(root, a).unwrap();
         let mut a = b.function_asm(handler).unwrap();
         let one = a.alloc_register(ValueType::I64);
         let result = a.alloc_register(ValueType::I64);
         a.const_i64(one, 1)
             .i64_add(result, Reg(1), one)
-            .ret(Reg(0), &[result]);
+            .ret(Reg::EFFECT, &[result]);
         b.define_function(handler, a).unwrap();
         let program = Arc::new(b.build_verified().unwrap());
         let recorder = Rc::new(RefCell::new(
@@ -2107,7 +2107,7 @@ mod tests {
             let mut builder = ProgramBuilder::new();
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ValueType::Bytes]);
-            body.ret(Reg(0), &[Reg(1)]);
+            body.ret(Reg::EFFECT, &[Reg(1)]);
             builder
                 .push_function_checked(
                     body,
@@ -2274,12 +2274,12 @@ mod tests {
             .const_i64(Reg(3), 3);
         body.jmp(head);
         body.place(head).unwrap();
-        body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(1)]);
+        body.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(1)]);
         body.i64_add(Reg(1), Reg(1), Reg(2))
             .i64_lt(Reg(4), Reg(1), Reg(3))
             .br(Reg(4), head, exit);
         body.place(exit).unwrap();
-        body.ret(Reg(0), &[Reg(1)]);
+        body.ret(Reg::EFFECT, &[Reg(1)]);
         builder
             .push_function_checked(
                 body,
@@ -2366,7 +2366,7 @@ mod tests {
             builder.emit_throw(&mut body, failed, &[Reg(1)]).unwrap();
             body.end_region();
             body.place(handler).unwrap();
-            body.ret(Reg(0), &[caught]);
+            body.ret(Reg::EFFECT, &[caught]);
             builder.define_function(function, body).unwrap();
             let program = Arc::new(builder.build_verified().unwrap());
             let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
@@ -2427,7 +2427,7 @@ mod tests {
             builder.emit_throw(&mut body, failed, &[Reg(1)]).unwrap();
             body.end_region();
             body.place(handler).unwrap();
-            body.throw_ref(Reg(0), caught);
+            body.throw_ref(Reg::EFFECT, caught);
             builder.define_function(function, body).unwrap();
             let program = Arc::new(builder.build_verified().unwrap());
             let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
@@ -2561,9 +2561,9 @@ mod tests {
             let mut a = b.function_asm(entry).unwrap();
             let result = a.alloc_register(ValueType::Agg);
             let wrapper = a.alloc_register(ValueType::Agg);
-            a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[result])
+            a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[], &[result])
                 .tuple_new(wrapper, &[result])
-                .ret(Reg(0), &[wrapper]);
+                .ret(Reg::EFFECT, &[wrapper]);
             b.define_function(entry, a).unwrap();
             let program = Arc::new(b.build_verified().unwrap());
             let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
@@ -2619,8 +2619,8 @@ mod tests {
         let mut asm = b.function_asm(f).unwrap();
         let x = b.argument(f, 0).unwrap();
         let answer = asm.alloc_register(ValueType::I64);
-        asm.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
-        asm.ret(Reg(0), &[answer]);
+        asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[x], &[answer]);
+        asm.ret(Reg::EFFECT, &[answer]);
         b.define_function(f, asm).unwrap();
         let program = Arc::new(b.build_verified().unwrap());
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());

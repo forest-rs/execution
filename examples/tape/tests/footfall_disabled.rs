@@ -32,7 +32,7 @@ fn runs_and_reuses_sink_without_backend() {
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     body.const_i64(Reg(1), 42);
-    body.ret(Reg(0), &[Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(1)]);
     builder
         .push_function_checked(
             body,

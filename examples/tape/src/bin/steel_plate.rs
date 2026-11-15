@@ -189,7 +189,7 @@ fn program() -> Result<Program, Box<dyn Error>> {
     let [out] = pb.emit_call_with(&mut a, instantiate, module)?;
     let [m] = pb.emit_call_with(&mut a, outputs_material, (out, material))?;
     let [] = pb.emit_call_with(&mut a, output_material, (material, m))?;
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     pb.define_function(entry, a)?;
     Ok(pb.build())
     // --- tape source: end
@@ -350,7 +350,7 @@ fn mistyped() -> Result<Program, BuildError> {
     let finish = pb.argument(entry, 0)?;
     let mut a = pb.function_asm(entry)?;
     let sum = a.alloc_register(F32);
-    a.f32_add(sum, finish, finish).ret(Reg(0), &[]);
+    a.f32_add(sum, finish, finish).ret(Reg::EFFECT, &[]);
     pb.define_function(entry, a)?;
     Ok(pb.build())
 }
@@ -368,7 +368,7 @@ fn misspelt() -> Result<VerifiedProgram, Box<dyn Error>> {
     let mut a = pb.function_asm(entry)?;
     let [rust] = pb.emit_call_with(&mut a, bind_new, ())?;
     let [] = pb.emit_call_with(&mut a, bind_scalar, (rust, "rustiness", age))?;
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     pb.define_function(entry, a)?;
     Ok(pb.build_verified()?)
 }

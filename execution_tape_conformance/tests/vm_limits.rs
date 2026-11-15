@@ -38,7 +38,7 @@ fn program() -> Arc<VerifiedProgram> {
         .unwrap();
     let mut asm = builder.function_asm(entry).unwrap();
     let tuple = asm.alloc_register(ValueType::Agg);
-    asm.tuple_new(tuple, &[Reg(1)]).ret(Reg(0), &[tuple]);
+    asm.tuple_new(tuple, &[Reg(1)]).ret(Reg::EFFECT, &[tuple]);
     builder.define_function(entry, asm).unwrap();
     Arc::new(builder.build_verified().unwrap())
 }

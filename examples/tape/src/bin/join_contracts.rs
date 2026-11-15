@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     body.br(Reg(1), join.with_args(&[Reg(4)]), join.with_args(&[Reg(5)]));
     let header = body.pc();
     body.place(join)?;
-    body.tuple_len(Reg(7), Reg(6)).ret(Reg(0), &[Reg(7)]);
+    body.tuple_len(Reg(7), Reg(6)).ret(Reg::EFFECT, &[Reg(7)]);
     let entry = builder.push_function_checked(
         body,
         FunctionSig {

@@ -94,7 +94,7 @@ fn operations() -> VerifiedProgram {
         .const_pool(pooled, pool)
         .mov(copied, constant)
         .select(selected, Reg(1), pooled, copied)
-        .ret(Reg(0), &[selected, constant, pooled]);
+        .ret(Reg::EFFECT, &[selected, constant, pooled]);
     builder.define_function(entry, body).unwrap();
     builder.build_verified().unwrap()
 }
@@ -197,9 +197,9 @@ fn unit_declarations_and_unselected_operands_still_require_initialization() {
             let result = body.alloc_register(ValueType::Unit);
             body.const_unit(initialized)
                 .select(result, Reg(1), initialized, uninitialized)
-                .ret(Reg(0), &[result]);
+                .ret(Reg::EFFECT, &[result]);
         } else {
-            body.ret(Reg(0), &[uninitialized]);
+            body.ret(Reg::EFFECT, &[uninitialized]);
         }
         builder.define_function(entry, body).unwrap();
         assert!(matches!(
@@ -228,12 +228,12 @@ fn repeated_guest_host_unit_boundaries_validate_kinds_and_replay() {
     );
     let registers: Vec<_> = (1..=10).map(Reg).collect();
     let mut body = builder.function_asm(helper).unwrap();
-    body.ret(Reg(0), &registers);
+    body.ret(Reg::EFFECT, &registers);
     builder.define_function(helper, body).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
-    body.call(Reg(0), helper, Reg(0), &registers, &registers)
-        .host_call_sig_id(Reg(0), host, Reg(0), &registers, &registers)
-        .ret(Reg(0), &registers);
+    body.call(Reg::EFFECT, helper, Reg::EFFECT, &registers, &registers)
+        .host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, &registers, &registers)
+        .ret(Reg::EFFECT, &registers);
     builder.define_function(entry, body).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     for bad_return in [false, true] {

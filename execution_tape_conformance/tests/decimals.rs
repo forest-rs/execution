@@ -86,7 +86,7 @@ fn wide_literals_roundtrip_inline_pool_and_disassembly() {
                     let id = builder.constant(Const::Decimal(decimal));
                     body.const_decimal_value(inline, decimal)
                         .const_pool(pooled, id)
-                        .ret(Reg(0), &[inline, pooled]);
+                        .ret(Reg::EFFECT, &[inline, pooled]);
                 },
             );
             assert_eq!(
@@ -145,7 +145,7 @@ fn decimal_arithmetic_matches_checked_i128_at_boundaries() {
                     1 => body.dec_sub(result, Reg(1), Reg(2)),
                     _ => body.dec_mul(result, Reg(1), Reg(2)),
                 };
-                body.ret(Reg(0), &[result]);
+                body.ret(Reg::EFFECT, &[result]);
             },
         );
         let values = [
@@ -201,7 +201,7 @@ fn add_sub_program() -> VerifiedProgram {
             let difference = body.alloc_register(ValueType::Decimal);
             body.dec_add(sum, Reg(1), Reg(2))
                 .dec_sub(difference, Reg(1), Reg(2))
-                .ret(Reg(0), &[sum, difference]);
+                .ret(Reg::EFFECT, &[sum, difference]);
         },
     )
 }
@@ -247,7 +247,7 @@ fn decimal_ops_program(rounding: DecimalRounding) -> VerifiedProgram {
                 .dec_scale(scale, Reg(1))
                 .dec_rescale(rescaled, Reg(1), Reg(3), rounding)
                 .dec_div(quotient, Reg(1), Reg(2), Reg(3), rounding)
-                .ret(Reg(0), &[order, scale, rescaled, quotient]);
+                .ret(Reg::EFFECT, &[order, scale, rescaled, quotient]);
         },
     );
     // Roundtrip through the wire format.
@@ -265,7 +265,7 @@ fn comparison_and_scale_ignore_and_report_representation() {
             let scale = body.alloc_register(ValueType::U64);
             body.dec_cmp(order, Reg(1), Reg(2))
                 .dec_scale(scale, Reg(1))
-                .ret(Reg(0), &[order, scale]);
+                .ret(Reg::EFFECT, &[order, scale]);
         },
     );
     for (a, b, order) in [
@@ -327,7 +327,7 @@ fn division_charges_fuel_for_each_long_division_step() {
         |body, _| {
             let quotient = body.alloc_register(ValueType::Decimal);
             body.dec_div(quotient, Reg(1), Reg(2), Reg(3), DecimalRounding::HalfEven)
-                .ret(Reg(0), &[quotient]);
+                .ret(Reg::EFFECT, &[quotient]);
         },
     );
     let run_with = |fuel: u64, a: Value, b: Value, scale: u64| {
@@ -509,7 +509,7 @@ fn verifier_rejects_unknown_rounding_modes_and_mistyped_scales() {
         let mut body = builder.function_asm(id).unwrap();
         let out = body.alloc_register(ValueType::Decimal);
         body.dec_rescale(out, Reg(1), Reg(2), DecimalRounding::Ceiling)
-            .ret(Reg(0), &[out]);
+            .ret(Reg::EFFECT, &[out]);
         builder.define_function(id, body).unwrap();
         builder.build()
     };
@@ -567,7 +567,7 @@ fn decimal_integer_narrowing_is_checked_and_requires_zero_scale() {
             } else {
                 body.dec_to_i64(result, Reg(1));
             }
-            body.ret(Reg(0), &[result]);
+            body.ret(Reg::EFFECT, &[result]);
         });
         for mantissa in [
             i128::MIN,
@@ -615,7 +615,7 @@ fn integer_to_decimal_supports_full_unsigned_range_and_zero_at_any_scale() {
                 } else {
                     body.i64_to_dec(result, Reg(1), scale);
                 }
-                body.ret(Reg(0), &[result]);
+                body.ret(Reg::EFFECT, &[result]);
             });
             for integer in [
                 0,

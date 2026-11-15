@@ -60,7 +60,7 @@ fn maker() -> (Arc<VerifiedProgram>, FuncId) {
     let answer = a.alloc_register(ValueType::I64);
     a.tuple_get(capture, Reg(1), 0)
         .i64_add(answer, capture, Reg(2))
-        .ret(Reg(0), &[answer]);
+        .ret(Reg::EFFECT, &[answer]);
     b.define_function(body, a).unwrap();
     let factory = b
         .declare_function(FunctionAbi {
@@ -75,7 +75,7 @@ fn maker() -> (Arc<VerifiedProgram>, FuncId) {
     a.tuple_new(env, &[Reg(1)])
         .const_func(function, body)
         .closure_new(result, function, env)
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(factory, a).unwrap();
     (Arc::new(b.build_verified().unwrap()), factory)
 }
@@ -224,7 +224,7 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
         .unwrap();
     let mut a = b.function_asm(body).unwrap();
     let result = a.alloc_register(ValueType::Agg);
-    a.tuple_new(result, &[Reg(1)]).ret(Reg(0), &[result]);
+    a.tuple_new(result, &[Reg(1)]).ret(Reg::EFFECT, &[result]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -329,7 +329,7 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
         ))
         .unwrap();
     let mut a = b.function_asm(body).unwrap();
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -425,7 +425,7 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
     let answer = a.alloc_register(ValueType::I64);
     a.tuple_get(tuple, Reg(1), 0)
         .tuple_get(answer, tuple, 0)
-        .ret(Reg(0), &[answer]);
+        .ret(Reg::EFFECT, &[answer]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -482,7 +482,7 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     let answer = a.alloc_register(ValueType::I64);
     a.tuple_get(captured, Reg(1), 0)
         .i64_add(answer, captured, Reg(2))
-        .ret(Reg(0), &[answer]);
+        .ret(Reg::EFFECT, &[answer]);
     b.define_function(leaf, a).unwrap();
     let outer = b
         .declare_function(FunctionAbi {
@@ -495,7 +495,7 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     let result = a.alloc_register(ValueType::Closure);
     a.const_func(function, leaf)
         .closure_new(result, function, Reg(1))
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(outer, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -675,7 +675,7 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
         ))
         .unwrap();
     let mut a = b.function_asm(body).unwrap();
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let mut heap = AggHeap::new();

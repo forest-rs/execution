@@ -97,14 +97,14 @@ fn fixture() -> Fixture {
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let r = a.alloc_register(ValueType::I64);
-    a.call(Reg(0), signal, Reg(0), &[Reg(1)], &[r])
-        .ret(Reg(0), &[r]);
+    a.call(Reg::EFFECT, signal, Reg::EFFECT, &[Reg(1)], &[r])
+        .ret(Reg::EFFECT, &[r]);
     b.define_function(entry, a).unwrap();
     for (function, import) in [(signal, outer), (handler, inner)] {
         let mut a = b.function_asm(function).unwrap();
         let r = a.alloc_register(ValueType::I64);
-        a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[r])
-            .ret(Reg(0), &[r]);
+        a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[r])
+            .ret(Reg::EFFECT, &[r]);
         b.define_function(function, a).unwrap();
     }
     let mut a = b.function_asm(plus_one).unwrap();
@@ -112,31 +112,31 @@ fn fixture() -> Fixture {
     let r = a.alloc_register(ValueType::I64);
     a.const_i64(one, 1)
         .i64_add(r, Reg(1), one)
-        .ret(Reg(0), &[r]);
+        .ret(Reg::EFFECT, &[r]);
     b.define_function(plus_one, a).unwrap();
     let mut a = b.function_asm(multi).unwrap();
     let one = a.alloc_register(ValueType::I64);
     let r = a.alloc_register(ValueType::I64);
     a.const_i64(one, 1)
         .i64_add(r, Reg(1), one)
-        .ret(Reg(0), &[Reg(1), r]);
+        .ret(Reg::EFFECT, &[Reg(1), r]);
     b.define_function(multi, a).unwrap();
     let mut a = b.function_asm(text).unwrap();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     b.define_function(text, a).unwrap();
     let mut a = b.function_asm(object).unwrap();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     b.define_function(object, a).unwrap();
     let mut a = b.function_asm(tuple).unwrap();
     let wrapped = a.alloc_register(ValueType::Agg);
-    a.tuple_new(wrapped, &[Reg(1)]).ret(Reg(0), &[wrapped]);
+    a.tuple_new(wrapped, &[Reg(1)]).ret(Reg::EFFECT, &[wrapped]);
     b.define_function(tuple, a).unwrap();
     let mut a = b.function_asm(closure).unwrap();
     let captured = a.alloc_register(ValueType::I64);
     let r = a.alloc_register(ValueType::I64);
     a.tuple_get(captured, Reg(1), 0)
         .i64_add(r, captured, Reg(2))
-        .ret(Reg(0), &[r]);
+        .ret(Reg::EFFECT, &[r]);
     b.define_function(closure, a).unwrap();
     for (function, name) in [
         (entry, "main"),
@@ -926,14 +926,14 @@ fn callback_results_must_satisfy_their_own_rich_contract_before_returning_to_hos
     );
     let mut a = b.function_asm(callback).unwrap();
     let r = a.alloc_register(ValueType::Agg);
-    a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[r])
-        .ret(Reg(0), &[r]);
+    a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[], &[r])
+        .ret(Reg::EFFECT, &[r]);
     b.define_function(callback, a).unwrap();
     let entry = b.declare_function(sig(&[], &[ValueType::Agg])).unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let r = a.alloc_register(ValueType::Agg);
-    a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[r])
-        .ret(Reg(0), &[r]);
+    a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[], &[r])
+        .ret(Reg::EFFECT, &[r]);
     b.define_function(entry, a).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());

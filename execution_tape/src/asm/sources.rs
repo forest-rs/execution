@@ -54,7 +54,7 @@ impl Asm {
     /// let entry = program.declare_function(FunctionSig { arg_types: vec![], ret_types: vec![ValueType::I64] })?;
     /// let mut body = program.function_asm(entry)?;
     /// let value = body.alloc_register(ValueType::I64);
-    /// body.source(SourceId(0), 0..2).const_i64(value, 42).ret(Reg(0), &[value]);
+    /// body.source(SourceId(0), 0..2).const_i64(value, 42).ret(Reg::EFFECT, &[value]);
     /// let mappings = body.source_mappings(entry).collect();
     /// program.define_function(entry, body)?;
     /// let program = program.build_verified()?;
@@ -117,7 +117,7 @@ mod tests {
             .jmp(join.with_args(&[value]));
         body.source(SourceId(0), 0..7);
         body.place(join).unwrap();
-        body.ret(Reg(0), &[answer]);
+        body.ret(Reg::EFFECT, &[answer]);
         let mappings: Vec<_> = body.source_mappings(entry).collect();
         assert_eq!(mappings.len(), body.source_mappings(entry).len());
         program.define_function(entry, body).unwrap();
@@ -158,7 +158,7 @@ mod tests {
         }
         attributed.clear_source();
         for body in [&mut plain, &mut attributed] {
-            body.ret(Reg(0), &[value]);
+            body.ret(Reg::EFFECT, &[value]);
         }
         assert_eq!(attributed.source_mappings(FuncId(8)).count(), 1);
         assert_eq!(plain.source_mappings(FuncId(8)).count(), 0);
@@ -179,7 +179,7 @@ mod tests {
             })
             .unwrap();
         let mut body = program.function_asm(entry).unwrap();
-        body.source(SourceId(0), 0..99).ret(Reg(0), &[]);
+        body.source(SourceId(0), 0..99).ret(Reg::EFFECT, &[]);
         let mappings = body.source_mappings(entry).collect();
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();

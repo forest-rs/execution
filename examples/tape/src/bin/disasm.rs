@@ -27,11 +27,11 @@ fn main() {
 
     a.place(l_then).unwrap();
     a.i64_add(Reg(4), Reg(2), Reg(3));
-    a.ret(Reg(0), &[Reg(4)]);
+    a.ret(Reg::EFFECT, &[Reg(4)]);
 
     a.place(l_else).unwrap();
     a.i64_sub(Reg(4), Reg(2), Reg(3));
-    a.ret(Reg(0), &[Reg(4)]);
+    a.ret(Reg::EFFECT, &[Reg(4)]);
 
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("disasm_demo");

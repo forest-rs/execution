@@ -466,7 +466,7 @@ fn program(op: Opcode, ins: &[ValueType], out: ValueType) -> Arc<VerifiedProgram
     encode_instruction(op, &operands, &mut bytecode).unwrap();
     encode_instruction(
         Opcode::Ret,
-        &[Operand::Reg(Reg(0)), Operand::RegList(&[dst])],
+        &[Operand::Reg(Reg::EFFECT), Operand::RegList(&[dst])],
         &mut bytecode,
     )
     .unwrap();
@@ -567,7 +567,7 @@ fn multiply_add(ty: ValueType) -> Arc<VerifiedProgram> {
         asm.f64_mul(Reg(4), Reg(1), Reg(2))
             .f64_add(Reg(5), Reg(4), Reg(3));
     }
-    asm.ret(Reg(0), &[Reg(5)]);
+    asm.ret(Reg::EFFECT, &[Reg(5)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -623,7 +623,7 @@ fn moves_constants_and_recordings_keep_float_bits() {
         .mov(Reg(4), Reg(2))
         .const_f32_bits(Reg(5), SNAN32)
         .const_f64_bits(Reg(6), SNAN64)
-        .ret(Reg(0), &[Reg(3), Reg(4), Reg(5), Reg(6)]);
+        .ret(Reg::EFFECT, &[Reg(3), Reg(4), Reg(5), Reg(6)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(

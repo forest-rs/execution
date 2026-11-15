@@ -71,7 +71,7 @@ mod tests {
         let mut builder = ProgramBuilder::new();
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit]);
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         let func = builder
             .push_function_checked(
                 body,
