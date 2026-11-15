@@ -335,7 +335,7 @@ pub enum ValueEvent<'a> {
         /// Input preparation already debited against these limits.
         work: DataWork,
         /// The VM's units and tags when the invocation starts. Installs while it is suspended
-        /// are reported by [`Self::Installed`].
+        /// are reported by [`Self::Installed`], and relinks by [`Self::Relinked`].
         units: Units<'a>,
     },
     /// A unit was installed while this invocation was suspended, through
@@ -346,6 +346,21 @@ pub enum ValueEvent<'a> {
         /// The new unit.
         unit: UnitId,
         /// The VM's units and tags, including the new unit.
+        units: Units<'a>,
+    },
+    /// A link was repointed while a host request or suspension of this invocation waited,
+    /// through [`crate::vm::PendingHostCall::relink`] or
+    /// [`crate::vm::PendingSuspension::relink`].
+    ///
+    /// Observers that rebuild the VM, such as recordings, repeat the relink at the same point.
+    Relinked {
+        /// The unit whose link changed.
+        unit: UnitId,
+        /// The link of that unit's program.
+        link: crate::program::LinkId,
+        /// The function the link names from now on.
+        target: FuncRef,
+        /// The VM's units, tags and links after the change.
         units: Units<'a>,
     },
     /// Raw host outcome after the call, before fuel debit and return validation.
@@ -509,6 +524,18 @@ impl core::fmt::Debug for ValueEvent<'_> {
             Self::Installed { unit, units } => f
                 .debug_struct("Installed")
                 .field("unit", unit)
+                .field("units", units)
+                .finish(),
+            Self::Relinked {
+                unit,
+                link,
+                target,
+                units,
+            } => f
+                .debug_struct("Relinked")
+                .field("unit", unit)
+                .field("link", link)
+                .field("target", target)
                 .field("units", units)
                 .finish(),
             Self::Entry {

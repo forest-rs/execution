@@ -186,6 +186,27 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
         install_observed(self.running.vm, self.running.continuation, program.into())
     }
 
+    /// Points `link` of `unit` at `target` while the suspension waits, returning the previous
+    /// target.
+    ///
+    /// This is [`Vm::relink`] during an invocation. The suspended frames keep the functions they
+    /// entered; once resumed, their unit's `call.link` through `link` calls `target`. A language
+    /// that installs replacement code here repoints the links of older units at it.
+    pub fn relink(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        target: FuncRef,
+    ) -> Result<FuncRef, RelinkError> {
+        relink_observed(
+            self.running.vm,
+            self.running.continuation,
+            unit,
+            link,
+            target,
+        )
+    }
+
     /// Borrows host state for read-only inspection while the suspension waits.
     #[must_use]
     pub fn host(&self) -> &H {

@@ -6,15 +6,15 @@ use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::program::{HostSigId, LinkId, Pc, Program, SpanId};
 use crate::recording::control::Action;
 use crate::recording::{
-    AggregateId, Answer, CallOutcome, CaptureFault, End, RecordedValue, Recording, Store,
-    UnitRecord,
+    AggregateId, Answer, CallOutcome, CaptureFault, End, RecordedRelink, RecordedValue, Recording,
+    Store, UnitRecord,
 };
 use crate::trace::{
     ScopeKind, SuspensionAnswer, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
 use crate::value::{AggHandle, AggType, Closure, FuncRef, TagRef, UnitId, Value};
 use crate::verifier::VerifiedProgram;
-use crate::vm::{InstallError, Trap, TrapInfo, Units, Vm};
+use crate::vm::{InstallError, RelinkError, Trap, TrapInfo, Units, Vm};
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
@@ -580,6 +580,26 @@ fn check_install(
     Ok(())
 }
 
+/// Checks that a repeated relink left the link where the recording says it pointed.
+fn check_relink(
+    state: &State,
+    relink: &RecordedRelink,
+    units: Units<'_>,
+) -> Result<(), ReplayError> {
+    let actual = units
+        .links(relink.unit)
+        .and_then(|links| links.get(relink.link.0 as usize).copied());
+    if actual != Some(relink.target) {
+        return Err(state.mismatch(Divergence::Relink {
+            unit: relink.unit,
+            link: relink.link,
+            expected: relink.target,
+            actual,
+        }));
+    }
+    Ok(())
+}
+
 /// Points every link of `unit` where the recording found it, checking that each now does.
 fn restore_links(
     state: &State,
@@ -616,14 +636,18 @@ fn check_sequence(state: &State, expected: usize) -> Result<(), ReplayError> {
     Ok(())
 }
 
-/// Where replay repeats installs: a waiting host request or a waiting suspension.
+/// Where replay repeats installs and relinks: a waiting host request or a waiting suspension.
 trait Installs {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError>;
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError>;
     fn units(&self) -> Units<'_>;
 }
 impl Installs for crate::vm::PendingHostCall<'_, '_, NoReplayEffects> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         Self::install(self, program)
+    }
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError> {
+        Self::relink(self, relink.unit, relink.link, relink.target)
     }
     fn units(&self) -> Units<'_> {
         Self::units(self)
@@ -633,8 +657,44 @@ impl Installs for crate::vm::PendingSuspension<'_, '_, NoReplayEffects> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         Self::install(self, program)
     }
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError> {
+        Self::relink(self, relink.unit, relink.link, relink.target)
+    }
     fn units(&self) -> Units<'_> {
         Self::units(self)
+    }
+}
+impl<H: Host> Installs for Vm<H> {
+    fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
+        Self::install(self, program)
+    }
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError> {
+        Self::relink(self, relink.unit, relink.link, relink.target)
+    }
+    fn units(&self) -> Units<'_> {
+        Self::units(self)
+    }
+}
+
+/// Repeats one recorded install or relink in a VM no invocation borrows, checking its outcome.
+fn repeat_store(
+    state: &State,
+    record: &Recording,
+    store: &Store,
+    request: &mut impl Installs,
+) -> Result<(), ReplayError> {
+    match store {
+        Store::Unit(index) => {
+            let unit = &record.units[*index];
+            let installed = request.install(Arc::clone(&unit.program));
+            check_install(state, unit, installed, request.units())
+        }
+        Store::Relink(relink) => {
+            // A failure leaves the old target, which the check reports.
+            let _ = request.relink(relink);
+            check_relink(state, relink, request.units())
+        }
+        Store::Tag(_) => unreachable!("tags are defined only before entry"),
     }
 }
 
@@ -650,34 +710,50 @@ struct RecordedHost<'a> {
     state: Rc<RefCell<State>>,
 }
 impl RecordedHost<'_> {
-    /// Repeats the installs recorded before the next observation, while the request waits.
+    /// Repeats the installs and relinks recorded before the next observation, while the
+    /// request waits.
     ///
-    /// No state borrow is held across an install: it reports [`ValueEvent::Installed`].
+    /// No state borrow is held across an install or relink: each reports a [`ValueEvent`].
     fn install_due(&mut self, request: &mut impl Installs) -> Result<(), ReplayError> {
         loop {
-            let unit = {
+            let store = {
                 let state = self.state.borrow();
                 if let Some(error) = &state.error {
                     return Err(error.clone());
                 }
                 match self.record.store.get(state.stored) {
-                    Some(Store::Unit(index))
-                        if self.record.units[*index]
-                            .installed
+                    Some(store)
+                        if store
+                            .during(&self.record.units)
                             .is_some_and(|before| before <= state.sequence) =>
                     {
-                        &self.record.units[*index]
+                        store
                     }
                     _ => return Ok(()),
                 }
             };
-            let installed = request.install(Arc::clone(&unit.program));
-            let mut state = self.state.borrow_mut();
-            state.boundary = ReplayBoundary::Store {
-                index: state.stored,
-            };
-            check_install(&state, unit, installed, request.units())?;
-            state.stored += 1;
+            // Repeat without a state borrow, then check under one.
+            match store {
+                Store::Unit(index) => {
+                    let unit = &self.record.units[*index];
+                    let installed = request.install(Arc::clone(&unit.program));
+                    let mut state = self.state.borrow_mut();
+                    state.boundary = ReplayBoundary::Store {
+                        index: state.stored,
+                    };
+                    check_install(&state, unit, installed, request.units())?;
+                }
+                Store::Relink(relink) => {
+                    let _ = request.relink(relink);
+                    let mut state = self.state.borrow_mut();
+                    state.boundary = ReplayBoundary::Store {
+                        index: state.stored,
+                    };
+                    check_relink(&state, relink, request.units())?;
+                }
+                Store::Tag(_) => unreachable!("tags are defined only before entry"),
+            }
+            self.state.borrow_mut().stored += 1;
         }
     }
 
@@ -1046,7 +1122,9 @@ impl TraceSink for Check<'_> {
         let result = (|| -> Result<(), ReplayError> {
             match event {
                 // Recorded installs are repeated and checked where they happen.
-                ValueEvent::Entry { .. } | ValueEvent::Installed { .. } => {}
+                ValueEvent::Entry { .. }
+                | ValueEvent::Installed { .. }
+                | ValueEvent::Relinked { .. } => {}
                 ValueEvent::HostCall {
                     location,
                     host_sig,
@@ -1401,6 +1479,7 @@ impl Recording {
             state.boundary = ReplayBoundary::Store { index };
             match record {
                 record if record.during(&self.units).is_some() => break,
+                Store::Relink(_) => unreachable!("relinks are recorded only during the run"),
                 Store::Unit(unit) => {
                     let unit = &self.units[*unit];
                     let installed = vm.install(Arc::clone(&unit.program));
@@ -1536,14 +1615,12 @@ impl Recording {
         if let Some(error) = &state.error {
             return Err(error.clone());
         }
-        // Installs after the last host request still belong to the recorded VM.
-        while let Some(Store::Unit(index)) = self.store.get(state.stored) {
-            let unit = &self.units[*index];
+        // Installs and relinks after the last host request still belong to the recorded VM.
+        while let Some(store @ (Store::Unit(_) | Store::Relink(_))) = self.store.get(state.stored) {
             state.boundary = ReplayBoundary::Store {
                 index: state.stored,
             };
-            let installed = vm.install(Arc::clone(&unit.program));
-            check_install(&state, unit, installed, vm.units())?;
+            repeat_store(&state, self, store, &mut vm)?;
             state.stored += 1;
         }
         if state.stored != self.store.len() {

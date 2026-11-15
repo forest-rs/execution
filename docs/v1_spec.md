@@ -673,12 +673,14 @@ table. The section is omitted when the program declares no links:
 
 Verification requires the initial target's argument and result contract IDs to equal the call
 signature's exactly. Installing the program gives the unit its own link table, with each link
-naming `FuncRef { unit, func_id }` of the new unit. `Vm::relink(unit, link, target)` repoints one
-entry at a function of any installed unit whose canonical signature, interned per VM as for
+naming `FuncRef { unit, func_id }` of the new unit. `Vm::relink(unit, link, target)`, or the same
+operation on a waiting host request or suspension, repoints one entry at a function of any installed unit whose canonical signature, interned per VM as for
 `call_indirect`, is the link's call signature; otherwise it fails with the first differing
 position and changes nothing. A relink changes no running or suspended activation. It overwrites
 the entry and keeps no history, so it is not a `StoreEvent`; a recording snapshots every link
-target when its invocation starts, and replay restores them.
+target when its invocation starts and records each relink made while it waits, and replay
+restores and repeats them. An invocation can relink only while a host request or suspension
+waits, never between scheduling quanta, so replay can repeat every relink at the same point.
 
 ## Regions (optional)
 Protected regions attach catch clauses to instructions. Each function owns a region tree and a
