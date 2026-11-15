@@ -30,6 +30,17 @@ loop with the add inline; subtract it and divide by 1,000 for a per-call cost.
 cargo bench -p execution_tape_wind_tunnel --bench linked_calls
 ```
 
+## Host import lookup
+
+`host_imports` runs a guest loop of 1,000 dependent host calls to the last of 1, 8, 32 or 128
+imports of one signature. `import_in` dispatches by matching `HostContext::import_in` against
+the surface; `host_sig_id` dispatches by import ID and is the floor. Divide by 1,000 for a
+per-call cost; the difference between the two is the lookup.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench host_imports
+```
+
 ## Math intrinsics
 
 `math_intrinsics` chains 128 dependent `pow`, `sin` and (for `f64`) `exp` calls three ways: as
