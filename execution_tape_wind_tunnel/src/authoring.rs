@@ -20,7 +20,7 @@ pub(super) fn streaming(steps: u32) -> Program {
     body.const_i64(one, 1);
     let mut value = Reg(1);
     for step in 0..steps {
-        body.span(SpanId::try_from(u64::from(step) + 1).unwrap());
+        body.span(SpanId::new(u64::from(step) + 1));
         let next = body.alloc_register(ValueType::I64);
         body.i64_add(next, value, one);
         if step % 4 == 0 {
@@ -93,7 +93,7 @@ pub(super) fn lowered(callers: u32) -> Program {
             ValueType::Closure,
             ValueType::I64,
         ]);
-        body.span(SpanId::try_from(u64::from(function.0) + 1).unwrap());
+        body.span(SpanId::new(u64::from(function.0) + 1));
         body.const_i64(Reg(2), 42)
             .tuple_new(Reg(3), &[Reg(2)])
             .const_func(Reg(4), callee)

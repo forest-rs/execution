@@ -691,7 +691,7 @@ fn build_i64_add_chain_with_spans(
     let mut next_span_id = 1_u64;
     for i in 0..chain_len {
         if i % span_every == 0 {
-            a.span(SpanId::try_from(next_span_id).unwrap());
+            a.span(SpanId::new(next_span_id));
             next_span_id = next_span_id.saturating_add(1);
         }
         a.i64_add(Reg(cur), Reg(cur - 1), Reg(2));

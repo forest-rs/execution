@@ -20,7 +20,7 @@ fn encoded_program(functions: u32, additions: u32) -> Vec<u8> {
         asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         asm.const_i64(Reg(1), 1);
         for instruction in 0..additions {
-            asm.span(SpanId::try_from(u64::from(instruction) + 1).unwrap());
+            asm.span(SpanId::new(u64::from(instruction) + 1));
             asm.i64_add(Reg(1), Reg(1), Reg(1));
         }
         asm.ret(Reg::EFFECT, &[Reg(1)]);

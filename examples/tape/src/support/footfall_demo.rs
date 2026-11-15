@@ -90,7 +90,7 @@ pub fn program() -> VerifiedProgram {
 
     let mut body = Asm::new();
     body.set_register_types(vec![Unit, Bool, I64, I64, I64, I64]);
-    body.span(SpanId::try_from(100).expect("nonzero source span"));
+    body.span(SpanId::new(100));
     let yes = body.label_named("yes");
     let no = body.label_named("no");
     let join = body.block(&[Reg(5)]);
