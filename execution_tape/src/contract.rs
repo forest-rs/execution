@@ -690,6 +690,9 @@ impl ContractViolation {
             ContractPosition::IndirectArgument { signature, index } => {
                 write!(f, "indirect signature #{}: argument[{index}]", signature.0)?;
             }
+            ContractPosition::LinkArgument { link, index } => {
+                write!(f, "call through link#{}: argument[{index}]", link.0)?;
+            }
             ContractPosition::Result { index } => write!(f, "result[{index}]")?,
             ContractPosition::Payload { tag, index } => {
                 write!(f, "throw tag#{}: payload[{index}]", tag.0)?;
@@ -738,6 +741,13 @@ pub enum ContractPosition {
         /// Zero-based user argument.
         index: u32,
     },
+    /// An argument checked statically against the signature of a `call.link` site's link.
+    LinkArgument {
+        /// Program-local link.
+        link: crate::program::LinkId,
+        /// Zero-based argument.
+        index: u32,
+    },
     /// Result before copying to the caller or committing top-level outputs.
     Result {
         /// Zero-based return position.
@@ -771,6 +781,9 @@ impl fmt::Display for ContractPosition {
                 "argument[{index}] to indirect signature #{}",
                 signature.0
             ),
+            Self::LinkArgument { link, index } => {
+                write!(f, "argument[{index}] through link#{}", link.0)
+            }
             Self::Result { index } => write!(f, "result[{index}]"),
             Self::Payload { tag, index } => write!(f, "payload[{index}] of tag#{}", tag.0),
             Self::Resumption { tag, index } => {

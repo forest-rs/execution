@@ -43,6 +43,8 @@ pub enum MetadataTable {
     Regions,
     /// Imported tag IDs, indexed by import.
     TagImports,
+    /// Link names, signatures and initial targets, indexed by link.
+    Links,
 }
 
 fn invalid(table: MetadataTable, entry: usize, error: DecodeError) -> VerifyError {

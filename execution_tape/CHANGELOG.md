@@ -16,6 +16,24 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add links: relinkable call targets for languages that devirtualize calls but replace code
+  live. A program declares a link with `ProgramBuilder::declare_link(name, target)` (a new
+  optional `links` section, tag 17), and `call.link` (`0x56`, emitted by `Asm::call_link` or
+  `emit_call` with `CallTarget::Link`) calls whatever the calling unit's link names when it
+  executes. Each install gives its unit its own link table, starting at the program's targets in
+  that unit. `Vm::relink(unit, link, target)` repoints a link at a function of any installed unit
+  whose canonical signature is exactly the link's, returning the previous target, or
+  `RelinkError::SignatureMismatch` with the first differing position (`vm::LinkMismatch`);
+  callers are verified only against the link's signature, so nothing is verified again, and
+  activations that already entered the old target keep running it. A call through a link costs
+  what a direct `call` does. `Units::links` lists each unit's current targets and
+  `Program::link_by_name` finds a link. Relinking keeps no history: recordings snapshot the
+  targets at entry (`RecordedUnit::links`) and replay restores them (`Divergence::Relink`). The
+  verifier adds `LinkSignatureMismatch`, `DuplicateLinkName`, `LinkOutOfBounds`,
+  `MetadataTable::Links` and `ContractPosition::LinkArgument`. Migration: `Program` gains a
+  `links` field and `RecordedUnit` a `links` field; handle `asm::CallTarget::Link`,
+  `disasm::CallTarget::Link` and `disasm::InputIndex::Link` in exhaustive matches.
+
 - Add deterministic `f32` math intrinsics under the `0xFD` prefix, in an `f32` sub-block from
   `0xA0`: `f32.pow` (`0xA0`), `f32.exp`, `f32.ln`, `f32.sin`, `f32.cos` and `f32.atan2`
   (`0xA5`). Their results are defined as those of the `libm` crate at exactly version 0.2.16,

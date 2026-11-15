@@ -42,7 +42,9 @@ are never removed, and every install of a program is a distinct unit. A function
 `FuncRef { unit, func }`: `func` is local to the unit's program, and the unit's program runs it,
 whichever unit called it. Each activation runs the unit it entered; installing new code changes no
 running or suspended activation. Independently compiled units call each other through function
-values, which a host may supply (for example from a language-owned method table).
+values, which a host may supply (for example from a language-owned method table), or through
+*links*: a unit's link table holds the current target of each link its program declares, which
+`Vm::relink` repoints (see [Links](#links-optional)).
 
 ## Terminology
 - **Value**: runtime datum computed by the VM. Some values (notably `Bytes`/`Str`) may be stored indirectly by
@@ -425,9 +427,10 @@ Callbacks and recording are opt-in; source lookup is separate optional metadata.
 - `14 = regions` (optional)
 - `15 = tag_imports` (optional)
 - `16 = tag_results` (optional)
+- `17 = links` (optional)
 
 Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs`, `13 = tags`,
-`14 = regions`, `15 = tag_imports` and `16 = tag_results` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
+`14 = regions`, `15 = tag_imports`, `16 = tag_results` and `17 = links` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -658,6 +661,24 @@ the program defines all its tags:
 
 An imported tag keeps its `tags` entry: its name is the import key, and its payload contracts
 are both the import's expected payload and the contracts `throw` checks in this program.
+
+## Links (optional)
+Declares relinkable call targets, referenced by `call.link`. A `LinkId` is the index into this
+table. The section is omitted when the program declares no links:
+- `count: ULEB128`
+- repeated `count` times:
+  - `name_symbol_id: ULEB128` (non-zero; names are unique within the program)
+  - `call_sig_id: ULEB128` (an entry of `call_sigs`: the link's signature)
+  - `func_id: ULEB128` (the initial target, a function of this program)
+
+Verification requires the initial target's argument and result contract IDs to equal the call
+signature's exactly. Installing the program gives the unit its own link table, with each link
+naming `FuncRef { unit, func_id }` of the new unit. `Vm::relink(unit, link, target)` repoints one
+entry at a function of any installed unit whose canonical signature, interned per VM as for
+`call_indirect`, is the link's call signature; otherwise it fails with the first differing
+position and changes nothing. A relink changes no running or suspended activation. It overwrites
+the entry and keeps no history, so it is not a `StoreEvent`; a recording snapshots every link
+target when its invocation starts, and replay restores them.
 
 ## Regions (optional)
 Protected regions attach catch clauses to instructions. Each function owns a region tree and a
@@ -966,6 +987,14 @@ NaN `a` gives a NaN). They are exact and do not use `libm`.
     when their canonical contracts are identical: contracts are interned per VM at install, with
     struct/array types replaced by their heap shapes, so the check is one comparison. A unit the
     VM did not install traps with `UnknownUnit`.
+- `call_link r_eff_out, link_id, r_eff_in, args... -> rets...`
+  - Calls the function that the calling unit's link `link_id` names when the instruction executes.
+  - Arguments and results match the link's call signature 1:1, and the verifier checks them, and
+    propagates result contracts, exactly as for `call_indirect` with that signature.
+  - The target runs its own unit's program. No signature check happens at the call: the link's
+    initial target was verified and every relink checked the target's canonical signature.
+    Argument contracts are checked at callee entry and results at return, as for every call.
+  - Threads `eff` like `call`. Fuel cost: one instruction.
 - `closure_new r_dst, r_func, r_env`
   - Builds a `Closure` pairing the `Func` in `r_func` with a captured environment aggregate in `r_env`.
     The target must accept an aggregate environment first; construction checks that concrete
@@ -1357,6 +1386,8 @@ Conversions (`0xC0..=0xFF`):
 - `0x53 const_func dst, func_id`
 - `0x54 call_indirect eff_out, call_sig_id, callee, eff_in, argc, args..., retc, rets...`
 - `0x55 closure_new dst, func, env`
+- `0x56 call_link eff_out, link_id, eff_in, argc, args..., retc, rets...` (a single byte: a
+  devirtualized call is as frequent as `call`)
 
 ### Aggregates
 Construction (all allocate):

@@ -158,6 +158,11 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                             "Indirect signature #{} · runtime callee unknown",
                             call_sig.0
                         )),
+                        CallTarget::Link { link, name } => lines.push(format!(
+                            "Link #{}{} · target is the unit's current link",
+                            link.0,
+                            name.map(|name| format!(" ({name})")).unwrap_or_default()
+                        )),
                     }
                 }
                 if let Operands::Ret { rets, .. } = instruction.operands() {

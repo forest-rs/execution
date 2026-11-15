@@ -68,7 +68,10 @@ pub(super) fn emit(
     if phase == RegisterPhase::Outputs
         && matches!(
             instruction,
-            Instr::Call { .. } | Instr::CallIndirect { .. } | Instr::Ret { .. }
+            Instr::Call { .. }
+                | Instr::CallIndirect { .. }
+                | Instr::CallLink { .. }
+                | Instr::Ret { .. }
         )
     {
         return;

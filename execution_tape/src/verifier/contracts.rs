@@ -767,6 +767,17 @@ fn transfer(
                 replacements.push((reg, arena.import(id)));
             }
         }
+        Instr::CallLink { link, rets, .. } => {
+            let link = arena.program.link(LinkId(*link)).expect("verified link");
+            for (&reg, &id) in rets.iter().zip(
+                arena
+                    .program
+                    .call_sig_ret_contracts(&arena.program.call_sigs[link.call_sig.0 as usize])
+                    .unwrap(),
+            ) {
+                replacements.push((reg, arena.import(id)));
+            }
+        }
         Instr::Suspend { tag, rets, .. } => {
             let entry = arena.program.tag(TagId(*tag)).expect("verified tag");
             for (&reg, &id) in rets
@@ -1021,6 +1032,29 @@ fn validate(
                         pc: Pc(pc),
                         position: ContractPosition::IndirectArgument {
                             signature: CallSigId(*call_sig),
+                            index: u32::try_from(index).expect("signature arity"),
+                        },
+                        error,
+                    })?;
+            }
+        }
+        Instr::CallLink { link, args, .. } => {
+            // Any target the link can name takes exactly these argument contracts.
+            let call_sig = arena
+                .program
+                .link(LinkId(*link))
+                .expect("verified link")
+                .call_sig;
+            let signature = &arena.program.call_sigs[call_sig.0 as usize];
+            let arg_contracts = arena.program.call_sig_arg_contracts(signature).unwrap();
+            for (index, (&reg, &contract)) in args.iter().zip(arg_contracts).enumerate() {
+                arena
+                    .check(contract, arena.fact(state, types, reg))
+                    .map_err(|error| VerifyError::ContractMismatch {
+                        func: func_id,
+                        pc: Pc(pc),
+                        position: ContractPosition::LinkArgument {
+                            link: LinkId(*link),
                             index: u32::try_from(index).expect("signature arity"),
                         },
                         error,

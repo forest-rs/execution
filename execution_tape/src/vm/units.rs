@@ -12,11 +12,15 @@
 //!
 //! Units are never removed. The VM keeps each installed program alive until the VM is dropped;
 //! [`Units`] reports how many there are and what they retain.
+//!
+//! Each unit also owns the current targets of its program's links. [`Vm::relink`] repoints one
+//! at a function of any unit with exactly the link's signature, and the unit's `call.link`
+//! instructions call the new target from then on.
 
 use super::*;
 use crate::aggregates::AggShape;
 use crate::contract::{ContractId, ContractTableBuilder};
-use crate::program::{CallSigId, ElemTypeId, StructTypeDef, TagId, TypeId};
+use crate::program::{CallSigId, ElemTypeId, LinkId, StructTypeDef, TagId, TypeId};
 use crate::value::{ShapeId, TagRef};
 use alloc::collections::BTreeMap;
 
@@ -99,6 +103,10 @@ pub(crate) struct Unit {
     call_sig_lists: Box<[(ListId, ListId)]>,
     /// VM tag of each program [`crate::program::TagId`].
     tags: Box<[TagRef]>,
+    /// Kind signature every target of each program [`LinkId`] must have.
+    link_sigs: Box<[SigId]>,
+    /// Current target of each program [`LinkId`], which [`Vm::relink`] repoints.
+    links: Box<[FuncRef]>,
 }
 
 impl Unit {
@@ -126,6 +134,15 @@ impl Unit {
             .iter()
             .position(|&bound| bound == tag)
             .map(|index| TagId(u32::try_from(index).expect("verified tag count")))
+    }
+
+    /// The function `link` of this unit's program currently names.
+    ///
+    /// A verified `call.link` names a link of its program, and relinking only accepts
+    /// installed functions, so the target always exists.
+    #[inline]
+    pub(crate) fn link(&self, link: LinkId) -> FuncRef {
+        self.links[link.0 as usize]
     }
 
     /// The store-canonical identity of a verified contract of this unit's program.
@@ -167,6 +184,8 @@ impl Unit {
             + size_of_val(&*self.call_sigs)
             + size_of_val(&*self.call_sig_lists)
             + size_of_val(&*self.tags)
+            + size_of_val(&*self.link_sigs)
+            + size_of_val(&*self.links)
     }
 
     /// Interns `program`'s struct and array types in `heap`, and its contracts and signatures
@@ -246,6 +265,11 @@ impl Unit {
             call_sigs.push(canon.signature(&args, &rets)?);
             call_sig_lists.push((canon.list(&args)?, canon.list(&rets)?));
         }
+        let link_sigs = source
+            .links
+            .iter()
+            .map(|link| call_sigs[link.call_sig.0 as usize])
+            .collect();
         Ok(Self {
             program,
             structs,
@@ -256,6 +280,8 @@ impl Unit {
             call_sigs: call_sigs.into(),
             call_sig_lists: call_sig_lists.into(),
             tags: Box::default(),
+            link_sigs,
+            links: Box::default(),
         })
     }
 }
@@ -347,7 +373,8 @@ impl Tag {
 ///
 /// [`Units::log`] lists them. Repeating the same installs and tag definitions in the same order
 /// in a fresh VM reproduces every [`UnitId`] and [`TagRef`], which is how replay rebuilds a
-/// recorded VM.
+/// recorded VM. Relinks are not logged: they change no identity, and [`Units::links`] reports
+/// the current targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StoreEvent {
@@ -409,6 +436,13 @@ impl UnitTable {
             .ok_or(InstallError::CapacityExceeded)?;
         let mut unit = Unit::new(program, heap, &mut self.canon)?;
         unit.tags = self.bind_tags(id, &unit)?;
+        unit.links = unit
+            .program
+            .program()
+            .links
+            .iter()
+            .map(|link| FuncRef::new(id, link.target))
+            .collect();
         self.units.push(unit);
         self.log.push(StoreEvent::Installed(id));
         Ok(id)
@@ -479,6 +513,36 @@ impl UnitTable {
             .into_iter()
             .map(|tag| tag.expect("bound tag"))
             .collect())
+    }
+
+    /// Points `link` of `unit` at `target`, returning the target it replaces.
+    ///
+    /// The target must be an installed function whose canonical signature is the link's.
+    pub(crate) fn relink(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        target: FuncRef,
+    ) -> Result<FuncRef, RelinkError> {
+        let owner = self.get(unit).ok_or(RelinkError::UnknownUnit(unit))?;
+        let expected = *owner
+            .link_sigs
+            .get(link.0 as usize)
+            .ok_or(RelinkError::UnknownLink { unit, link })?;
+        let callee = self
+            .get(target.unit)
+            .filter(|callee| (target.func.0 as usize) < callee.direct.len())
+            .ok_or(RelinkError::UnknownTarget(target))?;
+        if callee.direct[target.func.0 as usize] != expected {
+            return Err(RelinkError::SignatureMismatch {
+                unit,
+                link,
+                target,
+                difference: link_difference(owner, link, callee, target.func),
+            });
+        }
+        let slot = &mut self.units[unit.0 as usize].links[link.0 as usize];
+        Ok(core::mem::replace(slot, target))
     }
 
     /// Defines a tag that programs import by `name`.
@@ -566,6 +630,148 @@ impl fmt::Display for TagError {
 }
 
 impl core::error::Error for TagError {}
+
+/// The first place a rejected target's canonical signature differs from its link's.
+fn link_difference(owner: &Unit, link: LinkId, callee: &Unit, func: FuncId) -> LinkMismatch {
+    let program = owner.program.program();
+    let entry = program.link(link).expect("verified link");
+    let signature = program.call_sig(entry.call_sig).expect("verified link");
+    let canonical = |unit: &Unit, ids: &[ContractId]| -> Vec<ContractId> {
+        ids.iter().map(|&id| unit.canonical(id)).collect()
+    };
+    let expected_args = canonical(owner, program.call_sig_arg_contracts(signature).unwrap());
+    let expected_rets = canonical(owner, program.call_sig_ret_contracts(signature).unwrap());
+    let target = callee.program.program();
+    let function = &target.functions[func.0 as usize];
+    let actual_args = canonical(callee, target.verified_contracts(function.arg_types));
+    let actual_rets = canonical(callee, target.verified_contracts(function.ret_types));
+    if expected_args.len() != actual_args.len() {
+        return LinkMismatch::ArgumentCount {
+            expected: expected_args.len(),
+            actual: actual_args.len(),
+        };
+    }
+    if expected_rets.len() != actual_rets.len() {
+        return LinkMismatch::ResultCount {
+            expected: expected_rets.len(),
+            actual: actual_rets.len(),
+        };
+    }
+    let first = |expected: &[ContractId], actual: &[ContractId]| {
+        expected.iter().zip(actual).position(|(a, b)| a != b)
+    };
+    match first(&expected_args, &actual_args) {
+        Some(index) => LinkMismatch::Argument(index),
+        None => LinkMismatch::Result(first(&expected_rets, &actual_rets).unwrap_or(0)),
+    }
+}
+
+/// Where a relink target's signature first differs from its link's.
+///
+/// Signatures are compared as the VM interns them: struct and array types by heap shape, so
+/// equal layouts from different programs agree. There is no variance.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LinkMismatch {
+    /// The target takes a different number of arguments.
+    ArgumentCount {
+        /// The link's argument count.
+        expected: usize,
+        /// The target's argument count.
+        actual: usize,
+    },
+    /// The target returns a different number of results.
+    ResultCount {
+        /// The link's result count.
+        expected: usize,
+        /// The target's result count.
+        actual: usize,
+    },
+    /// This argument's contract differs.
+    Argument(usize),
+    /// This result's contract differs.
+    Result(usize),
+}
+
+impl fmt::Display for LinkMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ArgumentCount { expected, actual } => {
+                write!(
+                    f,
+                    "it takes {actual} arguments where the link takes {expected}"
+                )
+            }
+            Self::ResultCount { expected, actual } => {
+                write!(
+                    f,
+                    "it returns {actual} results where the link returns {expected}"
+                )
+            }
+            Self::Argument(index) => write!(f, "argument {index} has a different contract"),
+            Self::Result(index) => write!(f, "result {index} has a different contract"),
+        }
+    }
+}
+
+/// Why a link could not be repointed. A rejected relink changes nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RelinkError {
+    /// The VM did not install this unit.
+    UnknownUnit(UnitId),
+    /// The unit's program declares no such link.
+    UnknownLink {
+        /// The unit.
+        unit: UnitId,
+        /// The requested link.
+        link: LinkId,
+    },
+    /// The target names a unit the VM did not install, or a function its program lacks.
+    UnknownTarget(FuncRef),
+    /// The target's signature is not exactly the link's.
+    ///
+    /// Callers were verified against the link's signature, so only an identical canonical
+    /// signature keeps them sound; there is no variance.
+    SignatureMismatch {
+        /// The unit.
+        unit: UnitId,
+        /// The link.
+        link: LinkId,
+        /// The rejected target.
+        target: FuncRef,
+        /// Where the target's signature first differs.
+        difference: LinkMismatch,
+    },
+}
+
+impl fmt::Display for RelinkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownUnit(unit) => write!(f, "unit {} is not installed", unit.0),
+            Self::UnknownLink { unit, link } => {
+                write!(f, "unit {} has no link#{link}", unit.0)
+            }
+            Self::UnknownTarget(target) => write!(
+                f,
+                "relink target f{} of unit {} is not installed",
+                target.func.0, target.unit.0
+            ),
+            Self::SignatureMismatch {
+                unit,
+                link,
+                target,
+                difference,
+            } => write!(
+                f,
+                "link#{link} of unit {} cannot name f{} of unit {}: {difference}",
+                unit.0, target.func.0, target.unit.0
+            ),
+        }
+    }
+}
+
+impl core::error::Error for RelinkError {}
 
 /// Why a program could not be installed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -672,6 +878,15 @@ impl<'a> Units<'a> {
         self.table.get(unit).map(|unit| &*unit.tags)
     }
 
+    /// The function each link of `unit`'s program currently names, in [`LinkId`] order.
+    ///
+    /// Names and signatures are in the unit's program: see [`crate::program::Program::link`]
+    /// and [`crate::program::Program::link_name`].
+    #[must_use]
+    pub fn links(&self, unit: UnitId) -> Option<&'a [FuncRef]> {
+        self.table.get(unit).map(|unit| &*unit.links)
+    }
+
     /// Installs and tag definitions in the order they happened.
     #[must_use]
     pub fn log(&self) -> &'a [StoreEvent] {
@@ -735,6 +950,28 @@ impl<H: Host> Vm<H> {
         results: &[ValueType],
     ) -> Result<TagRef, TagError> {
         self.units.define_tag(name, payload, results)
+    }
+
+    /// Points `link` of `unit` at `target` and returns the function it named before.
+    ///
+    /// `call.link` instructions of `unit` call `target` from their next execution; the
+    /// instructions and their callers are not verified again. That is sound because the target
+    /// must have exactly the link's signature: the canonical contracts every unit of this VM
+    /// interns the same way, compared as `call.indirect` compares them. `target` may belong to
+    /// any installed unit, and runs that unit's program. Activations that already entered the
+    /// previous target keep running it.
+    ///
+    /// Relinking executes no code, spends no execution budget and allocates nothing: it
+    /// overwrites one entry of the unit's link table, which [`Units::metadata_bytes`] counts.
+    /// No history is kept, so repeated relinking does not grow the VM; a recording snapshots
+    /// the targets when its invocation starts. A rejected relink changes nothing.
+    pub fn relink(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        target: FuncRef,
+    ) -> Result<FuncRef, RelinkError> {
+        self.units.relink(unit, link, target)
     }
 
     /// Inspects the units installed in this VM.

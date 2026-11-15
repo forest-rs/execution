@@ -201,7 +201,8 @@ impl Recorder {
         location
     }
 
-    /// Records the VM's installs and tag definitions not yet recorded.
+    /// Records the VM's installs and tag definitions not yet recorded, with each new unit's
+    /// current link targets.
     ///
     /// `installed` is the observation sequence for installs during the invocation.
     fn record_store(&mut self, units: Units<'_>, installed: Option<usize>) {
@@ -217,6 +218,7 @@ impl Recorder {
                         unit,
                         program: Arc::clone(units.program(unit).expect("logged unit")),
                         tags: units.tags(unit).expect("logged unit").into(),
+                        links: units.links(unit).expect("logged unit").into(),
                         installed,
                     });
                 }
