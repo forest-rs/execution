@@ -74,9 +74,9 @@ fn host_requests(c: &mut Criterion) {
         let payload = asm.alloc_register(ValueType::Str);
         asm.const_i64(sum, 0).const_pool(payload, text);
         for _ in 0..100 {
-            asm.host_call_sig_id(Reg(0), import, Reg(0), &[sum, payload], &[sum]);
+            asm.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[sum, payload], &[sum]);
         }
-        asm.ret(Reg(0), &[sum]);
+        asm.ret(Reg::EFFECT, &[sum]);
         builder.define_function(entry, asm).unwrap();
         let program = builder.build_verified().unwrap();
         for (name, mode) in [
@@ -187,9 +187,9 @@ fn host_aggregate_results(c: &mut Criterion) {
     let mut a = b.function_asm(entry).unwrap();
     let root = a.alloc_register(ValueType::Agg);
     let count = a.alloc_register(ValueType::U64);
-    a.host_call_sig_id(Reg(0), import, Reg(0), &[], &[root])
+    a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[], &[root])
         .tuple_len(count, root)
-        .ret(Reg(0), &[count]);
+        .ret(Reg::EFFECT, &[count]);
     b.define_function(entry, a).unwrap();
     let program = b.build_verified().unwrap();
     let mut group = c.benchmark_group("host_aggregate_result");

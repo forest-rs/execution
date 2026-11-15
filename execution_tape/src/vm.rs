@@ -5093,7 +5093,7 @@ impl<H: Host> Vm<H> {
     /// # let mut builder = ProgramBuilder::new();
     /// # let entry = builder.declare_function(FunctionSig { arg_types: vec![], ret_types: vec![] })?;
     /// # let mut asm = builder.function_asm(entry)?;
-    /// # asm.ret(Reg(0), &[]);
+    /// # asm.ret(Reg::EFFECT, &[]);
     /// # builder.define_function(entry, asm)?;
     /// # let mut vm = Vm::new(NoHost, Limits::default());
     /// # let entry = FuncRef::new(vm.install(builder.build_verified()?)?, entry);
@@ -5968,7 +5968,7 @@ mod tests {
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
             body.tuple_get(Reg(2), Reg(1), 0);
-            body.ret(Reg(0), &[Reg(2)]);
+            body.ret(Reg::EFFECT, &[Reg(2)]);
             let target = pb
                 .push_function_checked(
                     body,
@@ -5991,7 +5991,7 @@ mod tests {
                 ]);
                 match mode {
                     1 => {
-                        caller.call(Reg(0), target, Reg(0), &[Reg(1)], &[Reg(4)]);
+                        caller.call(Reg::EFFECT, target, Reg::EFFECT, &[Reg(1)], &[Reg(4)]);
                     }
                     2 => {
                         let sig = pb
@@ -6001,7 +6001,14 @@ mod tests {
                             })
                             .unwrap();
                         caller.const_func(Reg(2), target);
-                        caller.call_indirect(Reg(0), sig, Reg(2), Reg(0), &[Reg(1)], &[Reg(4)]);
+                        caller.call_indirect(
+                            Reg::EFFECT,
+                            sig,
+                            Reg(2),
+                            Reg::EFFECT,
+                            &[Reg(1)],
+                            &[Reg(4)],
+                        );
                     }
                     _ => {
                         let sig = pb
@@ -6012,10 +6019,10 @@ mod tests {
                             .unwrap();
                         caller.const_func(Reg(2), target);
                         caller.closure_new(Reg(3), Reg(2), Reg(1));
-                        caller.call_indirect(Reg(0), sig, Reg(3), Reg(0), &[], &[Reg(4)]);
+                        caller.call_indirect(Reg::EFFECT, sig, Reg(3), Reg::EFFECT, &[], &[Reg(4)]);
                     }
                 }
-                caller.ret(Reg(0), &[Reg(4)]);
+                caller.ret(Reg::EFFECT, &[Reg(4)]);
                 pb.push_function_checked(
                     caller,
                     FunctionSig {
@@ -6167,8 +6174,8 @@ mod tests {
             if mode == 2 {
                 callee.trap(99);
             }
-            callee.host_call_sig_id(Reg(0), hs, Reg(0), &[], &[Reg(1)]);
-            callee.ret(Reg(0), &[Reg(1)]);
+            callee.host_call_sig_id(Reg::EFFECT, hs, Reg::EFFECT, &[], &[Reg(1)]);
+            callee.ret(Reg::EFFECT, &[Reg(1)]);
             let target = pb
                 .push_function_checked(
                     callee,
@@ -6180,8 +6187,8 @@ mod tests {
                 .unwrap();
             let mut caller = Asm::new();
             caller.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-            caller.call(Reg(0), target, Reg(0), &[], &[Reg(1)]);
-            caller.ret(Reg(0), &[Reg(1)]);
+            caller.call(Reg::EFFECT, target, Reg::EFFECT, &[], &[Reg(1)]);
+            caller.ret(Reg::EFFECT, &[Reg(1)]);
             let entry = pb
                 .push_function_checked(
                     caller,
@@ -6325,8 +6332,8 @@ mod tests {
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
         body.tuple_new(Reg(1), &[]);
-        body.host_call_sig_id(Reg(0), import, Reg(0), &[], &[]);
-        body.ret(Reg(0), &[]);
+        body.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[], &[]);
+        body.ret(Reg::EFFECT, &[]);
         let entry = pb
             .push_function_checked(
                 body,
@@ -6403,9 +6410,9 @@ mod tests {
         let second = pb.host_sig_for("second", sig);
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        body.host_call_sig_id(Reg(0), first, Reg(0), &[], &[Reg(1)]);
-        body.host_call_sig_id(Reg(0), second, Reg(0), &[], &[Reg(2)]);
-        body.ret(Reg(0), &[Reg(1), Reg(2)]);
+        body.host_call_sig_id(Reg::EFFECT, first, Reg::EFFECT, &[], &[Reg(1)]);
+        body.host_call_sig_id(Reg::EFFECT, second, Reg::EFFECT, &[], &[Reg(2)]);
+        body.ret(Reg::EFFECT, &[Reg(1), Reg(2)]);
         let entry = pb
             .push_function_checked(
                 body,
@@ -6451,7 +6458,7 @@ mod tests {
             if mode == "trap" {
                 body.trap(7);
             } else {
-                body.ret(Reg(0), &[Reg(if mode == "scalar" { 2 } else { 1 })]);
+                body.ret(Reg::EFFECT, &[Reg(if mode == "scalar" { 2 } else { 1 })]);
             }
             let entry = pb
                 .push_function_checked(
@@ -6501,7 +6508,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let mut target = Asm::new();
         target.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-        target.ret(Reg(0), &[]);
+        target.ret(Reg::EFFECT, &[]);
         let target = pb
             .push_function_checked(
                 target,
@@ -6529,7 +6536,7 @@ mod tests {
         body.closure_new(Reg(5), Reg(4), Reg(3));
         body.tuple_new(Reg(6), &[Reg(3), Reg(5), Reg(3)]);
         body.tuple_new(Reg(2), &[Reg(6)]); // Unreachable allocation after the returned graph.
-        body.ret(Reg(0), &[Reg(6), Reg(5)]);
+        body.ret(Reg::EFFECT, &[Reg(6), Reg(5)]);
         let entry = pb
             .push_function_checked(
                 body,
@@ -6542,7 +6549,7 @@ mod tests {
         let mut passthrough = Asm::new();
         passthrough.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::Agg]);
         passthrough.tuple_get(Reg(2), Reg(1), 0);
-        passthrough.ret(Reg(0), &[Reg(2)]);
+        passthrough.ret(Reg::EFFECT, &[Reg(2)]);
         let opaque = pb.contract(Contract::Kind(ValueType::Agg)).unwrap();
         let closure = pb.contract(Contract::Kind(ValueType::Closure)).unwrap();
         let read_contract = pb
@@ -6641,7 +6648,7 @@ mod tests {
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ty, ValueType::Agg]);
             body.tuple_new(Reg(2), &[]);
-            body.ret(Reg(0), &[Reg(1)]);
+            body.ret(Reg::EFFECT, &[Reg(1)]);
             let entry = pb
                 .push_function_checked(
                     body,
@@ -6748,11 +6755,11 @@ mod tests {
             ]);
             body.const_i64(Reg(1), 42);
             body.tuple_new(Reg(2), &[Reg(1)]);
-            body.host_call_sig_id(Reg(0), sig, Reg(0), &[Reg(2)], &[Reg(3)]);
+            body.host_call_sig_id(Reg::EFFECT, sig, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);
             if trap {
                 body.trap(7);
             } else {
-                body.ret(Reg(0), &[Reg(3)]);
+                body.ret(Reg::EFFECT, &[Reg(3)]);
             }
             let entry = pb
                 .push_function_checked(
@@ -6795,7 +6802,7 @@ mod tests {
             ValueType::Str,
             ValueType::Agg,
         ]);
-        body.ret(Reg(0), &[Reg(1), Reg(2), Reg(3), Reg(4)]);
+        body.ret(Reg::EFFECT, &[Reg(1), Reg(2), Reg(3), Reg(4)]);
         let types = vec![
             ValueType::I64,
             ValueType::Bytes,
@@ -6883,7 +6890,7 @@ mod tests {
             let mut pb = ProgramBuilder::new();
             let mut callee = Asm::new();
             callee.set_register_types(vec![ValueType::Unit, ValueType::Bytes, ValueType::Str]);
-            callee.ret(Reg(0), &[Reg(1), Reg(2)]);
+            callee.ret(Reg::EFFECT, &[Reg(1), Reg(2)]);
             let types = vec![ValueType::Bytes, ValueType::Str];
             let target = pb
                 .push_function_checked(
@@ -6911,13 +6918,19 @@ mod tests {
             ]);
             caller.const_pool(Reg(1), bytes_id);
             caller.const_pool(Reg(2), text_id);
-            caller.call(Reg(0), target, Reg(0), &[Reg(1), Reg(2)], &[Reg(3), Reg(4)]);
+            caller.call(
+                Reg::EFFECT,
+                target,
+                Reg::EFFECT,
+                &[Reg(1), Reg(2)],
+                &[Reg(3), Reg(4)],
+            );
             caller.tuple_new(Reg(5), &[Reg(3), Reg(4)]);
             caller.tuple_get(Reg(6), Reg(5), 0);
             caller.tuple_get(Reg(7), Reg(5), 1);
             caller.bytes_concat(Reg(8), Reg(6), Reg(1));
             caller.str_concat(Reg(9), Reg(7), Reg(2));
-            caller.ret(Reg(0), &[Reg(6), Reg(7), Reg(8), Reg(9)]);
+            caller.ret(Reg::EFFECT, &[Reg(6), Reg(7), Reg(8), Reg(9)]);
             pb.push_function_checked(
                 caller,
                 FunctionSig {
@@ -7056,13 +7069,13 @@ mod tests {
         a.tuple_new(Reg(14), &[Reg(6), Reg(7), Reg(10), Reg(11), Reg(13)]);
         a.tuple_get(Reg(15), Reg(14), 4);
         a.host_call_sig_id(
-            Reg(0),
+            Reg::EFFECT,
             hs,
-            Reg(0),
+            Reg::EFFECT,
             &[Reg(6), Reg(7), Reg(10), Reg(11), Reg(15)],
             &[Reg(16), Reg(17)],
         );
-        a.ret(Reg(0), &[Reg(16), Reg(17)]);
+        a.ret(Reg::EFFECT, &[Reg(16), Reg(17)]);
         pb.push_function_checked(
             a,
             FunctionSig {
@@ -7145,7 +7158,7 @@ mod tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(Reg(1), 7);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -7203,7 +7216,7 @@ mod tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(Reg(1), 7);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -7251,8 +7264,8 @@ mod tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(Reg(1), 9);
-        a.host_call(Reg(0), host_sig, Reg(0), &[Reg(1)], &[Reg(2)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         pb.push_function_checked(
             a,
             FunctionSig {
@@ -7285,9 +7298,9 @@ mod tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         // host_call with 0 args, 0 rets — should succeed without touching the arg buffer.
-        a.host_call(Reg(0), host_sig, Reg(0), &[], &[]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[], &[]);
         a.const_i64(Reg(1), 42);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         pb.push_function_checked(
             a,
             FunctionSig {
@@ -7319,9 +7332,9 @@ mod tests {
 
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.host_call(Reg(0), host_sig, Reg(0), &[], &[]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[], &[]);
         a.const_i64(Reg(1), 42);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         pb.push_function_checked(
             a,
             FunctionSig {
@@ -7392,8 +7405,8 @@ mod tests {
         for (i, &r) in arg_regs.iter().enumerate() {
             a.const_i64(r, 10 + i as i64);
         }
-        a.host_call(Reg(0), host_sig, Reg(0), &arg_regs, &ret_regs);
-        a.ret(Reg(0), &ret_regs);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &arg_regs, &ret_regs);
+        a.ret(Reg::EFFECT, &ret_regs);
 
         pb.push_function_checked(
             a,
@@ -7445,8 +7458,8 @@ mod tests {
 
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a.host_call(Reg(0), host_sig, Reg(0), &[], &[Reg(1)]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[], &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         pb.push_function_checked(
             a,
             FunctionSig {
@@ -7528,8 +7541,8 @@ mod tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(Reg(1), 9);
-        a.host_call(Reg(0), host_sig, Reg(0), &[Reg(1)], &[Reg(2)]);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         pb.push_function_checked(
             a,
             FunctionSig {
@@ -7619,8 +7632,8 @@ mod tests {
         a.const_i64(Reg(1), 20);
         a.const_i64(Reg(2), 22);
         a.tuple_new(Reg(3), &[Reg(1), Reg(2)]);
-        a.host_call(Reg(0), host_sig, Reg(0), &[Reg(3)], &[Reg(4)]);
-        a.ret(Reg(0), &[Reg(4)]);
+        a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(3)], &[Reg(4)]);
+        a.ret(Reg::EFFECT, &[Reg(4)]);
         let entry = pb
             .push_function_checked(
                 a,
@@ -7644,7 +7657,7 @@ mod tests {
     fn vm_returns_closure_value() {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::Closure]);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -7687,7 +7700,7 @@ mod tests {
         ]);
         a.tuple_new(Reg(2), &[Reg(1)]);
         a.tuple_get(Reg(3), Reg(2), 0);
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -7966,8 +7979,15 @@ mod tests {
         entry.const_func(Reg(3), FuncId(1));
         entry.closure_new(Reg(4), Reg(3), Reg(2));
         entry.const_i64(Reg(5), 2);
-        entry.call_indirect(Reg(0), call_sig, Reg(4), Reg(0), &[Reg(5)], &[Reg(6)]);
-        entry.ret(Reg(0), &[Reg(6)]);
+        entry.call_indirect(
+            Reg::EFFECT,
+            call_sig,
+            Reg(4),
+            Reg::EFFECT,
+            &[Reg(5)],
+            &[Reg(6)],
+        );
+        entry.ret(Reg::EFFECT, &[Reg(6)]);
         pb.push_function_checked(
             entry,
             FunctionSig {
@@ -7987,7 +8007,7 @@ mod tests {
         ]);
         body.tuple_get(Reg(3), Reg(1), 0);
         body.i64_add(Reg(4), Reg(3), Reg(2));
-        body.ret(Reg(0), &[Reg(4)]);
+        body.ret(Reg::EFFECT, &[Reg(4)]);
         let integer = pb.contract(Contract::Kind(ValueType::I64)).unwrap();
         let env_contract = pb.contract(Contract::Tuple(&[Some(integer)])).unwrap();
         pb.push_function_checked(
@@ -8220,10 +8240,10 @@ mod tests {
         a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
         a.const_i64(Reg(2), 1);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         a.place(l_else).unwrap();
         a.const_i64(Reg(2), 2);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
             a,
@@ -8255,7 +8275,7 @@ mod tests {
         a.const_i64(Reg(1), 7);
         a.const_i64(Reg(2), 9);
         a.i64_add(Reg(3), Reg(1), Reg(2));
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -8286,7 +8306,7 @@ mod tests {
             ValueType::Closure,
         ]);
         a.mov(Reg(2), Reg(1));
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -8331,7 +8351,7 @@ mod tests {
             ValueType::Closure,
         ]);
         a.select(Reg(4), Reg(1), Reg(2), Reg(3));
-        a.ret(Reg(0), &[Reg(4)]);
+        a.ret(Reg::EFFECT, &[Reg(4)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -8425,7 +8445,7 @@ mod tests {
         a1.br(Reg(4), l_base, l_recurse);
         // base case
         a1.place(l_base).unwrap();
-        a1.ret(Reg(0), &[Reg(3)]);
+        a1.ret(Reg::EFFECT, &[Reg(3)]);
         // recursive case
         a1.place(l_recurse).unwrap();
         a1.const_func(Reg(5), FuncId(1));
@@ -8440,8 +8460,8 @@ mod tests {
                 ret_types: vec![ValueType::I64],
             })
             .unwrap();
-        a1.call_indirect(Reg(0), sig, Reg(6), Reg(0), &[Reg(8)], &[Reg(9)]);
-        a1.ret(Reg(0), &[Reg(9)]);
+        a1.call_indirect(Reg::EFFECT, sig, Reg(6), Reg::EFFECT, &[Reg(8)], &[Reg(9)]);
+        a1.ret(Reg::EFFECT, &[Reg(9)]);
 
         // -- func0 (entry) --
         // create a tuple env, create closure over func1, call it with n=100
@@ -8460,8 +8480,8 @@ mod tests {
         a0.const_func(Reg(3), FuncId(1));
         a0.closure_new(Reg(4), Reg(3), Reg(2));
         a0.const_i64(Reg(5), 100); // n=100, well above depth limit
-        a0.call_indirect(Reg(0), sig, Reg(4), Reg(0), &[Reg(5)], &[Reg(6)]);
-        a0.ret(Reg(0), &[Reg(6)]);
+        a0.call_indirect(Reg::EFFECT, sig, Reg(4), Reg::EFFECT, &[Reg(5)], &[Reg(6)]);
+        a0.ret(Reg::EFFECT, &[Reg(6)]);
 
         pb.push_function_checked(
             a0,
@@ -8505,7 +8525,7 @@ mod tests {
         // ret [r1]
         let mut a1 = Asm::new();
         a1.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-        a1.ret(Reg(0), &[Reg(1)]);
+        a1.ret(Reg::EFFECT, &[Reg(1)]);
 
         let mut pb = ProgramBuilder::new();
         let sig = pb
@@ -8536,9 +8556,9 @@ mod tests {
         a0.const_func(Reg(5), FuncId(1));
         a0.closure_new(Reg(6), Reg(5), Reg(2)); // closure_a
         a0.closure_new(Reg(7), Reg(5), Reg(4)); // closure_b
-        a0.call_indirect(Reg(0), sig, Reg(6), Reg(0), &[], &[Reg(8)]); // call closure_a → Agg
-        a0.call_indirect(Reg(0), sig, Reg(7), Reg(0), &[], &[Reg(9)]); // call closure_b → Agg
-        a0.ret(Reg(0), &[Reg(8), Reg(9)]);
+        a0.call_indirect(Reg::EFFECT, sig, Reg(6), Reg::EFFECT, &[], &[Reg(8)]); // call closure_a → Agg
+        a0.call_indirect(Reg::EFFECT, sig, Reg(7), Reg::EFFECT, &[], &[Reg(9)]); // call closure_b → Agg
+        a0.ret(Reg::EFFECT, &[Reg(8), Reg(9)]);
 
         pb.push_function_checked(
             a0,

@@ -64,7 +64,7 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     a.mov(Reg(2), Reg(1))
         .str_concat(Reg(1), Reg(1), Reg(2))
         .str_len(Reg(3), Reg(1))
-        .ret(Reg(0), &[Reg(1)]);
+        .ret(Reg::EFFECT, &[Reg(1)]);
     b.push_function_checked(
         a,
         FunctionSig {
@@ -106,7 +106,7 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
         sink.events
             .iter()
             .flat_map(|(_, _, values)| values)
-            .all(|(reg, _)| *reg != Reg(0))
+            .all(|(reg, _)| *reg != Reg::EFFECT)
     );
     sink.events.clear();
     sink.selected = Some(sink_selected_pc(&p));

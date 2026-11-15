@@ -23,7 +23,7 @@ fn encoded_program(functions: u32, additions: u32) -> Vec<u8> {
             asm.span(SpanId::try_from(u64::from(instruction) + 1).unwrap());
             asm.i64_add(Reg(1), Reg(1), Reg(1));
         }
-        asm.ret(Reg(0), &[Reg(1)]);
+        asm.ret(Reg::EFFECT, &[Reg(1)]);
         builder
             .push_function_checked(
                 asm,

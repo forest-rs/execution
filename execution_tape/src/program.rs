@@ -3736,7 +3736,7 @@ mod tests {
             .unwrap();
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-        asm.ret(Reg(0), &[Reg(1)]);
+        asm.ret(Reg::EFFECT, &[Reg(1)]);
         builder
             .push_function_checked(
                 asm,

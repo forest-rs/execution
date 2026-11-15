@@ -274,7 +274,7 @@ mod tests {
         let mut body = Asm::new();
         // Effect token, argument, and unused declaration remain visible without a payload bank.
         body.set_register_types(vec![ValueType::Unit; 3]);
-        body.ret(Reg(0), &[Reg(1)]);
+        body.ret(Reg::EFFECT, &[Reg(1)]);
         let mut builder = ProgramBuilder::new();
         let id = builder
             .push_function_checked(
@@ -326,7 +326,7 @@ mod tests {
             ValueType::Closure,
         ]);
         body.ret(
-            Reg(0),
+            Reg::EFFECT,
             &(1..=u32::try_from(types.len()).unwrap())
                 .map(Reg)
                 .collect::<Vec<_>>(),
@@ -343,7 +343,7 @@ mod tests {
             .unwrap();
         let mut unrelated = Asm::new();
         unrelated.set_register_types(vec![ValueType::Unit]);
-        unrelated.ret(Reg(0), &[]);
+        unrelated.ret(Reg::EFFECT, &[]);
         let other = pb
             .push_function_checked(
                 unrelated,
@@ -403,7 +403,7 @@ mod tests {
             ValueType::Agg,
             ValueType::Agg,
         ]);
-        body.ret(Reg(0), &[Reg(1)]);
+        body.ret(Reg::EFFECT, &[Reg(1)]);
         let id = pb
             .push_function_checked(
                 body,
@@ -415,7 +415,7 @@ mod tests {
             .unwrap();
         let mut unrelated = Asm::new();
         unrelated.set_register_types(vec![ValueType::Unit]);
-        unrelated.ret(Reg(0), &[]);
+        unrelated.ret(Reg::EFFECT, &[]);
         pb.push_function_checked(
             unrelated,
             FunctionSig {
@@ -446,10 +446,10 @@ mod tests {
         body.span(first_span);
         body.br(Reg(1), yes, no);
         body.place(yes).unwrap();
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         body.place(no).unwrap();
         body.span(last_span);
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         let mut pb = ProgramBuilder::new();
         let id = pb
             .push_function_checked(

@@ -79,7 +79,7 @@ fn entry_arity_errors_allow_context_reuse() {
 
     let mut asm = Asm::new();
     asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    asm.ret(Reg(0), &[Reg(1)]);
+    asm.ret(Reg::EFFECT, &[Reg(1)]);
     let mut builder = ProgramBuilder::new();
     let entry = builder
         .push_function_checked(
@@ -226,7 +226,7 @@ fn both_instruction_decoders_reject_impossible_register_lists() {
 fn zero_call_depth_rejects_the_entry_frame() {
     let mut asm = Asm::new();
     asm.set_register_types(vec![ValueType::Unit]);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -279,7 +279,7 @@ fn float_to_integer_rejects_rounded_upper_bounds() {
             } else {
                 asm.f64_to_u64(Reg(2), Reg(1));
             }
-            asm.ret(Reg(0), &[Reg(2)]);
+            asm.ret(Reg::EFFECT, &[Reg(2)]);
             let mut builder = ProgramBuilder::new();
             builder
                 .push_function_checked(
@@ -327,7 +327,7 @@ fn verifier_preserves_tuple_shape_across_a_jump() {
     asm.jmp(next);
     asm.place(next).unwrap();
     asm.tuple_get(Reg(3), Reg(2), 0);
-    asm.ret(Reg(0), &[Reg(3)]);
+    asm.ret(Reg::EFFECT, &[Reg(3)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -372,7 +372,7 @@ fn verifier_meets_tuple_shapes_at_branch_joins() {
         asm.jmp(join);
         asm.place(join).unwrap();
         asm.tuple_get(Reg(4), Reg(3), 0);
-        asm.ret(Reg(0), &[Reg(4)]);
+        asm.ret(Reg::EFFECT, &[Reg(4)]);
         let mut builder = ProgramBuilder::new();
         builder
             .push_function_checked(
@@ -440,7 +440,7 @@ fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
     asm.jmp(head);
     asm.place(done).unwrap();
     asm.tuple_get(Reg(7), Reg(2), 0);
-    asm.ret(Reg(0), &[Reg(7)]);
+    asm.ret(Reg::EFFECT, &[Reg(7)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -604,7 +604,7 @@ fn roundtrip_verify_run_pure_ops() {
     a.const_i64(Reg(1), 7);
     a.const_i64(Reg(2), 9);
     a.i64_add(Reg(3), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -653,7 +653,7 @@ fn roundtrip_verify_run_cmp_cast_select() {
     a.select(Reg(7), Reg(3), Reg(5), Reg(6));
     a.const_i64(Reg(8), 5);
     a.i64_add(Reg(9), Reg(7), Reg(8));
-    a.ret(Reg(0), &[Reg(9)]);
+    a.ret(Reg::EFFECT, &[Reg(9)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -695,7 +695,7 @@ fn roundtrip_verify_run_u64_ops() {
     a.u64_add(Reg(3), Reg(1), Reg(2));
     a.u64_sub(Reg(4), Reg(3), Reg(1));
     a.u64_mul(Reg(5), Reg(4), Reg(2));
-    a.ret(Reg(0), &[Reg(5)]);
+    a.ret(Reg::EFFECT, &[Reg(5)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -766,7 +766,7 @@ fn roundtrip_verify_run_f64_ext_ops() {
     a.f64_from_bits(Reg(18), Reg(16));
 
     a.ret(
-        Reg(0),
+        Reg::EFFECT,
         &[
             Reg(2),
             Reg(3),
@@ -841,7 +841,7 @@ fn f64_rounding_and_sqrt_program() -> execution_tape::verifier::VerifiedProgram 
     a.f64_trunc(Reg(4), Reg(1));
     a.f64_nearest(Reg(5), Reg(1));
     a.f64_sqrt(Reg(6), Reg(1));
-    a.ret(Reg(0), &[Reg(2), Reg(3), Reg(4), Reg(5), Reg(6)]);
+    a.ret(Reg::EFFECT, &[Reg(2), Reg(3), Reg(4), Reg(5), Reg(6)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1002,7 +1002,7 @@ fn f64_rounding_and_sqrt_require_f64_operands() {
         a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::F64]);
         a.const_u64(Reg(1), 4);
         emit(&mut a, Reg(2), Reg(1));
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -1065,7 +1065,7 @@ fn f64_wasm_parity_program() -> execution_tape::verifier::VerifiedProgram {
     a.f64_ne(Reg(4), Reg(1), Reg(2));
     a.f64_to_i64_sat(Reg(5), Reg(1));
     a.f64_to_u64_sat(Reg(6), Reg(1));
-    a.ret(Reg(0), &[Reg(3), Reg(4), Reg(5), Reg(6)]);
+    a.ret(Reg::EFFECT, &[Reg(3), Reg(4), Reg(5), Reg(6)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1207,7 +1207,7 @@ fn f64_wasm_parity_ops_require_f64_operands() {
             "f64.to_i64_sat" => a.f64_to_i64_sat(Reg(3), Reg(1)),
             _ => a.f64_to_u64_sat(Reg(3), Reg(1)),
         };
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -1265,7 +1265,7 @@ fn roundtrip_verify_run_u64_ops_wrap() {
     a.const_u64(Reg(1), u64::MAX);
     a.const_u64(Reg(2), 1);
     a.u64_add(Reg(3), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1318,7 +1318,7 @@ fn roundtrip_verify_run_u64_bitwise_and_shifts() {
     a.u64_xor(Reg(9), Reg(5), Reg(8));
     a.u64_shr(Reg(10), Reg(9), Reg(7));
     a.u64_shl(Reg(11), Reg(10), Reg(7));
-    a.ret(Reg(0), &[Reg(9), Reg(11)]);
+    a.ret(Reg::EFFECT, &[Reg(9), Reg(11)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1359,7 +1359,7 @@ fn roundtrip_verify_run_u64_ordering() {
     a.u64_gt(Reg(3), Reg(2), Reg(1));
     a.u64_le(Reg(4), Reg(1), Reg(2));
     a.u64_ge(Reg(5), Reg(2), Reg(2));
-    a.ret(Reg(0), &[Reg(3), Reg(4), Reg(5)]);
+    a.ret(Reg::EFFECT, &[Reg(3), Reg(4), Reg(5)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1402,7 +1402,7 @@ fn roundtrip_verify_run_bool_bitwise() {
     a.bool_and(Reg(3), Reg(1), Reg(2));
     a.bool_or(Reg(4), Reg(1), Reg(2));
     a.bool_xor(Reg(5), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3), Reg(4), Reg(5)]);
+    a.ret(Reg::EFFECT, &[Reg(3), Reg(4), Reg(5)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1459,7 +1459,7 @@ fn roundtrip_verify_run_i64_bitwise_and_shifts() {
     a.i64_xor(Reg(9), Reg(5), Reg(8));
     a.i64_shr(Reg(10), Reg(9), Reg(7));
     a.i64_shl(Reg(11), Reg(10), Reg(7));
-    a.ret(Reg(0), &[Reg(9), Reg(11)]);
+    a.ret(Reg::EFFECT, &[Reg(9), Reg(11)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1500,7 +1500,7 @@ fn roundtrip_verify_run_i64_ordering() {
     a.i64_gt(Reg(3), Reg(2), Reg(1));
     a.i64_le(Reg(4), Reg(1), Reg(2));
     a.i64_ge(Reg(5), Reg(1), Reg(1));
-    a.ret(Reg(0), &[Reg(3), Reg(4), Reg(5)]);
+    a.ret(Reg::EFFECT, &[Reg(3), Reg(4), Reg(5)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1548,7 +1548,7 @@ fn roundtrip_verify_run_decimal_ops() {
     a.dec_sub(Reg(5), Reg(3), Reg(4));
     a.const_decimal(Reg(6), 2, 0);
     a.dec_mul(Reg(7), Reg(5), Reg(6));
-    a.ret(Reg(0), &[Reg(7)]);
+    a.ret(Reg::EFFECT, &[Reg(7)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1584,7 +1584,7 @@ fn vm_aligns_decimal_scales_for_addition() {
     a.const_decimal(Reg(1), 1, 0);
     a.const_decimal(Reg(2), 1, 1);
     a.dec_add(Reg(3), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1618,7 +1618,7 @@ fn vm_traps_decimal_overflow_on_scale_add() {
     a.const_decimal(Reg(1), 1, 250);
     a.const_decimal(Reg(2), 1, 10);
     a.dec_mul(Reg(3), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1660,7 +1660,7 @@ fn roundtrip_verify_run_f64_ops() {
     a.f64_sub(Reg(5), Reg(3), Reg(4));
     a.const_f64(Reg(6), 2.0);
     a.f64_mul(Reg(7), Reg(5), Reg(6));
-    a.ret(Reg(0), &[Reg(7)]);
+    a.ret(Reg::EFFECT, &[Reg(7)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1690,7 +1690,7 @@ fn vm_traps_on_cast_overflow() {
     a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
     a.const_u64(Reg(1), u64::MAX);
     a.u64_to_i64(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -1724,8 +1724,8 @@ fn roundtrip_verify_run_host_call() {
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     a.const_i64(Reg(1), 9);
-    a.host_call(Reg(0), host_sig, Reg(0), &[Reg(1)], &[Reg(2)]);
-    a.ret(Reg(0), &[Reg(2)]);
+    a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
     pb.push_function_checked(
         a,
         FunctionSig {
@@ -1769,8 +1769,8 @@ fn roundtrip_verify_run_host_call_with_aggregate_arg() {
     a.const_i64(Reg(1), 20);
     a.const_i64(Reg(2), 22);
     a.tuple_new(Reg(3), &[Reg(1), Reg(2)]);
-    a.host_call(Reg(0), host_sig, Reg(0), &[Reg(3)], &[Reg(4)]);
-    a.ret(Reg(0), &[Reg(4)]);
+    a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(3)], &[Reg(4)]);
+    a.ret(Reg::EFFECT, &[Reg(4)]);
     pb.push_function_checked(
         a,
         FunctionSig {
@@ -1817,7 +1817,7 @@ fn roundtrip_verify_run_call_indirect_via_func_value() {
 
     let mut callee_asm = Asm::new();
     callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    callee_asm.ret(Reg(0), &[Reg(1)]);
+    callee_asm.ret(Reg::EFFECT, &[Reg(1)]);
     pb.define_function(callee, callee_asm).unwrap();
 
     let mut caller_asm = Asm::new();
@@ -1829,8 +1829,15 @@ fn roundtrip_verify_run_call_indirect_via_func_value() {
     ]);
     caller_asm.const_func(Reg(1), callee);
     caller_asm.const_i64(Reg(2), 9);
-    caller_asm.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
-    caller_asm.ret(Reg(0), &[Reg(3)]);
+    caller_asm.call_indirect(
+        Reg::EFFECT,
+        call_sig,
+        Reg(1),
+        Reg::EFFECT,
+        &[Reg(2)],
+        &[Reg(3)],
+    );
+    caller_asm.ret(Reg::EFFECT, &[Reg(3)]);
     pb.define_function(caller, caller_asm).unwrap();
 
     let p = pb.build_verified().unwrap();
@@ -1878,7 +1885,7 @@ fn roundtrip_verify_run_call_indirect_via_closure_with_env_injection() {
     ]);
     callee_asm.tuple_len(Reg(3), Reg(1));
     callee_asm.u64_add(Reg(4), Reg(3), Reg(2));
-    callee_asm.ret(Reg(0), &[Reg(4)]);
+    callee_asm.ret(Reg::EFFECT, &[Reg(4)]);
     pb.define_function(callee, callee_asm).unwrap();
 
     let mut caller_asm = Asm::new();
@@ -1896,8 +1903,15 @@ fn roundtrip_verify_run_call_indirect_via_closure_with_env_injection() {
     caller_asm.const_func(Reg(3), callee);
     caller_asm.closure_new(Reg(4), Reg(3), Reg(2));
     caller_asm.const_u64(Reg(5), 41);
-    caller_asm.call_indirect(Reg(0), call_sig, Reg(4), Reg(0), &[Reg(5)], &[Reg(6)]);
-    caller_asm.ret(Reg(0), &[Reg(6)]);
+    caller_asm.call_indirect(
+        Reg::EFFECT,
+        call_sig,
+        Reg(4),
+        Reg::EFFECT,
+        &[Reg(5)],
+        &[Reg(6)],
+    );
+    caller_asm.ret(Reg::EFFECT, &[Reg(6)]);
     pb.define_function(caller, caller_asm).unwrap();
 
     let p = pb.build_verified().unwrap();
@@ -1934,7 +1948,7 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
     let mut callee_asm = Asm::new();
     callee_asm.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
     callee_asm.const_i64(Reg(2), 99);
-    callee_asm.ret(Reg(0), &[Reg(2)]);
+    callee_asm.ret(Reg::EFFECT, &[Reg(2)]);
     pb.define_function(callee, callee_asm).unwrap();
 
     let mut caller_asm = Asm::new();
@@ -1945,8 +1959,15 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
         ValueType::I64,
     ]);
     caller_asm.const_i64(Reg(2), 7);
-    caller_asm.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
-    caller_asm.ret(Reg(0), &[Reg(3)]);
+    caller_asm.call_indirect(
+        Reg::EFFECT,
+        call_sig,
+        Reg(1),
+        Reg::EFFECT,
+        &[Reg(2)],
+        &[Reg(3)],
+    );
+    caller_asm.ret(Reg::EFFECT, &[Reg(3)]);
     pb.define_function(caller, caller_asm).unwrap();
 
     let p = pb.build_verified().unwrap();
@@ -2008,8 +2029,8 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
 
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit]);
-    a.call(Reg(0), f, Reg(0), &[], &[]);
-    a.ret(Reg(0), &[]);
+    a.call(Reg::EFFECT, f, Reg::EFFECT, &[], &[]);
+    a.ret(Reg::EFFECT, &[]);
     pb.define_function(f, a).unwrap();
     let p = pb.build_verified().unwrap();
 
@@ -2085,7 +2106,7 @@ fn vm_loop_sum_0_to_n_minus_1() {
     a.jmp(l_loop);
 
     a.place(l_done).unwrap();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2169,7 +2190,7 @@ fn vm_traps_host_call_limit_in_loop() {
     a.set_register_types(vec![ValueType::Unit]);
     let l0 = a.label();
     a.place(l0).unwrap();
-    a.host_call(Reg(0), host_sig, Reg(0), &[], &[]);
+    a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[], &[]);
     a.jmp(l0);
     pb.push_function_checked(
         a,
@@ -2209,7 +2230,7 @@ fn verifier_rejects_select_type_mismatch() {
     a.const_i64(Reg(2), 1);
     a.const_u64(Reg(3), 1);
     a.select(Reg(4), Reg(1), Reg(2), Reg(3));
-    a.ret(Reg(0), &[Reg(4)]);
+    a.ret(Reg::EFFECT, &[Reg(4)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2232,7 +2253,7 @@ fn vm_traps_on_negative_i64_to_u64() {
     a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::U64]);
     a.const_i64(Reg(1), -1);
     a.i64_to_u64(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2269,7 +2290,7 @@ fn roundtrip_verify_run_tuple_len() {
     a.tuple_new(Reg(3), &[Reg(1), Reg(2)]);
     a.tuple_len(Reg(4), Reg(3));
     a.tuple_get(Reg(5), Reg(3), 1);
-    a.ret(Reg(0), &[Reg(4), Reg(5)]);
+    a.ret(Reg::EFFECT, &[Reg(4), Reg(5)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2314,7 +2335,7 @@ fn roundtrip_verify_run_struct_field_count() {
     a.struct_new(Reg(4), type_id, &[Reg(1), Reg(2), Reg(3)]);
     a.struct_field_count(Reg(5), Reg(4));
     a.struct_get(Reg(6), Reg(4), 1);
-    a.ret(Reg(0), &[Reg(5), Reg(6)]);
+    a.ret(Reg::EFFECT, &[Reg(5), Reg(6)]);
 
     pb.push_function_checked(
         a,
@@ -2353,7 +2374,7 @@ fn roundtrip_verify_run_array_get_imm() {
     a.const_i64(Reg(3), 9);
     a.array_new(Reg(4), elem, &[Reg(1), Reg(2), Reg(3)]);
     a.array_get_imm(Reg(5), Reg(4), 2);
-    a.ret(Reg(0), &[Reg(5)]);
+    a.ret(Reg::EFFECT, &[Reg(5)]);
 
     pb.push_function_checked(
         a,
@@ -2388,7 +2409,7 @@ fn vm_traps_array_get_imm_oob() {
     a.const_u64(Reg(1), 1);
     a.array_new(Reg(2), elem, &[Reg(1)]);
     a.array_get_imm(Reg(3), Reg(2), 9);
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     pb.push_function_checked(
         a,
@@ -2426,7 +2447,7 @@ fn roundtrip_verify_run_bytes_len_and_str_len() {
     a.const_pool(Reg(2), s);
     a.bytes_len(Reg(3), Reg(1));
     a.str_len(Reg(4), Reg(2));
-    a.ret(Reg(0), &[Reg(3), Reg(4)]);
+    a.ret(Reg::EFFECT, &[Reg(3), Reg(4)]);
 
     pb.push_function_checked(
         a,
@@ -2469,7 +2490,7 @@ fn roundtrip_verify_run_div_rem() {
     a.const_u64(Reg(6), 4);
     a.u64_div(Reg(7), Reg(5), Reg(6));
     a.u64_rem(Reg(8), Reg(5), Reg(6));
-    a.ret(Reg(0), &[Reg(3), Reg(4), Reg(7), Reg(8)]);
+    a.ret(Reg::EFFECT, &[Reg(3), Reg(4), Reg(7), Reg(8)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2510,7 +2531,7 @@ fn vm_traps_div_by_zero() {
     a.const_u64(Reg(1), 1);
     a.const_u64(Reg(2), 0);
     a.u64_div(Reg(3), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2543,7 +2564,7 @@ fn vm_traps_i64_div_overflow_min_over_minus_one() {
     a.const_i64(Reg(1), i64::MIN);
     a.const_i64(Reg(2), -1);
     a.i64_div(Reg(3), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2586,7 +2607,7 @@ fn roundtrip_verify_run_int_float_conversions() {
     a.f64_to_i64(Reg(6), Reg(5));
     a.const_f64(Reg(7), 3.9);
     a.f64_to_u64(Reg(8), Reg(7));
-    a.ret(Reg(0), &[Reg(2), Reg(4), Reg(6), Reg(8)]);
+    a.ret(Reg::EFFECT, &[Reg(2), Reg(4), Reg(6), Reg(8)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2643,7 +2664,10 @@ fn roundtrip_verify_run_f64_div_and_comparisons() {
     a.f64_gt(Reg(6), Reg(1), Reg(2));
     a.f64_le(Reg(7), Reg(2), Reg(2));
     a.f64_ge(Reg(8), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3), Reg(4), Reg(5), Reg(6), Reg(7), Reg(8)]);
+    a.ret(
+        Reg::EFFECT,
+        &[Reg(3), Reg(4), Reg(5), Reg(6), Reg(7), Reg(8)],
+    );
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2696,7 +2720,7 @@ fn roundtrip_verify_run_f64_comparisons_nan_are_false() {
     a.f64_gt(Reg(5), Reg(1), Reg(2));
     a.f64_le(Reg(6), Reg(1), Reg(2));
     a.f64_ge(Reg(7), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3), Reg(4), Reg(5), Reg(6), Reg(7)]);
+    a.ret(Reg::EFFECT, &[Reg(3), Reg(4), Reg(5), Reg(6), Reg(7)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2738,7 +2762,7 @@ fn vm_traps_f64_to_int_on_nan() {
     a.set_register_types(vec![ValueType::Unit, ValueType::F64, ValueType::I64]);
     a.const_f64(Reg(1), f64::NAN);
     a.f64_to_i64(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2765,7 +2789,7 @@ fn vm_traps_f64_to_u64_on_negative() {
     a.set_register_types(vec![ValueType::Unit, ValueType::F64, ValueType::U64]);
     a.const_f64(Reg(1), -1.0);
     a.f64_to_u64(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2798,7 +2822,7 @@ fn roundtrip_verify_run_decimal_conversions_scale_0_only() {
     a.const_decimal(Reg(1), 42, 0);
     a.dec_to_i64(Reg(2), Reg(1));
     a.i64_to_dec(Reg(3), Reg(2), 2); // 42 -> 42.00 (mantissa=4200, scale=2)
-    a.ret(Reg(0), &[Reg(2), Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(2), Reg(3)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2826,7 +2850,7 @@ fn vm_traps_dec_to_i64_on_nonzero_scale() {
     a.set_register_types(vec![ValueType::Unit, ValueType::Decimal, ValueType::I64]);
     a.const_decimal(Reg(1), 1, 2);
     a.dec_to_i64(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -2891,7 +2915,10 @@ fn roundtrip_verify_run_bytes_and_string_ops() {
 
     a.str_to_bytes(Reg(14), Reg(11));
     a.bytes_to_str(Reg(15), Reg(14));
-    a.ret(Reg(0), &[Reg(4), Reg(7), Reg(8), Reg(12), Reg(13), Reg(15)]);
+    a.ret(
+        Reg::EFFECT,
+        &[Reg(4), Reg(7), Reg(8), Reg(12), Reg(13), Reg(15)],
+    );
 
     pb.push_function_checked(
         a,
@@ -2940,7 +2967,7 @@ fn vm_traps_str_slice_on_non_boundary() {
     a.const_u64(Reg(2), 1);
     a.const_u64(Reg(3), 2);
     a.str_slice(Reg(4), Reg(1), Reg(2), Reg(3));
-    a.ret(Reg(0), &[Reg(4)]);
+    a.ret(Reg::EFFECT, &[Reg(4)]);
 
     pb.push_function_checked(
         a,
@@ -2969,7 +2996,7 @@ fn vm_traps_bytes_to_str_on_invalid_utf8() {
     a.set_register_types(vec![ValueType::Unit, ValueType::Bytes, ValueType::Str]);
     a.const_pool(Reg(1), b);
     a.bytes_to_str(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     pb.push_function_checked(
         a,

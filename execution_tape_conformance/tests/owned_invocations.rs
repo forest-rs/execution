@@ -87,8 +87,8 @@ fn echo() -> Callable {
     let temporary = asm.alloc_register(ValueType::Agg);
     let answer = asm.alloc_register(ValueType::Str);
     asm.tuple_new(temporary, &[Reg(1)])
-        .host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[answer])
-        .ret(Reg(0), &[answer]);
+        .host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[answer])
+        .ret(Reg::EFFECT, &[answer]);
     builder.define_function(entry, asm).unwrap();
     Callable::function(Arc::new(builder.build_verified().unwrap()), entry).unwrap()
 }
@@ -107,7 +107,7 @@ fn retained_closure() -> Callable {
     let answer = asm.alloc_register(ValueType::I64);
     asm.tuple_get(capture, Reg(1), 0)
         .i64_add(answer, capture, Reg(2))
-        .ret(Reg(0), &[answer]);
+        .ret(Reg::EFFECT, &[answer]);
     builder.define_function(body, asm).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     let mut heap = AggHeap::new();
@@ -626,7 +626,8 @@ fn pack_text() -> Callable {
         .unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let packed = body.alloc_register(ValueType::Agg);
-    body.tuple_new(packed, &[Reg(1)]).ret(Reg(0), &[packed]);
+    body.tuple_new(packed, &[Reg(1)])
+        .ret(Reg::EFFECT, &[packed]);
     builder.define_function(entry, body).unwrap();
     Callable::function(Arc::new(builder.build_verified().unwrap()), entry).unwrap()
 }

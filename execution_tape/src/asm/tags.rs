@@ -257,7 +257,7 @@ impl ProgramBuilder {
                 });
             }
         }
-        body.throw(Reg(0), tag, payload);
+        body.throw(Reg::EFFECT, tag, payload);
         Ok(())
     }
 }

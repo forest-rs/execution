@@ -63,9 +63,9 @@ pub(super) fn compile() -> Result<Compiled, Box<dyn Error>> {
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::Str, ValueType::Agg]);
     let host_pc = a.pc();
-    a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
+    a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
     let return_pc = a.pc();
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
     let entry = b.push_function_checked(
         a,
         FunctionAbi {

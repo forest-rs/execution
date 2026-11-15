@@ -64,7 +64,7 @@ fn plus(body: &mut Asm, offset: i64) -> execution_tape::asm::Label {
     body.place(label).unwrap();
     body.const_i64(constant, offset)
         .i64_add(caught, caught, constant)
-        .ret(Reg(0), &[caught]);
+        .ret(Reg::EFFECT, &[caught]);
     label
 }
 
@@ -133,7 +133,7 @@ fn an_unmatched_inner_region_defers_to_its_parent_and_catch_all() {
     let all = body.label();
     body.place(all).unwrap();
     let minus = body.alloc_register(ValueType::I64);
-    body.const_i64(minus, -1).ret(Reg(0), &[minus]);
+    body.const_i64(minus, -1).ret(Reg::EFFECT, &[minus]);
     body.place(start).unwrap();
     body.begin_region(&[Catch::Tag(failed, outer)]);
     body.begin_region(&[Catch::Tag(other, all)]);
@@ -177,9 +177,9 @@ fn recursion() -> (VerifiedProgram, FuncId) {
     body.begin_region(&[Catch::Tag(failed, handler)]);
     let [result] = b.emit_call(&mut body, recurse, &[next]).unwrap();
     body.end_region();
-    body.ret(Reg(0), &[result]);
+    body.ret(Reg::EFFECT, &[result]);
     body.place(handler).unwrap();
-    body.i64_add(caught, caught, n).ret(Reg(0), &[caught]);
+    body.i64_add(caught, caught, n).ret(Reg::EFFECT, &[caught]);
     b.define_function(recurse, body).unwrap();
     (b.build_verified().unwrap(), recurse)
 }
@@ -206,7 +206,7 @@ fn caught_exceptions_release_every_abandoned_frame() {
     b.define_function(leaf, body).unwrap();
     let mut body = b.function_asm(middle).unwrap();
     let [] = b.emit_call(&mut body, leaf, &[]).unwrap();
-    body.ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[]);
     b.define_function(middle, body).unwrap();
     // Loop 50 times; each iteration enters two frames that only a catch can release.
     let mut body = b.function_asm(entry).unwrap();
@@ -225,13 +225,13 @@ fn caught_exceptions_release_every_abandoned_frame() {
     body.begin_region(&[Catch::All(caught)]);
     let [] = b.emit_call(&mut body, middle, &[]).unwrap();
     body.end_region();
-    body.ret(Reg(0), &[count]);
+    body.ret(Reg::EFFECT, &[count]);
     body.place(caught).unwrap();
     body.i64_add(count, count, one)
         .i64_lt(more, count, limit)
         .br(more, head, exit);
     body.place(exit).unwrap();
-    body.ret(Reg(0), &[count]);
+    body.ret(Reg::EFFECT, &[count]);
     b.define_function(entry, body).unwrap();
     let program = b.build_verified().unwrap();
     let limits = Limits {
@@ -286,7 +286,7 @@ fn exceptions_cross_closures_and_indirect_calls() {
         )
         .unwrap();
     body.end_region();
-    body.ret(Reg(0), &[value]);
+    body.ret(Reg::EFFECT, &[value]);
     b.define_function(entry, body).unwrap();
     let program = b.build_verified().unwrap();
     assert_eq!(
@@ -316,7 +316,7 @@ fn callback_fixture() -> (VerifiedProgram, FuncId, FuncId) {
     body.begin_region(&[Catch::Tag(failed, handler)]);
     let [waited] = b.emit_call(&mut body, wait, &[]).unwrap();
     body.end_region();
-    body.ret(Reg(0), &[waited]);
+    body.ret(Reg::EFFECT, &[waited]);
     b.define_function(outer, body).unwrap();
     let mut body = b.function_asm(raise).unwrap();
     let code = b.argument(raise, 0).unwrap();
@@ -432,7 +432,7 @@ fn protected(body_trap: bool) -> VerifiedProgram {
         let zero = body.alloc_register(ValueType::I64);
         body.const_i64(zero, 0)
             .i64_div(zero, zero, zero)
-            .ret(Reg(0), &[]);
+            .ret(Reg::EFFECT, &[]);
     } else {
         b.emit_throw(&mut body, shaped, &[value]).unwrap();
     }
@@ -444,9 +444,9 @@ fn protected(body_trap: bool) -> VerifiedProgram {
     body.begin_region(&[Catch::All(all)]);
     let [] = b.emit_call(&mut body, callee, &[value]).unwrap();
     body.end_region();
-    body.const_i64(result, 0).ret(Reg(0), &[result]);
+    body.const_i64(result, 0).ret(Reg::EFFECT, &[result]);
     body.place(all).unwrap();
-    body.const_i64(result, 1).ret(Reg(0), &[result]);
+    body.const_i64(result, 1).ret(Reg::EFFECT, &[result]);
     b.define_function(entry, body).unwrap();
     b.build_verified().unwrap()
 }
@@ -542,7 +542,7 @@ fn caught_payload_contracts_type_handler_projections() {
     b.emit_throw(&mut body, shaped, &[tuple]).unwrap();
     body.end_region();
     body.place(handler).unwrap();
-    body.tuple_get(field, caught, 0).ret(Reg(0), &[field]);
+    body.tuple_get(field, caught, 0).ret(Reg::EFFECT, &[field]);
     b.define_function(entry, body).unwrap();
     let program = b.build_verified().unwrap();
     assert_eq!(
@@ -568,9 +568,9 @@ fn handler_reads(read_result: bool) -> Result<Program, VerifyError> {
     body.begin_region(&[Catch::All(handler)]);
     let [result] = b.emit_call(&mut body, callee, &[]).unwrap();
     body.end_region();
-    body.ret(Reg(0), &[result]);
+    body.ret(Reg::EFFECT, &[result]);
     body.place(handler).unwrap();
-    body.ret(Reg(0), &[if read_result { result } else { before }]);
+    body.ret(Reg::EFFECT, &[if read_result { result } else { before }]);
     b.define_function(caller, body).unwrap();
     let program = b.build();
     verify_program(&program, &VerifyConfig::default()).map(|()| program)
@@ -848,7 +848,7 @@ fn clause_parameters_must_match_the_payload_kinds() {
     b.emit_throw(&mut body, failed, &[value]).unwrap();
     body.end_region();
     body.place(handler).unwrap();
-    body.ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[]);
     b.define_function(function, body).unwrap();
     let error = verify_program(&b.build(), &VerifyConfig::default()).unwrap_err();
     assert_eq!(

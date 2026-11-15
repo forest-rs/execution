@@ -34,7 +34,7 @@ fn source_binding_is_exact_and_queryable_without_a_tracy_client() {
         func: function,
         pc: body.pc(),
     };
-    body.ret(Reg(0), &[value]);
+    body.ret(Reg::EFFECT, &[value]);
     builder.define_function(function, body).unwrap();
     let program = builder.build_verified().unwrap();
     let map = SourceMap::new(

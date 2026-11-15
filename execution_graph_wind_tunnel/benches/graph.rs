@@ -59,7 +59,7 @@ fn build_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
     let mut pb = ProgramBuilder::new();
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     let f = pb
         .push_function_checked(
             a,
@@ -105,7 +105,7 @@ fn build_wide_input_program(
     let mut kinds = vec![ValueType::I64; input_count + 1];
     kinds[0] = ValueType::Unit;
     a.set_register_types(kinds);
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
 
     let f = pb
         .push_function_checked(
@@ -306,8 +306,8 @@ fn build_flap_reads_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
 
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    a.host_call(Reg(0), host_sig_id, Reg(0), &[], &[Reg(1)]);
-    a.ret(Reg(0), &[Reg(1)]);
+    a.host_call(Reg::EFFECT, host_sig_id, Reg::EFFECT, &[], &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
 
     let f = pb
         .push_function_checked(
@@ -459,8 +459,8 @@ fn build_param_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
 
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
-    a.host_call(Reg(0), host_sig_id, Reg(0), &[Reg(1)], &[Reg(2)]);
-    a.ret(Reg(0), &[Reg(2)]);
+    a.host_call(Reg::EFFECT, host_sig_id, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     let f = pb
         .push_function_checked(
@@ -569,7 +569,7 @@ fn build_add2_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
         ValueType::I64,
     ]);
     a.i64_add(Reg(3), Reg(1), Reg(2));
-    a.ret(Reg(0), &[Reg(3)]);
+    a.ret(Reg::EFFECT, &[Reg(3)]);
 
     let f = pb
         .push_function_checked(

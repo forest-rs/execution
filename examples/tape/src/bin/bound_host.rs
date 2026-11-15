@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut body = builder.function_asm(entry)?;
     let addend = builder.argument(entry, 0)?;
     let [total] = builder.emit_call(&mut body, import, &[addend])?;
-    body.ret(Reg(0), &[total]);
+    body.ret(Reg::EFFECT, &[total]);
     builder.define_function(entry, body)?;
     let program = Arc::new(builder.build_verified()?);
 

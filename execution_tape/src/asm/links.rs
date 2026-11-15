@@ -54,14 +54,14 @@ impl ProgramBuilder {
     /// let area = program.declare_function(&signature)?;
     /// let mut body = program.function_asm(area)?;
     /// let side = program.argument(area, 0)?;
-    /// body.ret(Reg(0), &[side]);
+    /// body.ret(Reg::EFFECT, &[side]);
     /// program.define_function(area, body)?;
     /// let link = program.declare_link("area(<square>)", area)?;
     /// let caller = program.declare_function(signature)?;
     /// let mut body = program.function_asm(caller)?;
     /// let side = program.argument(caller, 0)?;
     /// let [result] = program.emit_call(&mut body, link, &[side])?;
-    /// body.ret(Reg(0), &[result]);
+    /// body.ret(Reg::EFFECT, &[result]);
     /// program.define_function(caller, body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())

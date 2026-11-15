@@ -48,7 +48,7 @@ fn bench_contracts(c: &mut Criterion) {
             }
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-            body.ret(Reg(0), &[Reg(1)]);
+            body.ret(Reg::EFFECT, &[Reg(1)]);
             let entry = builder
                 .push_function_checked(
                     body,

@@ -167,7 +167,7 @@ fn identity() -> VerifiedProgram {
     let mut builder = ProgramBuilder::new();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    body.ret(Reg(0), &[Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(1)]);
     builder
         .push_function_checked(
             body,
@@ -196,8 +196,8 @@ fn host_program(args: &[ValueType], ret: ValueType) -> VerifiedProgram {
     body.set_register_types(kinds);
     let output = u32::try_from(args.len()).unwrap() + 1;
     let inputs: Vec<_> = (1..output).map(Reg).collect();
-    body.host_call_sig_id(Reg(0), import, Reg(0), &inputs, &[Reg(output)]);
-    body.ret(Reg(0), &[Reg(output)]);
+    body.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &inputs, &[Reg(output)]);
+    body.ret(Reg::EFFECT, &[Reg(output)]);
     builder
         .push_function_checked(
             body,
@@ -543,8 +543,8 @@ fn return_candidates_preserve_pre_compaction_identity_and_exclude_output_prefix(
         body.tuple_new(Reg(2), &[Reg(1)]);
     }
     body.tuple_new(Reg(3), &[Reg(2), Reg(2)]);
-    body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(3)], &[Reg(4)]);
-    body.ret(Reg(0), &[Reg(4)]);
+    body.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(3)], &[Reg(4)]);
+    body.ret(Reg::EFFECT, &[Reg(4)]);
     builder
         .push_function_checked(
             body,
@@ -709,7 +709,7 @@ fn nested_function_returns_do_not_emit_root_candidates() {
     let mut builder = ProgramBuilder::new();
     let mut callee = Asm::new();
     callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    callee.ret(Reg(0), &[Reg(1)]);
+    callee.ret(Reg::EFFECT, &[Reg(1)]);
     let callee = builder
         .push_function_checked(
             callee,
@@ -721,8 +721,8 @@ fn nested_function_returns_do_not_emit_root_candidates() {
         .unwrap();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-    body.call(Reg(0), callee, Reg(0), &[Reg(1)], &[Reg(2)]);
-    body.ret(Reg(0), &[Reg(2)]);
+    body.call(Reg::EFFECT, callee, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    body.ret(Reg::EFFECT, &[Reg(2)]);
     let entry = builder
         .push_function_checked(
             body,

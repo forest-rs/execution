@@ -328,7 +328,7 @@
 //! asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64, ValueType::I64]);
 //! asm.const_i64(Reg(2), 1);
 //! asm.i64_add(Reg(3), Reg(1), Reg(2));
-//! asm.ret(Reg(0), &[Reg(3)]);
+//! asm.ret(Reg::EFFECT, &[Reg(3)]);
 //!
 //! let mut builder = ProgramBuilder::new();
 //! let entry = builder.push_function_checked(

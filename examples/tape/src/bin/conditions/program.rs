@@ -378,13 +378,13 @@ impl Compiler {
             Kind::Handler { accepted } => {
                 let accept = a.alloc_register(ValueType::Bool);
                 a.const_bool(accept, accepted)
-                    .ret(Reg(0), &[accept, value, flag]);
+                    .ret(Reg::EFFECT, &[accept, value, flag]);
             }
             Kind::Cleanup => {
-                a.ret(Reg(0), &[]);
+                a.ret(Reg::EFFECT, &[]);
             }
             _ => {
-                a.ret(Reg(0), &[value, flag]);
+                a.ret(Reg::EFFECT, &[value, flag]);
             }
         }
         self.mappings.extend(a.source_mappings(function));
@@ -473,7 +473,7 @@ impl Compiler {
         body.jmp(join.with_args(&[value, result_flag]));
         body.place(popped)?;
         let [] = self.builder.emit_call(body, self.services.pop, &[scope])?;
-        body.throw_ref(Reg(0), unwound);
+        body.throw_ref(Reg::EFFECT, unwound);
         if let Some((label, target, value, exit_flag, other)) = exit {
             body.place(label)?;
             let [] = self.builder.emit_call(body, self.services.pop, &[scope])?;
@@ -483,7 +483,7 @@ impl Compiler {
             body.place(here)?;
             body.jmp(join.with_args(&[value, exit_flag]));
             body.place(onward)?;
-            body.throw_ref(Reg(0), other);
+            body.throw_ref(Reg::EFFECT, other);
         }
         body.place(join)?;
         Ok((answer, flag))
@@ -603,7 +603,7 @@ impl Compiler {
                 body.place(handler)?;
                 let environment = Self::environment(body, context);
                 let [] = self.builder.emit_call(body, cleanup, &[environment])?;
-                body.throw_ref(Reg(0), unwound);
+                body.throw_ref(Reg::EFFECT, unwound);
                 body.place(join)?;
                 Ok((answer, flag))
             }

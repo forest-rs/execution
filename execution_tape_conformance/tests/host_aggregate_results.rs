@@ -44,13 +44,13 @@ fn program_shape(tail: bool, two_calls: bool) -> Callable {
     );
     let mut a = b.function_asm(entry).unwrap();
     let result = a.alloc_register(ValueType::Agg);
-    a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[result]);
+    a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[result]);
     if two_calls {
         let bridge = a.alloc_register(ValueType::Agg);
         a.tuple_new(bridge, &[result]).host_call_sig_id(
-            Reg(0),
+            Reg::EFFECT,
             import,
-            Reg(0),
+            Reg::EFFECT,
             &[bridge],
             &[result],
         );
@@ -62,7 +62,7 @@ fn program_shape(tail: bool, two_calls: bool) -> Callable {
     } else {
         result
     };
-    a.ret(Reg(0), &[output]);
+    a.ret(Reg::EFFECT, &[output]);
     b.define_function(entry, a).unwrap();
     Callable::function(Arc::new(b.build_verified().unwrap()), entry).unwrap()
 }

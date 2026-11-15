@@ -64,7 +64,7 @@ fn construction(c: &mut Criterion) {
                 "array" => body.array_len(len, aggregate),
                 _ => unreachable!(),
             };
-            body.ret(Reg(0), &[len]);
+            body.ret(Reg::EFFECT, &[len]);
             builder.define_function(entry, body).unwrap();
             let program = builder.build_verified().unwrap();
             let mut vm = Vm::new(NoHost, Limits::default());

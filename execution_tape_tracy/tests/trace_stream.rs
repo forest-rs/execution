@@ -104,7 +104,7 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
 
     let mut a_callee = Asm::new();
     a_callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    a_callee.ret(Reg(0), &[Reg(1)]);
+    a_callee.ret(Reg::EFFECT, &[Reg(1)]);
     pb.define_function(callee, a_callee).unwrap();
 
     let mut a_main = Asm::new();
@@ -115,9 +115,9 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
         ValueType::I64,
     ]);
     a_main.const_i64(Reg(1), 42);
-    a_main.call(Reg(0), callee, Reg(0), &[Reg(1)], &[Reg(2)]);
-    a_main.host_call_sig_id(Reg(0), host_sig_id, Reg(0), &[Reg(2)], &[Reg(3)]);
-    a_main.ret(Reg(0), &[Reg(3)]);
+    a_main.call(Reg::EFFECT, callee, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    a_main.host_call_sig_id(Reg::EFFECT, host_sig_id, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);
+    a_main.ret(Reg::EFFECT, &[Reg(3)]);
     pb.define_function(main, a_main).unwrap();
 
     let program = pb.build_verified().unwrap();

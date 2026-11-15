@@ -69,7 +69,7 @@ fn unit_cycles_need_no_copies_or_scratch_alongside_scalar_cycles() {
     let join = body.block(&[Reg(1), Reg(2), Reg(3), Reg(4)]);
     body.jmp(join.with_args(&[Reg(2), Reg(1), Reg(4), Reg(3)]));
     body.place(join).unwrap();
-    body.ret(Reg(0), &[Reg(1), Reg(2), Reg(3), Reg(4)]);
+    body.ret(Reg::EFFECT, &[Reg(1), Reg(2), Reg(3), Reg(4)]);
     let types = [
         ValueType::Unit,
         ValueType::Unit,
@@ -116,7 +116,7 @@ fn parallel_edges_execute_every_three_register_cycle_and_fanout() {
                 let join = asm.block(&[Reg(1), Reg(2), Reg(3)]);
                 asm.jmp(join.with_args(&[Reg(a), Reg(b), Reg(c)]));
                 asm.place(join).unwrap();
-                asm.ret(Reg(0), &[Reg(1), Reg(2), Reg(3)]);
+                asm.ret(Reg::EFFECT, &[Reg(1), Reg(2), Reg(3)]);
                 let p = verify(asm, &[ValueType::I64; 3], &[ValueType::I64; 3]);
                 let values = [Value::I64(11), Value::I64(22), Value::I64(33)];
                 assert_eq!(
@@ -149,7 +149,7 @@ fn equal_target_arms_keep_distinct_arguments_and_loop_backedges_work() {
         join.with_args(&[Reg(3), Reg(2)]),
     );
     asm.place(join).unwrap();
-    asm.ret(Reg(0), &[Reg(2), Reg(3)]);
+    asm.ret(Reg::EFFECT, &[Reg(2), Reg(3)]);
     let p = verify(
         asm,
         &[ValueType::Bool, ValueType::I64, ValueType::I64],
@@ -191,7 +191,7 @@ fn equal_target_arms_keep_distinct_arguments_and_loop_backedges_work() {
         .i64_sub(Reg(2), Reg(2), Reg(5))
         .jmp(head.with_args(&[Reg(2), Reg(7)]));
     asm.place(done).unwrap();
-    asm.ret(Reg(0), &[Reg(8)]);
+    asm.ret(Reg::EFFECT, &[Reg(8)]);
     let p = verify(asm, &[ValueType::I64], &[ValueType::I64]);
     for n in 0..100 {
         assert_eq!(run(&p, &[Value::I64(n)]), [Value::I64(n * (n + 1) / 2)]);
@@ -252,7 +252,7 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
     asm.jmp(join.with_args(&sources));
     asm.place(join).unwrap();
     let rets: Vec<_> = (1..=u32::try_from(args.len()).unwrap()).map(Reg).collect();
-    asm.ret(Reg(0), &rets);
+    asm.ret(Reg::EFFECT, &rets);
     let p = verify(asm, &args, &args);
     let pairs = [
         [Value::Unit, Value::Unit],
@@ -324,7 +324,7 @@ fn aggregate_and_closure_handles_survive_parallel_cycles_and_run_cleanup() {
         .closure_new(Reg(6), Reg(4), Reg(3))
         .jmp(join.with_args(&[Reg(3), Reg(2), Reg(6), Reg(5)]));
     asm.place(join).unwrap();
-    asm.ret(Reg(0), &[Reg(2), Reg(3), Reg(5), Reg(6)]);
+    asm.ret(Reg::EFFECT, &[Reg(2), Reg(3), Reg(5), Reg(6)]);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(
@@ -342,7 +342,7 @@ fn aggregate_and_closure_handles_survive_parallel_cycles_and_run_cleanup() {
         .unwrap();
     let mut closure_body = Asm::new();
     closure_body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-    closure_body.ret(Reg(0), &[]);
+    closure_body.ret(Reg::EFFECT, &[]);
     builder
         .push_function_checked(
             closure_body,
@@ -401,7 +401,7 @@ fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them(
         asm.place(join).unwrap();
         let use_pc = asm.pc();
         asm.tuple_get(Reg(7), Reg(5), 0);
-        asm.ret(Reg(0), &[Reg(7)]);
+        asm.ret(Reg::EFFECT, &[Reg(7)]);
         let p = program(
             asm,
             &[
@@ -445,7 +445,7 @@ fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them(
     asm.place(join).unwrap();
     asm.tuple_get(Reg(4), Reg(2), 0)
         .tuple_get(Reg(5), Reg(3), 0)
-        .ret(Reg(0), &[Reg(4), Reg(5)]);
+        .ret(Reg::EFFECT, &[Reg(4), Reg(5)]);
     assert_eq!(
         run(&verify(asm, &[], &[ValueType::I64; 2]), &[]),
         [Value::I64(11), Value::I64(11)]
@@ -471,7 +471,7 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
         asm.br(Reg(1), join.with_args(&[Reg(2)]), join.with_args(&[Reg(3)]));
         let target = asm.pc();
         asm.place(join).unwrap();
-        asm.ret(Reg(0), &[Reg(4)]);
+        asm.ret(Reg::EFFECT, &[Reg(4)]);
         assert_eq!(
             verify_owned(
                 program(asm, &[], &[ValueType::I64]),
@@ -498,7 +498,7 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
     asm.jmp(join);
     let target = asm.pc();
     asm.place(join).unwrap();
-    asm.ret(Reg(0), &[Reg(1)]);
+    asm.ret(Reg::EFFECT, &[Reg(1)]);
     assert_eq!(
         verify_owned(
             program(asm, &[], &[ValueType::I64]),
@@ -520,14 +520,14 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
 
 #[test]
 fn declarations_reject_invalid_parameters_and_bypassed_headers() {
-    for params in [vec![Reg(0)], vec![Reg(1), Reg(1)]] {
+    for params in [vec![Reg::EFFECT], vec![Reg(1), Reg(1)]] {
         let mut asm = Asm::new();
         asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         let join = asm.block(&params);
         asm.jmp(join.with_args(&[Reg(1), Reg(1)][..params.len()]));
         let pc = asm.pc();
         asm.place(join).unwrap();
-        asm.ret(Reg(0), &[]);
+        asm.ret(Reg::EFFECT, &[]);
         assert!(
             matches!(verify_owned(program(asm,&[ValueType::I64],&[]),&VerifyConfig::default()),Err(VerifyError::BlockDeclaration{pc:p,..}) if p==pc)
         );
@@ -536,7 +536,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
     asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     let entry = asm.block(&[Reg(1)]);
     asm.place(entry).unwrap();
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     assert!(matches!(
         verify_owned(program(asm, &[], &[]), &VerifyConfig::default()),
         Err(VerifyError::BlockDeclaration {
@@ -553,7 +553,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
     asm.place(join).unwrap();
     let target = asm.pc();
     asm.place(interior).unwrap();
-    asm.ret(Reg(0), &[Reg(2)]);
+    asm.ret(Reg::EFFECT, &[Reg(2)]);
     assert_eq!(
         verify_owned(
             program(asm, &[ValueType::I64], &[ValueType::I64]),
@@ -573,7 +573,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
     let join = asm.block(&[Reg(2)]);
     asm.const_i64(Reg(1), 7);
     asm.place(join).unwrap();
-    asm.ret(Reg(0), &[Reg(2)]);
+    asm.ret(Reg::EFFECT, &[Reg(2)]);
     assert!(matches!(
         verify_owned(
             program(asm, &[], &[ValueType::I64]),
@@ -626,7 +626,7 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
         .place(join)
         .unwrap();
     let body = asm.pc();
-    asm.ret(Reg(0), &[Reg(1), Reg(2)]);
+    asm.ret(Reg::EFFECT, &[Reg(1), Reg(2)]);
     let p = verify(asm, &[ValueType::I64; 2], &[ValueType::I64; 2]);
     let source = crate::disasm::disassemble_function(p.program(), FuncId(0)).unwrap();
     assert_eq!(source.executable_pc(Pc(0)), Some(branch));
@@ -720,7 +720,7 @@ fn wide_reverse_chains_and_many_cycles_prepare_and_execute() {
         asm.jmp(join.with_args(&sources));
         asm.place(join).unwrap();
         let returns: Vec<_> = (1..=WIDTH).map(Reg).collect();
-        asm.ret(Reg(0), &returns);
+        asm.ret(Reg::EFFECT, &returns);
         let p = verify(asm, &types, &types[..WIDTH as usize]);
         let values: Vec<_> = (1..=WIDTH + 1)
             .map(|value| Value::I64(i64::from(value)))
@@ -755,7 +755,7 @@ fn malformed_headers_lists_and_splits_fail_without_panics() {
             {
                 let mut asm = Asm::new();
                 asm.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
-                asm.ret(Reg(0), &[]);
+                asm.ret(Reg::EFFECT, &[]);
                 asm
             },
             &[ValueType::Bool],
@@ -824,7 +824,7 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
             .unwrap();
         let body_pc = body.pc();
         body.span(SpanId(core::num::NonZeroU64::new(22).unwrap()))
-            .ret(Reg(0), &[Reg(1)]);
+            .ret(Reg::EFFECT, &[Reg(1)]);
         let callee = builder
             .push_function_checked(
                 body,
@@ -849,17 +849,17 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
                 })
                 .unwrap();
             caller.const_func(Reg(2), callee).call_indirect(
-                Reg(0),
+                Reg::EFFECT,
                 sig,
                 Reg(2),
-                Reg(0),
+                Reg::EFFECT,
                 &[Reg(1)],
                 &[Reg(3)],
             );
         } else {
-            caller.call(Reg(0), callee, Reg(0), &[Reg(1)], &[Reg(3)]);
+            caller.call(Reg::EFFECT, callee, Reg::EFFECT, &[Reg(1)], &[Reg(3)]);
         }
-        caller.ret(Reg(0), &[Reg(3)]);
+        caller.ret(Reg::EFFECT, &[Reg(3)]);
         let entry = builder
             .push_function_checked(
                 caller,
@@ -911,7 +911,7 @@ fn aggregate_shape_cycles_read_the_original_predecessor_facts() {
     asm.place(join).unwrap();
     asm.tuple_get(Reg(5), Reg(2), 0)
         .tuple_get(Reg(6), Reg(3), 0)
-        .ret(Reg(0), &[Reg(5), Reg(6)]);
+        .ret(Reg::EFFECT, &[Reg(5), Reg(6)]);
     assert_eq!(
         run(&verify(asm, &[], &[ValueType::Bool, ValueType::I64]), &[]),
         [Value::Bool(true), Value::I64(17)]
@@ -928,7 +928,7 @@ fn uninitialized_edge_arguments_report_the_offending_arm_and_slot() {
     asm.br(Reg(1), join.with_args(&[Reg(2)]), join.with_args(&[Reg(2)]));
     let target = asm.pc();
     asm.place(join).unwrap();
-    asm.ret(Reg(0), &[Reg(2)]);
+    asm.ret(Reg::EFFECT, &[Reg(2)]);
     assert_eq!(
         verify_owned(
             program(asm, &[], &[ValueType::I64]),

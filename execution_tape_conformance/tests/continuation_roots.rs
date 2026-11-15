@@ -85,13 +85,13 @@ impl Imports {
         }
     }
     fn make(&self, asm: &mut Asm, dst: Reg) {
-        asm.host_call_sig_id(Reg(0), self.make, Reg(0), &[], &[dst]);
+        asm.host_call_sig_id(Reg::EFFECT, self.make, Reg::EFFECT, &[], &[dst]);
     }
     fn collect(&self, asm: &mut Asm) {
-        asm.host_call_sig_id(Reg(0), self.collect, Reg(0), &[], &[]);
+        asm.host_call_sig_id(Reg::EFFECT, self.collect, Reg::EFFECT, &[], &[]);
     }
     fn check(&self, asm: &mut Asm, src: Reg) {
-        asm.host_call_sig_id(Reg(0), self.check, Reg(0), &[src], &[]);
+        asm.host_call_sig_id(Reg::EFFECT, self.check, Reg::EFFECT, &[src], &[]);
     }
 }
 
@@ -205,7 +205,7 @@ struct Fixture {
 /// Emits `resume call_sig cont()` protected by `On(tag, handler)`.
 fn resume_handling(asm: &mut Asm, tag: TagId, handler: Label, call_sig: CallSigId, cont: Reg) {
     asm.begin_region(&[Catch::On(tag, handler)]);
-    asm.resume(Reg(0), call_sig, cont, Reg(0), &[], &[]);
+    asm.resume(Reg::EFFECT, call_sig, cont, Reg::EFFECT, &[], &[]);
     asm.end_region();
 }
 
@@ -233,11 +233,11 @@ fn fixture() -> Fixture {
     asm.tuple_new(tuple, &[other]);
     asm.mov(other, held);
     let holder_suspend = asm.pc();
-    asm.suspend(Reg(0), pause, Reg(0), &[], &[]);
+    asm.suspend(Reg::EFFECT, pause, Reg::EFFECT, &[], &[]);
     host.check(&mut asm, held);
     asm.tuple_get(other, tuple, 0);
     host.check(&mut asm, other);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(holder, asm).unwrap();
 
     // `keeper()` makes 1, suspends `pause`, then checks it.
@@ -245,9 +245,9 @@ fn fixture() -> Fixture {
     let mut asm = b.function_asm(keeper).unwrap();
     let held = asm.alloc_register(OBJ);
     host.make(&mut asm, held);
-    asm.suspend(Reg(0), pause, Reg(0), &[], &[]);
+    asm.suspend(Reg::EFFECT, pause, Reg::EFFECT, &[], &[]);
     host.check(&mut asm, held);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(keeper, asm).unwrap();
 
     // `taker(x)` checks `x`.
@@ -255,16 +255,16 @@ fn fixture() -> Fixture {
     let mut asm = b.function_asm(taker).unwrap();
     let x = b.argument(taker, 0).unwrap();
     host.check(&mut asm, x);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(taker, asm).unwrap();
 
     // `asker()` suspends `ask` and checks the object it is resumed with.
     let asker = b.declare_function(sig(&[], &[])).unwrap();
     let mut asm = b.function_asm(asker).unwrap();
     let answer = asm.alloc_register(OBJ);
-    asm.suspend(Reg(0), ask, Reg(0), &[], &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[], &[answer]);
     host.check(&mut asm, answer);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(asker, asm).unwrap();
 
     // `exn_holder()` catches `boom(1)` by reference only, makes 2 over 1's register and suspends
@@ -281,13 +281,13 @@ fn fixture() -> Fixture {
     asm.end_region();
     asm.place(by_ref).unwrap();
     host.make(&mut asm, held);
-    asm.suspend(Reg(0), pause, Reg(0), &[], &[]);
+    asm.suspend(Reg::EFFECT, pause, Reg::EFFECT, &[], &[]);
     asm.begin_region(&[Catch::Tag(boom, by_tag)]);
-    asm.throw_ref(Reg(0), caught);
+    asm.throw_ref(Reg::EFFECT, caught);
     asm.end_region();
     asm.place(by_tag).unwrap();
     host.check(&mut asm, payload);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(exn_holder, asm).unwrap();
 
     // `run_paused(f)` starts `f`, collects while it is suspended at `pause`, then resumes it.
@@ -304,12 +304,12 @@ fn fixture() -> Fixture {
             asm.const_func(f, target);
             asm.cont_new(cont, unit_to_unit, f);
             resume_handling(&mut asm, pause, paused, unit_to_unit, cont);
-            asm.ret(Reg(0), &[]);
+            asm.ret(Reg::EFFECT, &[]);
             asm.place(paused).unwrap();
             if before_resume(&mut asm, rest) {
-                asm.resume(Reg(0), unit_to_unit, rest, Reg(0), &[], &[]);
+                asm.resume(Reg::EFFECT, unit_to_unit, rest, Reg::EFFECT, &[], &[]);
             }
-            asm.ret(Reg(0), &[]);
+            asm.ret(Reg::EFFECT, &[]);
             b.define_function(func, asm).unwrap();
             func
         };
@@ -327,7 +327,7 @@ fn fixture() -> Fixture {
         false
     });
     let consumed = run_paused(&mut b, keeper, &|asm, rest| {
-        asm.resume(Reg(0), unit_to_unit, rest, Reg(0), &[], &[]);
+        asm.resume(Reg::EFFECT, unit_to_unit, rest, Reg::EFFECT, &[], &[]);
         host.collect(asm);
         false
     });
@@ -350,8 +350,8 @@ fn fixture() -> Fixture {
     asm.cont_bind(bound, obj_to_unit, unit_to_unit, cont, &[held]);
     host.make(&mut asm, held);
     host.collect(&mut asm);
-    asm.resume(Reg(0), unit_to_unit, bound, Reg(0), &[], &[]);
-    asm.ret(Reg(0), &[]);
+    asm.resume(Reg::EFFECT, unit_to_unit, bound, Reg::EFFECT, &[], &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(unstarted, asm).unwrap();
 
     // `bound_suspension()` answers `asker`'s `ask` by binding 1, makes 2 over 1's register and
@@ -368,14 +368,14 @@ fn fixture() -> Fixture {
     asm.const_func(f, asker);
     asm.cont_new(cont, unit_to_unit, f);
     resume_handling(&mut asm, ask, asked, unit_to_unit, cont);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     asm.place(asked).unwrap();
     host.make(&mut asm, held);
     asm.cont_bind(rest, obj_to_unit, unit_to_unit, rest, &[held]);
     host.make(&mut asm, held);
     host.collect(&mut asm);
-    asm.resume(Reg(0), unit_to_unit, rest, Reg(0), &[], &[]);
-    asm.ret(Reg(0), &[]);
+    asm.resume(Reg::EFFECT, unit_to_unit, rest, Reg::EFFECT, &[], &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(bound_suspension, asm).unwrap();
 
     // `caught()` catches `boom(1)` by reference only, makes 2 over 1's register and collects;
@@ -394,11 +394,11 @@ fn fixture() -> Fixture {
     host.make(&mut asm, held);
     host.collect(&mut asm);
     asm.begin_region(&[Catch::Tag(boom, by_tag)]);
-    asm.throw_ref(Reg(0), caught);
+    asm.throw_ref(Reg::EFFECT, caught);
     asm.end_region();
     asm.place(by_tag).unwrap();
     host.check(&mut asm, payload);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(caught_fn, asm).unwrap();
 
     // `yielded()` makes 1 and suspends `pause` to the embedding, which collects.
@@ -406,9 +406,9 @@ fn fixture() -> Fixture {
     let mut asm = b.function_asm(yielded).unwrap();
     let held = asm.alloc_register(OBJ);
     host.make(&mut asm, held);
-    asm.suspend(Reg(0), pause, Reg(0), &[], &[]);
+    asm.suspend(Reg::EFFECT, pause, Reg::EFFECT, &[], &[]);
     host.check(&mut asm, held);
-    asm.ret(Reg(0), &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(yielded, asm).unwrap();
 
     Fixture {

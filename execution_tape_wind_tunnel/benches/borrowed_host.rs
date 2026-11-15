@@ -99,10 +99,10 @@ fn program(host_call: bool) -> Arc<VerifiedProgram> {
     let mut asm = builder.function_asm(entry).unwrap();
     if host_call {
         let out = asm.alloc_register(ValueType::F32);
-        asm.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[out])
-            .ret(Reg(0), &[out]);
+        asm.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[out])
+            .ret(Reg::EFFECT, &[out]);
     } else {
-        asm.ret(Reg(0), &[Reg(1)]);
+        asm.ret(Reg::EFFECT, &[Reg(1)]);
     }
     builder.define_function(entry, asm).unwrap();
     Arc::new(builder.build_verified().unwrap())

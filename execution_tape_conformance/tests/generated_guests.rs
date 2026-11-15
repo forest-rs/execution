@@ -199,7 +199,7 @@ fn emit(expr: &Expr, body: &mut Asm, helper: FuncId) -> Reg {
         }
         Expr::Call(a) => {
             let a = emit(a, body, helper);
-            body.call(Reg(0), helper, Reg(0), &[a], &[dst]);
+            body.call(Reg::EFFECT, helper, Reg::EFFECT, &[a], &[dst]);
         }
     }
     dst
@@ -221,11 +221,11 @@ fn compile(expr: &Expr) -> (Program, Reg) {
         .const_i64(three, 3)
         .i64_mul(result, Reg(1), three)
         .i64_add(result, result, one)
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
     builder.define_function(helper, body).unwrap();
     let mut body = builder.function_asm(entry).unwrap();
     let result = emit(expr, &mut body, helper);
-    body.ret(Reg(0), &[result]);
+    body.ret(Reg::EFFECT, &[result]);
     builder.define_function(entry, body).unwrap();
     (builder.build(), result)
 }

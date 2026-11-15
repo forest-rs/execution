@@ -580,7 +580,7 @@ mod memory_tests {
         let mut builder = ProgramBuilder::new();
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit]);
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         let empty = builder
             .push_function_checked(
                 body,
@@ -592,7 +592,7 @@ mod memory_tests {
             .unwrap();
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit]);
-        body.ret(Reg(0), &[Reg(0)]);
+        body.ret(Reg::EFFECT, &[Reg(0)]);
         let unit = builder
             .push_function_checked(
                 body,
@@ -651,8 +651,8 @@ mod memory_tests {
         );
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-        body.host_call_sig_id(Reg(0), host, Reg(0), &[], &[])
-            .ret(Reg(0), &[Reg(1)]);
+        body.host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, &[], &[])
+            .ret(Reg::EFFECT, &[Reg(1)]);
         let entry = builder
             .push_function_checked(
                 body,
@@ -752,8 +752,8 @@ mod memory_tests {
         );
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        body.host_call_sig_id(Reg(0), import, Reg(0), &[], &[Reg(1)]);
-        body.ret(Reg(0), &[Reg(1)]);
+        body.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[], &[Reg(1)]);
+        body.ret(Reg::EFFECT, &[Reg(1)]);
         let entry = pb
             .push_function_checked(
                 body,
@@ -792,7 +792,7 @@ mod memory_tests {
         ]);
         producer.tuple_new(Reg(2), &[Reg(1)]);
         producer.tuple_new(Reg(3), &[Reg(2)]); // Unreachable wrapper.
-        producer.ret(Reg(0), &[Reg(2)]);
+        producer.ret(Reg::EFFECT, &[Reg(2)]);
         let producer = pb
             .push_function_checked(
                 producer,
@@ -811,7 +811,7 @@ mod memory_tests {
         ]);
         reader.tuple_new(Reg(2), &[Reg(1)]); // Unreachable wrapper around a retained input.
         reader.tuple_get(Reg(3), Reg(1), 0);
-        reader.ret(Reg(0), &[Reg(3)]);
+        reader.ret(Reg::EFFECT, &[Reg(3)]);
         let integer = pb
             .contract(execution_tape::contract::Contract::Kind(ValueType::I64))
             .unwrap();

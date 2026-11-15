@@ -62,7 +62,7 @@ use crate::verifier::{HostCallSite, VerifiedProgram, write_location};
 /// let mut body = pb.function_asm(entry)?;
 /// let log_import = pb.host_import(LOG);
 /// let [] = pb.emit_call_with(&mut body, log_import, ("hello",))?;
-/// body.ret(Reg(0), &[]);
+/// body.ret(Reg::EFFECT, &[]);
 /// pb.define_function(entry, body)?;
 /// let program = Arc::new(pb.build_verified()?);
 /// functions.bind(&program)?;
@@ -279,7 +279,7 @@ impl<S> HostFunctions<S> {
     /// let mut body = pb.function_asm(entry)?;
     /// let value = pb.argument(entry, 0)?;
     /// let [] = pb.emit_call_with(&mut body, import, ("rustiness", value))?;
-    /// body.ret(Reg(0), &[]);
+    /// body.ret(Reg::EFFECT, &[]);
     /// pb.define_function(entry, body)?;
     /// let program = Arc::new(pb.build_verified()?);
     ///
@@ -358,7 +358,7 @@ impl VerifiedProgram {
     /// let entry = pb.declare_function(FunctionSig { arg_types: vec![], ret_types: vec![] })?;
     /// let mut body = pb.function_asm(entry)?;
     /// let [] = pb.emit_call_with(&mut body, set, ("rustiness",))?;
-    /// body.ret(Reg(0), &[]);
+    /// body.ret(Reg::EFFECT, &[]);
     /// pb.define_function(entry, body)?;
     /// let program = pb.build_verified()?;
     ///
@@ -829,8 +829,8 @@ mod tests {
         let sig = pb.host_sig_for(symbol, signature());
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-        body.host_call_sig_id(Reg(0), sig, Reg(0), &[Reg(1)], &[Reg(2)]);
-        body.ret(Reg(0), &[Reg(2)]);
+        body.host_call_sig_id(Reg::EFFECT, sig, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        body.ret(Reg::EFFECT, &[Reg(2)]);
         pb.push_function_checked(
             body,
             FunctionSig {
@@ -897,7 +897,7 @@ mod tests {
             calls.push(a.pc());
             let [] = pb.emit_call(&mut a, import, &[r]).unwrap();
         }
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         pb.define_function(f, a).unwrap();
         let p = Arc::new(pb.build_verified().unwrap());
 
@@ -968,7 +968,7 @@ mod tests {
         let pc = a.pc();
         a.span(SpanId::try_from(7_u64).unwrap());
         let [] = pb.emit_call(&mut a, set, &[r]).unwrap();
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         pb.define_function(f, a).unwrap();
         let p = Arc::new(pb.build_verified().unwrap());
 
@@ -1014,7 +1014,7 @@ mod tests {
         for (import, text) in [(named, "good"), (named, "bad"), (missing, "bad")] {
             let [] = pb.emit_call_with(&mut a, import, (text,)).unwrap();
         }
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         pb.define_function(f, a).unwrap();
         let p = Arc::new(pb.build_verified().unwrap());
         let check = |site: &HostCallSite<'_>| match (site.import_in(&[NAMED]), site.arg(0)) {
@@ -1105,7 +1105,7 @@ mod tests {
         let [value] = pb
             .emit_call_with(&mut a, import, (crate::asm::CallArg::I64(41),))
             .unwrap();
-        a.ret(Reg(0), &[value]);
+        a.ret(Reg::EFFECT, &[value]);
         pb.define_function(f, a).unwrap();
         let p = Arc::new(pb.build_verified().unwrap());
 

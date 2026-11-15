@@ -101,7 +101,7 @@ mod tests {
         );
         let mut body = b.function_asm(function).unwrap();
         let [value] = b.emit_call(&mut body, produce, &[]).unwrap();
-        body.ret(Reg(0), &[value]);
+        body.ret(Reg::EFFECT, &[value]);
         b.define_function(function, body).unwrap();
         b.build_verified().unwrap()
     }

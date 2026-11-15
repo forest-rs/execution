@@ -263,7 +263,7 @@ mod tests {
         a.const_i64(Reg(2), 7)
             .br(Reg(1), join.with_args(&[Reg(2)]), join.with_args(&[Reg(2)]));
         a.place(join).unwrap();
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
         let mut b = ProgramBuilder::new();
         let f = b
             .push_function_checked(

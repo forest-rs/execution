@@ -355,13 +355,13 @@ impl ProgramBuilder {
     /// let identity = program.declare_function(&signature)?;
     /// let mut body = program.function_asm(identity)?;
     /// let value = program.argument(identity, 0)?;
-    /// body.ret(Reg(0), &[value]);
+    /// body.ret(Reg::EFFECT, &[value]);
     /// program.define_function(identity, body)?;
     /// let caller = program.declare_function(signature)?;
     /// let mut body = program.function_asm(caller)?;
     /// let input = program.argument(caller, 0)?;
     /// let [answer] = program.emit_call(&mut body, identity, &[input])?;
-    /// body.ret(Reg(0), &[answer]);
+    /// body.ret(Reg::EFFECT, &[answer]);
     /// program.define_function(caller, body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -383,16 +383,16 @@ impl ProgramBuilder {
         let results = core::array::from_fn(|index| body.alloc_register(results.get(index)));
         match target {
             CallTarget::Function(id) => {
-                body.call(Reg(0), id, Reg(0), args, &results);
+                body.call(Reg::EFFECT, id, Reg::EFFECT, args, &results);
             }
             CallTarget::Host(id) => {
-                body.host_call(Reg(0), id, Reg(0), args, &results);
+                body.host_call(Reg::EFFECT, id, Reg::EFFECT, args, &results);
             }
             CallTarget::Indirect { signature, callee } => {
-                body.call_indirect(Reg(0), signature, callee, Reg(0), args, &results);
+                body.call_indirect(Reg::EFFECT, signature, callee, Reg::EFFECT, args, &results);
             }
             CallTarget::Link(id) => {
-                body.call_link(Reg(0), id, Reg(0), args, &results);
+                body.call_link(Reg::EFFECT, id, Reg::EFFECT, args, &results);
             }
         }
         Ok(results)
@@ -423,7 +423,7 @@ impl ProgramBuilder {
     /// // A register is a `Reg`; an integer constant is spelled out.
     /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(1), value))?;
     /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(2), 0.5_f32))?;
-    /// body.ret(Reg(0), &[]);
+    /// body.ret(Reg::EFFECT, &[]);
     /// program.define_function(entry, body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -490,7 +490,7 @@ impl ProgramBuilder {
     /// let [] = program.emit_call_with(&mut body, set, (age, value))?;
     /// body.jmp(done);
     /// body.place(done)?;
-    /// body.ret(Reg(0), &[]);
+    /// body.ret(Reg::EFFECT, &[]);
     /// program.define_function(entry, body)?;
     /// program.build_verified()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -685,7 +685,8 @@ mod tests {
         let mut body = program.function_asm(leaf).unwrap();
         let argument = program.argument(leaf, 0).unwrap();
         let flag = body.alloc_register(ValueType::Bool);
-        body.const_bool(flag, true).ret(Reg(0), &[argument, flag]);
+        body.const_bool(flag, true)
+            .ret(Reg::EFFECT, &[argument, flag]);
         program.define_function(leaf, body).unwrap();
         let entry = program.declare_function(&signature).unwrap();
         let mut body = program.function_asm(entry).unwrap();
@@ -721,7 +722,7 @@ mod tests {
             )
             .unwrap();
         let [] = program.emit_call(&mut body, notify, &[]).unwrap();
-        body.ret(Reg(0), &[answer, flag]);
+        body.ret(Reg::EFFECT, &[answer, flag]);
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         let mut vm = Vm::new(Negate::default(), Limits::default());
@@ -825,7 +826,7 @@ mod tests {
         let mut body = program.function_asm(function).unwrap();
         let unwritten = body.alloc_register(ValueType::I64);
         let [result] = program.emit_call(&mut body, host, &[unwritten]).unwrap();
-        body.ret(Reg(0), &[result]);
+        body.ret(Reg::EFFECT, &[result]);
         program.define_function(function, body).unwrap();
         assert!(matches!(
             program.build_verified(),
@@ -864,7 +865,7 @@ mod tests {
     }
 
     fn finish(mut program: ProgramBuilder, mut body: Asm) -> Program {
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         program.define_function(FuncId(0), body).unwrap();
         program.build_checked().unwrap()
     }
@@ -1023,7 +1024,7 @@ mod tests {
         body.jmp(done);
         body.place(done).unwrap();
         let [] = program.emit_call_with(&mut body, set, (name,)).unwrap();
-        body.ret(Reg(0), &[]);
+        body.ret(Reg::EFFECT, &[]);
         program.define_function(FuncId(0), body).unwrap();
         assert!(matches!(
             program.build_verified(),

@@ -67,7 +67,7 @@ fn bench_run_memory(c: &mut Criterion) {
                 asm.trap(7);
             } else {
                 asm.ret(
-                    Reg(0),
+                    Reg::EFFECT,
                     &[Reg(match mode {
                         "scalar" => 2,
                         "new_root" | "new_chain" => 3,
@@ -166,7 +166,7 @@ fn bench_payloads(c: &mut Criterion) {
                                 rets: vec![ty],
                             },
                         );
-                        asm.host_call_sig_id(Reg(0), hs, Reg(0), &[], &[Reg(1)]);
+                        asm.host_call_sig_id(Reg::EFFECT, hs, Reg::EFFECT, &[], &[Reg(1)]);
                     } else {
                         let id = match &value {
                             Value::Bytes(b) => pb.const_bytes(b),
@@ -202,7 +202,7 @@ fn bench_payloads(c: &mut Criterion) {
                         kinds[4] = ValueType::U64;
                     }
                     asm.set_register_types(kinds);
-                    asm.ret(Reg(0), &[Reg(result)]);
+                    asm.ret(Reg::EFFECT, &[Reg(result)]);
                     let entry = pb
                         .push_function_checked(
                             asm,
@@ -279,7 +279,7 @@ fn bench_run_results(c: &mut Criterion) {
             asm.const_i64(Reg(reg), i64::from(reg));
         }
         let regs: Vec<_> = (1..=count).map(Reg).collect();
-        asm.ret(Reg(0), &regs);
+        asm.ret(Reg::EFFECT, &regs);
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
             asm,
@@ -661,7 +661,7 @@ fn build_i64_add_chain(chain_len: u32) -> execution_tape::verifier::VerifiedProg
         a.i64_add(Reg(cur), Reg(cur - 1), Reg(2));
         cur += 1;
     }
-    a.ret(Reg(0), &[Reg(cur - 1)]);
+    a.ret(Reg::EFFECT, &[Reg(cur - 1)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -697,7 +697,7 @@ fn build_i64_add_chain_with_spans(
         a.i64_add(Reg(cur), Reg(cur - 1), Reg(2));
         cur += 1;
     }
-    a.ret(Reg(0), &[Reg(cur - 1)]);
+    a.ret(Reg::EFFECT, &[Reg(cur - 1)]);
 
     let mut pb = ProgramBuilder::new();
     pb.push_function_checked(
@@ -719,7 +719,7 @@ fn build_bytes_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram 
     a.set_register_types(vec![ValueType::Unit, ValueType::Bytes, ValueType::U64]);
     a.const_pool(Reg(1), bytes);
     a.bytes_len(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     pb.push_function_checked(
         a,
@@ -740,7 +740,7 @@ fn build_str_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
     a.set_register_types(vec![ValueType::Unit, ValueType::Str, ValueType::U64]);
     a.const_pool(Reg(1), s);
     a.str_len(Reg(2), Reg(1));
-    a.ret(Reg(0), &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
 
     pb.push_function_checked(
         a,
@@ -778,13 +778,13 @@ fn build_call_overhead() -> execution_tape::verifier::VerifiedProgram {
     a1.const_i64(Reg(1), 1);
     a1.const_i64(Reg(2), 2);
     a1.i64_add(Reg(3), Reg(1), Reg(2));
-    a1.ret(Reg(0), &[Reg(3)]);
+    a1.ret(Reg::EFFECT, &[Reg(3)]);
     pb.define_function(f1, a1).unwrap();
 
     let mut a0 = Asm::new();
     a0.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    a0.call(Reg(0), f1, Reg(0), &[], &[Reg(1)]);
-    a0.ret(Reg(0), &[Reg(1)]);
+    a0.call(Reg::EFFECT, f1, Reg::EFFECT, &[], &[Reg(1)]);
+    a0.ret(Reg::EFFECT, &[Reg(1)]);
     pb.define_function(f0, a0).unwrap();
 
     pb.build_verified().unwrap()
@@ -815,7 +815,7 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     a1.const_i64(Reg(1), 1);
     a1.const_i64(Reg(2), 2);
     a1.i64_add(Reg(3), Reg(1), Reg(2));
-    a1.ret(Reg(0), &[Reg(3)]);
+    a1.ret(Reg::EFFECT, &[Reg(3)]);
     pb.define_function(f1, a1).unwrap();
 
     // r1: counter, r2: limit, r3: one, r4: sum, r5: cond, r6: tmp (call result)
@@ -845,13 +845,13 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
 
     // body
     a0.place(l_body).unwrap();
-    a0.call(Reg(0), f1, Reg(0), &[], &[Reg(6)]);
+    a0.call(Reg::EFFECT, f1, Reg::EFFECT, &[], &[Reg(6)]);
     a0.i64_add(Reg(4), Reg(4), Reg(6));
     a0.u64_add(Reg(1), Reg(1), Reg(3));
     a0.jmp(l_loop);
 
     a0.place(l_done).unwrap();
-    a0.ret(Reg(0), &[Reg(4)]);
+    a0.ret(Reg::EFFECT, &[Reg(4)]);
 
     pb.define_function(f0, a0).unwrap();
     pb.build_verified().unwrap()
@@ -893,7 +893,7 @@ fn build_call_indirect_loop(
         &[ValueType::Unit][..]
     };
     callee.set_register_types(callee_kinds.to_vec());
-    callee.ret(Reg(0), &[]);
+    callee.ret(Reg::EFFECT, &[]);
     pb.define_function(f1, callee).unwrap();
 
     // r1: counter, r2: limit, r3: one, r4: done?
@@ -944,10 +944,10 @@ fn build_call_indirect_loop(
 
     entry.place(l_body).unwrap();
     entry.call_indirect(
-        Reg(0),
+        Reg::EFFECT,
         call_sig,
         if closure_target { Reg(7) } else { Reg(5) },
-        Reg(0),
+        Reg::EFFECT,
         &[],
         &[],
     );
@@ -955,7 +955,7 @@ fn build_call_indirect_loop(
     entry.jmp(l_loop);
 
     entry.place(l_done).unwrap();
-    entry.ret(Reg(0), &[Reg(1)]);
+    entry.ret(Reg::EFFECT, &[Reg(1)]);
     pb.define_function(f0, entry).unwrap();
 
     pb.build_verified().unwrap()
@@ -1013,7 +1013,7 @@ fn build_branch_hot_loop(iters: u64) -> execution_tape::verifier::VerifiedProgra
     a.jmp(l_loop);
 
     a.place(l_done).unwrap();
-    a.ret(Reg(0), &[Reg(8)]);
+    a.ret(Reg::EFFECT, &[Reg(8)]);
 
     pb.push_function_checked(
         a,
@@ -1037,8 +1037,8 @@ fn build_host_call_overhead() -> execution_tape::verifier::VerifiedProgram {
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     a.const_i64(Reg(1), 9);
-    a.host_call(Reg(0), host_sig, Reg(0), &[Reg(1)], &[Reg(2)]);
-    a.ret(Reg(0), &[Reg(2)]);
+    a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    a.ret(Reg::EFFECT, &[Reg(2)]);
     pb.push_function_checked(
         a,
         FunctionSig {
@@ -1086,12 +1086,12 @@ fn build_host_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram
 
     // body
     a.place(l_body).unwrap();
-    a.host_call(Reg(0), host_sig, Reg(0), &[Reg(4)], &[Reg(5)]);
+    a.host_call(Reg::EFFECT, host_sig, Reg::EFFECT, &[Reg(4)], &[Reg(5)]);
     a.u64_add(Reg(1), Reg(1), Reg(3));
     a.jmp(l_loop);
 
     a.place(l_done).unwrap();
-    a.ret(Reg(0), &[Reg(5)]);
+    a.ret(Reg::EFFECT, &[Reg(5)]);
 
     pb.push_function_checked(
         a,

@@ -132,14 +132,14 @@ fn revision(increment: i64) -> Result<Revision> {
         a.pc(),
         &format!("CounterCell.add(cell, {increment})"),
     ));
-    a.host_call_sig_id(Reg(0), add, Reg(0), &[cell, delta], &[answer]);
+    a.host_call_sig_id(Reg::EFFECT, add, Reg::EFFECT, &[cell, delta], &[answer]);
     mappings.push(mapping(
         &source,
         body,
         a.pc(),
         &format!("return CounterCell.add(cell, {increment});"),
     ));
-    a.ret(Reg(0), &[answer]);
+    a.ret(Reg::EFFECT, &[answer]);
     b.define_function(body, a)?;
     b.set_function_name(body, "counter_block")?;
     let factory = b.declare_function(FunctionAbi {
@@ -163,7 +163,7 @@ fn revision(increment: i64) -> Result<Revision> {
                 a.closure_new(block, function, env);
             }
             _ => {
-                a.ret(Reg(0), &[block]);
+                a.ret(Reg::EFFECT, &[block]);
             }
         }
     }

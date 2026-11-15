@@ -61,7 +61,7 @@ fn protected_resume(
     rets: &[Reg],
 ) {
     asm.begin_region(clauses);
-    asm.resume(Reg(0), call_sig, cont, Reg(0), args, rets);
+    asm.resume(Reg::EFFECT, call_sig, cont, Reg::EFFECT, args, rets);
     asm.end_region();
 }
 
@@ -96,10 +96,10 @@ fn fixture() -> Fixture {
         asm.alloc_register(ValueType::I64),
         asm.alloc_register(ValueType::I64),
     );
-    asm.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[x], &[answer]);
     asm.const_i64(one, 1);
     asm.i64_add(answer, answer, one);
-    asm.ret(Reg(0), &[answer]);
+    asm.ret(Reg::EFFECT, &[answer]);
     b.define_function(leaf, asm).unwrap();
 
     let body = b.declare_function(&one_to_one).unwrap();
@@ -109,7 +109,7 @@ fn fixture() -> Fixture {
     let [inner] = b.emit_call(&mut asm, leaf, &[first]).unwrap();
     let [second] = b.emit_call(&mut asm, leaf, &[inner]).unwrap();
     asm.i64_add(first, first, second);
-    asm.ret(Reg(0), &[first]);
+    asm.ret(Reg::EFFECT, &[first]);
     b.define_function(body, asm).unwrap();
 
     let guarded = b.declare_function(&one_to_one).unwrap();
@@ -122,13 +122,13 @@ fn fixture() -> Fixture {
     );
     let stopped = asm.block(&[code]);
     asm.begin_region(&[Catch::Tag(stop, stopped)]);
-    asm.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[x], &[answer]);
     asm.end_region();
-    asm.ret(Reg(0), &[answer]);
+    asm.ret(Reg::EFFECT, &[answer]);
     asm.place(stopped).unwrap();
     asm.const_i64(thousand, 1000);
     asm.i64_add(code, code, thousand);
-    asm.ret(Reg(0), &[code]);
+    asm.ret(Reg::EFFECT, &[code]);
     b.define_function(guarded, asm).unwrap();
 
     let picker = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
@@ -137,18 +137,18 @@ fn fixture() -> Fixture {
         asm.alloc_register(ValueType::Agg),
         asm.alloc_register(ValueType::I64),
     );
-    asm.suspend(Reg(0), pick, Reg(0), &[], &[tuple]);
+    asm.suspend(Reg::EFFECT, pick, Reg::EFFECT, &[], &[tuple]);
     asm.tuple_get(first, tuple, 0);
-    asm.ret(Reg(0), &[first]);
+    asm.ret(Reg::EFFECT, &[first]);
     b.define_function(picker, asm).unwrap();
 
     let logged = b.declare_function(&one_to_one).unwrap();
     let mut asm = b.function_asm(logged).unwrap();
     let x = b.argument(logged, 0).unwrap();
     let answer = asm.alloc_register(ValueType::I64);
-    asm.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
-    asm.suspend(Reg(0), log, Reg(0), &[answer], &[]);
-    asm.ret(Reg(0), &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[x], &[answer]);
+    asm.suspend(Reg::EFFECT, log, Reg::EFFECT, &[answer], &[]);
+    asm.ret(Reg::EFFECT, &[answer]);
     b.define_function(logged, asm).unwrap();
 
     let i64_to_i64 = b.call_sig(&one_to_one).unwrap();
@@ -174,7 +174,7 @@ fn fixture() -> Fixture {
         &[x],
         &[out],
     );
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     asm.place(logged_block).unwrap();
     protected_resume(
         &mut asm,
@@ -184,7 +184,7 @@ fn fixture() -> Fixture {
         &[],
         &[out],
     );
-    asm.ret(Reg(0), &[out]);
+    asm.ret(Reg::EFFECT, &[out]);
     b.define_function(outer, asm).unwrap();
 
     let wait = b.host_sig_for(
@@ -201,13 +201,13 @@ fn fixture() -> Fixture {
         asm.alloc_register(ValueType::I64),
     );
     asm.const_i64(x, 0);
-    asm.suspend(Reg(0), ask, Reg(0), &[x], &[answer]);
-    asm.ret(Reg(0), &[answer]);
+    asm.suspend(Reg::EFFECT, ask, Reg::EFFECT, &[x], &[answer]);
+    asm.ret(Reg::EFFECT, &[answer]);
     b.define_function(callback, asm).unwrap();
     let waiter = b.declare_function(sig(&[], &[])).unwrap();
     let mut asm = b.function_asm(waiter).unwrap();
-    asm.host_call(Reg(0), wait, Reg(0), &[], &[]);
-    asm.ret(Reg(0), &[]);
+    asm.host_call(Reg::EFFECT, wait, Reg::EFFECT, &[], &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(waiter, asm).unwrap();
 
     Fixture {
@@ -945,8 +945,8 @@ fn teller() -> (Arc<VerifiedProgram>, FuncId) {
     let tell = b.declare_function(sig(&[ValueType::Agg], &[])).unwrap();
     let mut asm = b.function_asm(tell).unwrap();
     let t = b.argument(tell, 0).unwrap();
-    asm.suspend(Reg(0), told, Reg(0), &[t], &[]);
-    asm.ret(Reg(0), &[]);
+    asm.suspend(Reg::EFFECT, told, Reg::EFFECT, &[t], &[]);
+    asm.ret(Reg::EFFECT, &[]);
     b.define_function(tell, asm).unwrap();
     (Arc::new(b.build_verified().unwrap()), tell)
 }

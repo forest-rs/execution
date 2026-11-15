@@ -41,7 +41,7 @@ fn constant(number: i64) -> Callable {
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let value = a.alloc_register(ValueType::I64);
-    a.const_i64(value, number).ret(Reg(0), &[value]);
+    a.const_i64(value, number).ret(Reg::EFFECT, &[value]);
     b.define_function(entry, a).unwrap();
     Callable::function(Arc::new(b.build_verified().unwrap()), entry).unwrap()
 }
@@ -140,7 +140,7 @@ fn rejected_updates_return_both_owners_and_a_recoverable_signature_difference() 
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
     let value = a.alloc_register(ValueType::Bool);
-    a.const_bool(value, true).ret(Reg(0), &[value]);
+    a.const_bool(value, true).ret(Reg::EFFECT, &[value]);
     b.define_function(entry, a).unwrap();
     let proposed = Callable::function(Arc::new(b.build_verified().unwrap()), entry).unwrap();
     let error = slot.replace(proposed.clone()).unwrap_err();
@@ -209,7 +209,7 @@ fn shared_signature(depth: usize, boolean: bool, extra_contract: bool) -> Callab
         })
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     b.define_function(entry, a).unwrap();
     Callable::function(Arc::new(b.build_verified().unwrap()), entry).unwrap()
 }
@@ -261,7 +261,7 @@ fn nominal_signature() -> Callable {
         })
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     b.define_function(entry, a).unwrap();
     Callable::function(Arc::new(b.build_verified().unwrap()), entry).unwrap()
 }
@@ -300,7 +300,7 @@ fn exposed_signature_compatibility_hides_each_closures_concrete_environment_layo
             .unwrap();
         let mut a = b.function_asm(body).unwrap();
         let value = a.alloc_register(ValueType::I64);
-        a.const_i64(value, answer).ret(Reg(0), &[value]);
+        a.const_i64(value, answer).ret(Reg::EFFECT, &[value]);
         b.define_function(body, a).unwrap();
         functions.push(body);
     }
@@ -345,7 +345,7 @@ fn with_input(
         })
         .unwrap();
     let mut a = b.function_asm(entry).unwrap();
-    a.ret(Reg(0), &[]);
+    a.ret(Reg::EFFECT, &[]);
     b.define_function(entry, a).unwrap();
     Callable::function(Arc::new(b.build_verified().unwrap()), entry).unwrap()
 }
@@ -460,7 +460,7 @@ fn same_owner_nominal_refinements_are_compared_below_the_nominal_boundary() {
                 })
                 .unwrap();
             let mut a = b.function_asm(body).unwrap();
-            a.ret(Reg(0), &[]);
+            a.ret(Reg::EFFECT, &[]);
             b.define_function(body, a).unwrap();
             functions.push(body);
         }
@@ -510,7 +510,7 @@ fn root_arity_changes_are_rejected_before_publication() {
         })
         .unwrap();
     let mut body = builder.function_asm(function).unwrap();
-    body.ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[]);
     builder.define_function(function, body).unwrap();
     let proposed =
         Callable::function(Arc::new(builder.build_verified().unwrap()), function).unwrap();

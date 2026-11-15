@@ -63,7 +63,7 @@ fn main() {
                 _ => unreachable!(),
             }
         }
-        body.ret(Reg(0), &[Reg(1)]);
+        body.ret(Reg::EFFECT, &[Reg(1)]);
         let id = builder
             .push_function_checked(
                 body,
@@ -111,7 +111,7 @@ fn main() {
         } else {
             body.const_decimal(Reg(1), 12345, 2);
         }
-        body.ret(Reg(0), &vec![Reg(1); 1024]);
+        body.ret(Reg::EFFECT, &vec![Reg(1); 1024]);
         let mut builder = ProgramBuilder::new();
         let id = builder
             .push_function_checked(

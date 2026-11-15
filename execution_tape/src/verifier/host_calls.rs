@@ -165,7 +165,7 @@ struct Site {
 /// let mut body = pb.function_asm(entry)?;
 /// let value = pb.argument(entry, 0)?;
 /// let [] = pb.emit_call_with(&mut body, set, ("rustiness", value))?;
-/// body.ret(Reg(0), &[]);
+/// body.ret(Reg::EFFECT, &[]);
 /// pb.define_function(entry, body)?;
 /// let program = pb.build_verified()?;
 ///
@@ -474,7 +474,7 @@ mod tests {
             .unwrap();
         let mut a = pb.function_asm(f).unwrap();
         emit(&mut pb, &mut a, h);
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         pb.define_function(f, a).unwrap();
         pb.build_verified().unwrap()
     }

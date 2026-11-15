@@ -29,7 +29,7 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
     let answer = a.alloc_register(ValueType::I64);
     a.tuple_get(captured, Reg(1), 0)
         .i64_add(answer, captured, Reg(2))
-        .ret(Reg(0), &[answer]);
+        .ret(Reg::EFFECT, &[answer]);
     builder.define_function(body, a).unwrap();
     let maker = builder
         .declare_function(FunctionSig {
@@ -44,7 +44,7 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
     a.tuple_new(env, &[Reg(1)])
         .const_func(target, body)
         .closure_new(result, target, env)
-        .ret(Reg(0), &[result]);
+        .ret(Reg::EFFECT, &[result]);
     builder.define_function(maker, a).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     let weak = Arc::downgrade(&program);
@@ -182,7 +182,7 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
     pb.array_elem(ValueType::I64);
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    body.const_i64(Reg(1), number).ret(Reg(0), &[Reg(1)]);
+    body.const_i64(Reg(1), number).ret(Reg::EFFECT, &[Reg(1)]);
     let value = pb
         .push_function_checked(
             body,
@@ -194,7 +194,7 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
         .unwrap();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Func]);
-    body.const_func(Reg(1), value).ret(Reg(0), &[Reg(1)]);
+    body.const_func(Reg(1), value).ret(Reg::EFFECT, &[Reg(1)]);
     let function = pb
         .push_function_checked(
             body,
@@ -212,8 +212,8 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
         .unwrap();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Func, ValueType::I64]);
-    body.call_indirect(Reg(0), sig, Reg(1), Reg(0), &[], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+    body.call_indirect(Reg::EFFECT, sig, Reg(1), Reg::EFFECT, &[], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let invoke = pb
         .push_function_checked(
             body,
@@ -225,7 +225,8 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
         .unwrap();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
-    body.tuple_new(Reg(2), &[Reg(1)]).ret(Reg(0), &[Reg(2)]);
+    body.tuple_new(Reg(2), &[Reg(1)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let tuple = pb
         .push_function_checked(
             body,
@@ -237,7 +238,8 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
         .unwrap();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::Agg]);
-    body.tuple_new(Reg(2), &[Reg(1)]).ret(Reg(0), &[Reg(2)]);
+    body.tuple_new(Reg(2), &[Reg(1)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let wrap = pb
         .push_function_checked(
             body,
@@ -249,7 +251,7 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
         .unwrap();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-    body.ret(Reg(0), &[Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(1)]);
     let identity = pb
         .push_function_checked(
             body,
@@ -273,8 +275,8 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
         ValueType::Agg,
         ValueType::Bool,
     ]);
-    body.host_call_sig_id(Reg(0), host, Reg(0), &[Reg(1), Reg(2)], &[Reg(3)])
-        .ret(Reg(0), &[Reg(3)]);
+    body.host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, &[Reg(1), Reg(2)], &[Reg(3)])
+        .ret(Reg::EFFECT, &[Reg(3)]);
     let same = pb
         .push_function_checked(
             body,
@@ -291,7 +293,8 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
         ValueType::Agg,
         ValueType::Agg,
     ]);
-    body.tuple_new(Reg(3), &[Reg(2)]).ret(Reg(0), &[Reg(3)]);
+    body.tuple_new(Reg(3), &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(3)]);
     let discard_wrap = pb
         .push_function_checked(
             body,

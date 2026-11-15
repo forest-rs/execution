@@ -81,9 +81,9 @@ fn recording_with_options(
         .jmp(head);
     body.place(head).unwrap();
     body.tuple_new(Reg(2), &[Reg(3), Reg(1)]).host_call_sig_id(
-        Reg(0),
+        Reg::EFFECT,
         import,
-        Reg(0),
+        Reg::EFFECT,
         &[Reg(2)],
         &[Reg(2)],
     );
@@ -91,7 +91,7 @@ fn recording_with_options(
         .i64_lt(Reg(6), Reg(3), Reg(4))
         .br(Reg(6), head, exit);
     body.place(exit).unwrap();
-    body.ret(Reg(0), &[Reg(2)]);
+    body.ret(Reg::EFFECT, &[Reg(2)]);
     builder
         .push_function_checked(
             body,
@@ -311,7 +311,7 @@ fn wide_nodes_render_only_the_selected_viewport() {
     let mut builder = ProgramBuilder::new();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-    body.ret(Reg(0), &[Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(1)]);
     builder
         .push_function_checked(
             body,
@@ -426,7 +426,8 @@ fn source_register_previews_report_omissions() {
     kinds.push(ValueType::Agg);
     body.set_register_types(kinds);
     let registers: Vec<_> = (1..=12).map(Reg).collect();
-    body.tuple_new(Reg(13), &registers).ret(Reg(0), &[Reg(13)]);
+    body.tuple_new(Reg(13), &registers)
+        .ret(Reg::EFFECT, &[Reg(13)]);
     builder
         .push_function_checked(
             body,
@@ -484,7 +485,7 @@ fn successful_void_return_is_not_presented_as_missing_capture() {
     let mut builder = ProgramBuilder::new();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit]);
-    body.ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[]);
     builder
         .push_function_checked(
             body,
@@ -554,8 +555,8 @@ fn selecting_a_caller_frame_moves_source_to_its_recorded_call_site() {
     let mut worker = Asm::new();
     worker.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     worker
-        .host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+        .host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let worker = b
         .push_function_checked(
             worker,
@@ -570,8 +571,8 @@ fn selecting_a_caller_frame_moves_source_to_its_recorded_call_site() {
     caller.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     caller
         .const_i64(Reg(1), 7)
-        .call(Reg(0), worker, Reg(0), &[Reg(1)], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+        .call(Reg::EFFECT, worker, Reg::EFFECT, &[Reg(1)], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     let caller = b
         .push_function_checked(
             caller,
@@ -819,9 +820,9 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
     let no = child.label();
     child.br(Reg(1), yes, no);
     child.place(yes).unwrap();
-    child.const_i64(Reg(2), 42).ret(Reg(0), &[Reg(2)]);
+    child.const_i64(Reg(2), 42).ret(Reg::EFFECT, &[Reg(2)]);
     child.place(no).unwrap();
-    child.const_i64(Reg(2), 7).ret(Reg(0), &[Reg(2)]);
+    child.const_i64(Reg(2), 7).ret(Reg::EFFECT, &[Reg(2)]);
     let callee = b
         .push_function_checked(
             child,
@@ -834,8 +835,8 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
     body.const_bool(Reg(1), true)
-        .call(Reg(0), callee, Reg(0), &[Reg(1)], &[Reg(2)])
-        .ret(Reg(0), &[Reg(2)]);
+        .call(Reg::EFFECT, callee, Reg::EFFECT, &[Reg(1)], &[Reg(2)])
+        .ret(Reg::EFFECT, &[Reg(2)]);
     b.define_function(root, body).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let source = execution_tape::disasm::disassemble_function(program.program(), callee).unwrap();
@@ -902,11 +903,11 @@ fn callback_recording() -> Recording {
     );
     let mut a = b.function_asm(root).unwrap();
     let result = a.alloc_register(ValueType::I64);
-    a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[result])
-        .ret(Reg(0), &[result]);
+    a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[result])
+        .ret(Reg::EFFECT, &[result]);
     b.define_function(root, a).unwrap();
     let mut a = b.function_asm(handler).unwrap();
-    a.ret(Reg(0), &[Reg(1)]);
+    a.ret(Reg::EFFECT, &[Reg(1)]);
     b.define_function(handler, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let recorder = Rc::new(RefCell::new(

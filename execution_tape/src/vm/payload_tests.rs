@@ -123,7 +123,7 @@ fn doubling_traps_before_next_copy_and_context_resets() {
                 } else {
                     a.bytes_len(Reg(2), Reg(1));
                 }
-                a.ret(Reg(0), &[Reg(2)]);
+                a.ret(Reg::EFFECT, &[Reg(2)]);
             },
         );
         let args = [if text {
@@ -207,7 +207,7 @@ fn aggregate_fields_and_repeated_root_returns_charge_each_owned_copy() {
                             a.array_new(Reg(2), ty, &[Reg(1), Reg(1)]);
                         }
                     }
-                    a.ret(Reg(0), &[Reg(2), Reg(1), Reg(1)]);
+                    a.ret(Reg::EFFECT, &[Reg(2), Reg(1), Reg(1)]);
                 },
             );
             exact_work(
@@ -241,7 +241,7 @@ fn equality_uses_deterministic_length_work() {
                 } else {
                     a.bytes_eq(Reg(3), Reg(1), Reg(2));
                 }
-                a.ret(Reg(0), &[Reg(3)]);
+                a.ret(Reg::EFFECT, &[Reg(3)]);
             },
         );
         for unequal in [false, true] {
@@ -294,7 +294,7 @@ fn slices_charge_output_bytes_after_index_and_character_validation() {
                     a.bytes_slice(Reg(4), Reg(1), Reg(2), Reg(3))
                         .bytes_len(Reg(5), Reg(4));
                 }
-                a.ret(Reg(0), &[Reg(5)]);
+                a.ret(Reg::EFFECT, &[Reg(5)]);
             },
         );
         let value = if text {
@@ -352,7 +352,7 @@ fn conversions_charge_copy_and_utf8_work_before_it_occurs() {
                 } else {
                     a.str_to_bytes(Reg(2), Reg(1)).bytes_len(Reg(3), Reg(2));
                 }
-                a.ret(Reg(0), &[Reg(3)]);
+                a.ret(Reg::EFFECT, &[Reg(3)]);
             },
         );
         exact_work(
@@ -402,9 +402,9 @@ fn borrowed_constants_and_guest_transfers_do_not_charge() {
     ]);
     let text = builder.const_str("large enough to require payload storage");
     body.const_pool(Reg(1), text)
-        .call(Reg(0), FuncId(1), Reg(0), &[Reg(1)], &[Reg(2)])
+        .call(Reg::EFFECT, FuncId(1), Reg::EFFECT, &[Reg(1)], &[Reg(2)])
         .str_len(Reg(3), Reg(2))
-        .ret(Reg(0), &[Reg(3)]);
+        .ret(Reg::EFFECT, &[Reg(3)]);
     builder
         .push_function_checked(
             body,
@@ -416,7 +416,7 @@ fn borrowed_constants_and_guest_transfers_do_not_charge() {
         .unwrap();
     let mut callee = Asm::new();
     callee.set_register_types(vec![ValueType::Unit, ValueType::Str]);
-    callee.mov(Reg(1), Reg(1)).ret(Reg(0), &[Reg(1)]);
+    callee.mov(Reg(1), Reg(1)).ret(Reg::EFFECT, &[Reg(1)]);
     builder
         .push_function_checked(
             callee,
@@ -438,7 +438,7 @@ fn zero_budget_accepts_empty_copies_and_rejects_nonempty_root_materialization() 
             ValueType::Bytes
         };
         let p = program(&[kind], &[kind], vec![ValueType::Unit, kind], |a, _| {
-            a.ret(Reg(0), &[Reg(1)]);
+            a.ret(Reg::EFFECT, &[Reg(1)]);
         });
         exact_work(
             &p,
@@ -502,9 +502,9 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
                     rets: vec![ValueType::Bytes, ValueType::Str],
                 },
             );
-            a.host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(1), Reg(2)])
+            a.host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, &[], &[Reg(1), Reg(2)])
                 .bytes_len(Reg(3), Reg(1))
-                .ret(Reg(0), &[Reg(3)]);
+                .ret(Reg::EFFECT, &[Reg(3)]);
         },
     );
     for (second, fail, limit) in [
@@ -618,7 +618,7 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         ]);
         a.tuple_get(Reg(2), Reg(1), 0)
             .bytes_len(Reg(3), Reg(2))
-            .ret(Reg(0), &[Reg(if return_payload { 2 } else { 3 })]);
+            .ret(Reg::EFFECT, &[Reg(if return_payload { 2 } else { 3 })]);
         b.push_function_checked(
             a,
             crate::asm::FunctionAbi {
@@ -687,8 +687,8 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
                     rets: vec![ValueType::Agg],
                 },
             );
-            a.host_call_sig_id(Reg(0), host, Reg(0), &[], &[Reg(1)])
-                .ret(Reg(0), &[Reg(1)]);
+            a.host_call_sig_id(Reg::EFFECT, host, Reg::EFFECT, &[], &[Reg(1)])
+                .ret(Reg::EFFECT, &[Reg(1)]);
         },
     );
     let unit = vm.install(returned.clone()).unwrap();

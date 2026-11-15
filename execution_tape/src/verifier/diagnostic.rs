@@ -459,7 +459,7 @@ mod tests {
         asm.span(SpanId::try_from(7_u64).unwrap())
             .f32_mul(out, Reg(1), out)
             .f32_mul(out, Reg(2), out)
-            .ret(Reg(0), &[out]);
+            .ret(Reg::EFFECT, &[out]);
         builder.define_function(shade, asm).unwrap();
         builder.build()
     }

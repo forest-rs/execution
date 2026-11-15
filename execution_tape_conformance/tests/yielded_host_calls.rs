@@ -70,16 +70,16 @@ fn fixture(calls: usize, nested: bool) -> Fixture {
     a.tuple_new(tmp, &[Reg(1)]);
     let pc = a.pc();
     for _ in 0..calls {
-        a.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[result]);
+        a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[result]);
     }
-    a.ret(Reg(0), &[result]);
+    a.ret(Reg::EFFECT, &[result]);
     b.define_function(child, a).unwrap();
     let entry = if nested {
         let root = b.declare_function(sig).unwrap();
         let mut a = b.function_asm(root).unwrap();
         let result = a.alloc_register(ValueType::Str);
-        a.call(Reg(0), child, Reg(0), &[Reg(1)], &[result])
-            .ret(Reg(0), &[result]);
+        a.call(Reg::EFFECT, child, Reg::EFFECT, &[Reg(1)], &[result])
+            .ret(Reg::EFFECT, &[result]);
         b.define_function(root, a).unwrap();
         root
     } else {
@@ -715,8 +715,8 @@ fn empty_and_wide_host_boundaries_use_the_same_request_and_completion_contract()
             .map(|_| a.alloc_register(ValueType::I64))
             .collect();
         let inputs: Vec<_> = (1..=count).map(Reg).collect();
-        a.host_call_sig_id(Reg(0), import, Reg(0), &inputs, &results)
-            .ret(Reg(0), &results);
+        a.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &inputs, &results)
+            .ret(Reg::EFFECT, &results);
         b.define_function(entry, a).unwrap();
         let p = b.build_verified().unwrap();
         let args: Vec<_> = (0..count).map(|n| Value::I64(i64::from(n))).collect();

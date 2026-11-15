@@ -81,7 +81,7 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
             if traps {
                 leaf.trap(42);
             } else {
-                leaf.ret(Reg(0), &[if closure { Reg(2) } else { Reg(1) }]);
+                leaf.ret(Reg::EFFECT, &[if closure { Reg(2) } else { Reg(1) }]);
             }
             let leaf = builder
                 .push_function_checked(
@@ -113,7 +113,7 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
             ]);
             caller.const_i64(Reg(1), 7);
             if mode == 0 {
-                caller.call(Reg(0), leaf, Reg(0), &[Reg(1)], &[Reg(5)]);
+                caller.call(Reg::EFFECT, leaf, Reg::EFFECT, &[Reg(1)], &[Reg(5)]);
             } else {
                 caller.const_func(Reg(2), leaf);
                 if closure {
@@ -122,15 +122,15 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
                         .closure_new(Reg(4), Reg(2), Reg(3));
                 }
                 caller.call_indirect(
-                    Reg(0),
+                    Reg::EFFECT,
                     sig,
                     if closure { Reg(4) } else { Reg(2) },
-                    Reg(0),
+                    Reg::EFFECT,
                     &[Reg(1)],
                     &[Reg(5)],
                 );
             }
-            caller.ret(Reg(0), &[Reg(5)]);
+            caller.ret(Reg::EFFECT, &[Reg(5)]);
             let caller = builder
                 .push_function_checked(
                     caller,

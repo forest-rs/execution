@@ -471,7 +471,7 @@ impl From<&Self> for FunctionAbi {
 /// let argument = program.argument(add_one, 0)?;
 /// let one = body.alloc_register(ValueType::I64);
 /// let answer = body.alloc_register(ValueType::I64);
-/// body.const_i64(one, 1).i64_add(answer, argument, one).ret(Reg(0), &[answer]);
+/// body.const_i64(one, 1).i64_add(answer, argument, one).ret(Reg::EFFECT, &[answer]);
 /// program.define_function(add_one, body)?;
 /// let _program = program.build_verified()?;
 /// # Ok::<(), execution_tape::asm::BuildError>(())
@@ -4052,7 +4052,7 @@ mod tests {
         let literal = builder.const_str("still mutable");
         body.const_pool(text, literal)
             .tuple_get(result, Reg(1), 0)
-            .ret(Reg(0), &[result]);
+            .ret(Reg::EFFECT, &[result]);
         builder.define_function(function, body).unwrap();
         builder.build_verified().unwrap();
     }
@@ -4068,7 +4068,7 @@ mod tests {
             .unwrap();
         let mut body = builder.function_asm(function).unwrap();
         let result = body.alloc_register(ValueType::I64);
-        body.ret(Reg(0), &[result]);
+        body.ret(Reg::EFFECT, &[result]);
         builder.define_function(function, body).unwrap();
         assert!(matches!(
             builder.build_verified(),
@@ -4108,7 +4108,7 @@ mod tests {
         let mut body = Asm::new();
         let result = body.alloc_register(ValueType::I64);
         assert_eq!(result, Reg(1));
-        body.const_i64(result, 42).ret(Reg(0), &[result]);
+        body.const_i64(result, 42).ret(Reg::EFFECT, &[result]);
         let mut builder = ProgramBuilder::new();
         builder
             .push_function_checked(
@@ -4130,7 +4130,7 @@ mod tests {
         let result = body.alloc_register(ValueType::I64);
         body.const_i64(one, 1)
             .i64_add(result, argument, one)
-            .ret(Reg(0), &[result]);
+            .ret(Reg::EFFECT, &[result]);
         let mut builder = ProgramBuilder::new();
         builder
             .push_function_checked(
@@ -4175,10 +4175,10 @@ mod tests {
         a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
         a.const_i64(Reg(2), 1);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         a.place(l_else).unwrap();
         a.const_i64(Reg(2), 2);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let bytes = a.finish().unwrap();
         assert!(!bytes.is_empty());
@@ -4189,7 +4189,7 @@ mod tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(Reg(1), 7);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
         let bytes = a
             .finish_checked(&FunctionSig {
                 arg_types: vec![],
@@ -4239,14 +4239,14 @@ mod tests {
         // Define `foo` first; it calls `bar` by its declared `FuncId`.
         let mut a_foo = Asm::new();
         a_foo.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        a_foo.call(Reg(0), bar, Reg(0), &[], &[Reg(1)]);
-        a_foo.ret(Reg(0), &[Reg(1)]);
+        a_foo.call(Reg::EFFECT, bar, Reg::EFFECT, &[], &[Reg(1)]);
+        a_foo.ret(Reg::EFFECT, &[Reg(1)]);
         pb.define_function(foo, a_foo).unwrap();
 
         let mut a_bar = Asm::new();
         a_bar.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a_bar.const_i64(Reg(1), 7);
-        a_bar.ret(Reg(0), &[Reg(1)]);
+        a_bar.ret(Reg::EFFECT, &[Reg(1)]);
         pb.define_function(bar, a_bar).unwrap();
 
         let p = pb.build_checked().unwrap();
@@ -4274,7 +4274,7 @@ mod tests {
             ValueType::I64,
         ]);
         a.const_i64(Reg(7), 1);
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         pb.define_function(func, a).unwrap();
 
         let p = pb.build_checked().unwrap();
@@ -4286,7 +4286,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Bool]);
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         let func = pb
             .push_function_checked(
                 a,
@@ -4386,10 +4386,10 @@ mod tests {
         let mut a = Asm::new();
         a.closure_new(Reg(3), Reg(1), Reg(2));
         a.call_indirect(
-            Reg(0),
+            Reg::EFFECT,
             CallSigId(7),
             Reg(3),
-            Reg(0),
+            Reg::EFFECT,
             &[Reg(4), Reg(5)],
             &[Reg(6)],
         );
@@ -4455,7 +4455,7 @@ mod tests {
         let tuple = pb.contract(Contract::Tuple(&[Some(integer)])).unwrap();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
-        a.tuple_get(Reg(2), Reg(1), 0).ret(Reg(0), &[Reg(2)]);
+        a.tuple_get(Reg(2), Reg(1), 0).ret(Reg::EFFECT, &[Reg(2)]);
         let func = pb
             .push_function_checked(
                 a,
@@ -4503,7 +4503,7 @@ mod tests {
 
         let mut callee_asm = Asm::new();
         callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee_asm.ret(Reg(0), &[Reg(1)]);
+        callee_asm.ret(Reg::EFFECT, &[Reg(1)]);
         pb.define_function(callee, callee_asm).unwrap();
 
         let mut caller_asm = Asm::new();
@@ -4515,8 +4515,15 @@ mod tests {
         ]);
         caller_asm.const_func(Reg(1), callee);
         caller_asm.const_i64(Reg(2), 7);
-        caller_asm.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
-        caller_asm.ret(Reg(0), &[Reg(3)]);
+        caller_asm.call_indirect(
+            Reg::EFFECT,
+            call_sig,
+            Reg(1),
+            Reg::EFFECT,
+            &[Reg(2)],
+            &[Reg(3)],
+        );
+        caller_asm.ret(Reg::EFFECT, &[Reg(3)]);
         pb.define_function(caller, caller_asm).unwrap();
 
         let vp = pb.build_verified().unwrap();
@@ -4563,7 +4570,7 @@ mod tests {
 
         let mut callee_asm = Asm::new();
         callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee_asm.ret(Reg(0), &[Reg(1)]);
+        callee_asm.ret(Reg::EFFECT, &[Reg(1)]);
         pb.define_function(callee, callee_asm).unwrap();
 
         let mut caller_asm = Asm::new();
@@ -4575,8 +4582,15 @@ mod tests {
         ]);
         caller_asm.const_func(Reg(1), callee);
         caller_asm.const_i64(Reg(2), 7);
-        caller_asm.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
-        caller_asm.ret(Reg(0), &[Reg(3)]);
+        caller_asm.call_indirect(
+            Reg::EFFECT,
+            call_sig,
+            Reg(1),
+            Reg::EFFECT,
+            &[Reg(2)],
+            &[Reg(3)],
+        );
+        caller_asm.ret(Reg::EFFECT, &[Reg(3)]);
         pb.define_function(caller, caller_asm).unwrap();
 
         let program = pb.build();

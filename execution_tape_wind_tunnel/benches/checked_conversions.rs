@@ -207,9 +207,9 @@ fn program() -> Arc<VerifiedProgram> {
         }
         a.u64_add(counter, counter, one).jmp(head);
         a.place(exit).unwrap();
-        a.const_bool(result, true).ret(Reg(0), &[result]);
+        a.const_bool(result, true).ret(Reg::EFFECT, &[result]);
         a.place(fail).unwrap();
-        a.const_bool(result, false).ret(Reg(0), &[result]);
+        a.const_bool(result, false).ret(Reg::EFFECT, &[result]);
         b.define_function(function, a).unwrap();
     }
     Arc::new(b.build_verified().unwrap())

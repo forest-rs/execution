@@ -2035,10 +2035,10 @@ mod tests {
         a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
         a.const_i64(Reg(2), 1);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         a.place(l_else).unwrap();
         a.const_i64(Reg(2), 2);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -2067,10 +2067,10 @@ mod tests {
         a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
         a.const_i64(Reg(2), 1);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         a.place(l_else).unwrap();
         a.const_i64(Reg(2), 2);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.set_program_name("my_program");
@@ -2099,7 +2099,7 @@ mod tests {
 
         let mut callee = Asm::new();
         callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee.ret(Reg(0), &[Reg(1)]);
+        callee.ret(Reg::EFFECT, &[Reg(1)]);
         let callee_id = pb
             .push_function_checked(
                 callee,
@@ -2115,8 +2115,8 @@ mod tests {
         let mut main = Asm::new();
         main.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         main.const_i64(Reg(1), 7);
-        main.call(Reg(0), callee_id, Reg(0), &[Reg(1)], &[Reg(2)]);
-        main.ret(Reg(0), &[Reg(2)]);
+        main.call(Reg::EFFECT, callee_id, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+        main.ret(Reg::EFFECT, &[Reg(2)]);
         let main_id = pb
             .push_function_checked(
                 main,
@@ -2147,7 +2147,7 @@ mod tests {
             ValueType::I64,
         ]);
         // Return argument `a` (r2) so the function verifies without additional setup.
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         let func = pb
             .push_function_checked(
                 a,
@@ -2176,10 +2176,10 @@ mod tests {
         a.br(Reg(1), l_then, l_else);
         a.place(l_then).unwrap();
         a.const_i64(Reg(2), 1);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
         a.place(l_else).unwrap();
         a.const_i64(Reg(2), 2);
-        a.ret(Reg(0), &[Reg(2)]);
+        a.ret(Reg::EFFECT, &[Reg(2)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -2217,7 +2217,7 @@ mod tests {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(Reg(1), 7);
-        a.ret(Reg(0), &[Reg(1)]);
+        a.ret(Reg::EFFECT, &[Reg(1)]);
 
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
@@ -2244,7 +2244,7 @@ mod tests {
 
         let mut callee = Asm::new();
         callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-        callee.ret(Reg(0), &[Reg(1)]);
+        callee.ret(Reg::EFFECT, &[Reg(1)]);
         let callee_id = pb
             .push_function_checked(
                 callee,
@@ -2270,8 +2270,15 @@ mod tests {
         ]);
         caller.const_func(Reg(1), callee_id);
         caller.const_i64(Reg(2), 7);
-        caller.call_indirect(Reg(0), call_sig, Reg(1), Reg(0), &[Reg(2)], &[Reg(3)]);
-        caller.ret(Reg(0), &[Reg(3)]);
+        caller.call_indirect(
+            Reg::EFFECT,
+            call_sig,
+            Reg(1),
+            Reg::EFFECT,
+            &[Reg(2)],
+            &[Reg(3)],
+        );
+        caller.ret(Reg::EFFECT, &[Reg(3)]);
         pb.push_function_checked(
             caller,
             FunctionSig {
@@ -2301,7 +2308,7 @@ mod tests {
             ValueType::Closure,
         ]);
         a.closure_new(Reg(3), Reg(1), Reg(2));
-        a.ret(Reg(0), &[Reg(3)]);
+        a.ret(Reg::EFFECT, &[Reg(3)]);
         pb.push_function_checked(
             a,
             FunctionSig {

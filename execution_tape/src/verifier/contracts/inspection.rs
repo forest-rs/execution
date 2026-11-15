@@ -453,7 +453,7 @@ impl<'a> InstructionFacts<'a> {
             if let Some(&pc) = a.cursor.definitions.get(&register.0) {
                 FactOrigin::Instruction { pc: Pc(pc) }
             } else if self.block == 0 && a.incoming_ranges[0].is_empty() {
-                if register == Reg(0) {
+                if register == Reg::EFFECT {
                     FactOrigin::Effect
                 } else {
                     FactOrigin::Argument {

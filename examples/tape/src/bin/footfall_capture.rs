@@ -108,20 +108,20 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
         (
             FuncId(0),
             &[
-                "callee.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);",
-                "callee.ret(Reg(0), &[Reg(2)]);",
+                "callee.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);",
+                "callee.ret(Reg::EFFECT, &[Reg(2)]);",
             ],
         ),
         (
             ENTRY,
             &[
                 "body.br(Reg(1), yes, no);",
-                "body.call(Reg(0), callee, Reg(0), &[Reg(2)], &[Reg(3)]);",
+                "body.call(Reg::EFFECT, callee, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);",
                 "body.jmp(join.with_args(&[Reg(3)]));",
                 "body.const_i64(Reg(4), 0);",
                 "body.jmp(join.with_args(&[Reg(4)]));",
                 "body.place(join).expect(\"fresh join\");",
-                "body.ret(Reg(0), &[Reg(5)]);",
+                "body.ret(Reg::EFFECT, &[Reg(5)]);",
             ],
         ),
         (
@@ -130,7 +130,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
                 "trap.const_i64(Reg(1), 1);",
                 "trap.const_i64(Reg(2), 0);",
                 "trap.i64_div(Reg(3), Reg(1), Reg(2));",
-                "trap.ret(Reg(0), &[Reg(3)]);",
+                "trap.ret(Reg::EFFECT, &[Reg(3)]);",
             ],
         ),
     ];

@@ -101,21 +101,21 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
         .expect("set main output name");
 
     let mut a_leaf = pb.function_asm(leaf).unwrap();
-    a_leaf.ret(Reg(0), &[Reg(1)]);
+    a_leaf.ret(Reg::EFFECT, &[Reg(1)]);
     pb.define_function(leaf, a_leaf).unwrap();
 
     let mut a_stage_one = pb.function_asm(stage_one).unwrap();
     a_stage_one.alloc_register(ValueType::I64);
     a_stage_one.alloc_register(ValueType::I64);
-    a_stage_one.call(Reg(0), leaf, Reg(0), &[Reg(1)], &[Reg(2)]);
-    a_stage_one.host_call_sig_id(Reg(0), host_sig_id, Reg(0), &[Reg(2)], &[Reg(3)]);
-    a_stage_one.ret(Reg(0), &[Reg(3)]);
+    a_stage_one.call(Reg::EFFECT, leaf, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    a_stage_one.host_call_sig_id(Reg::EFFECT, host_sig_id, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);
+    a_stage_one.ret(Reg::EFFECT, &[Reg(3)]);
     pb.define_function(stage_one, a_stage_one).unwrap();
 
     let mut a_stage_two = pb.function_asm(stage_two).unwrap();
     a_stage_two.alloc_register(ValueType::I64);
-    a_stage_two.call(Reg(0), stage_one, Reg(0), &[Reg(1)], &[Reg(2)]);
-    a_stage_two.ret(Reg(0), &[Reg(2)]);
+    a_stage_two.call(Reg::EFFECT, stage_one, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    a_stage_two.ret(Reg::EFFECT, &[Reg(2)]);
     pb.define_function(stage_two, a_stage_two).unwrap();
 
     let mut a_main = pb.function_asm(main).unwrap();
@@ -123,9 +123,9 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
         a_main.alloc_register(ValueType::I64);
     }
     a_main.const_i64(Reg(1), 42);
-    a_main.call(Reg(0), stage_two, Reg(0), &[Reg(1)], &[Reg(2)]);
-    a_main.host_call_sig_id(Reg(0), host_sig_id, Reg(0), &[Reg(2)], &[Reg(3)]);
-    a_main.ret(Reg(0), &[Reg(3)]);
+    a_main.call(Reg::EFFECT, stage_two, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
+    a_main.host_call_sig_id(Reg::EFFECT, host_sig_id, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);
+    a_main.ret(Reg::EFFECT, &[Reg(3)]);
     pb.define_function(main, a_main).unwrap();
 
     let program = pb.build_verified().unwrap();
@@ -174,21 +174,21 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
 
     let text = include_str!("tracy_capture.rs");
     let statements: &[&[&str]] = &[
-        &["a_leaf.ret(Reg(0), &[Reg(1)]);"],
+        &["a_leaf.ret(Reg::EFFECT, &[Reg(1)]);"],
         &[
-            "a_stage_one.call(Reg(0), leaf, Reg(0), &[Reg(1)], &[Reg(2)]);",
-            "a_stage_one.host_call_sig_id(Reg(0), host_sig_id, Reg(0), &[Reg(2)], &[Reg(3)]);",
-            "a_stage_one.ret(Reg(0), &[Reg(3)]);",
+            "a_stage_one.call(Reg::EFFECT, leaf, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);",
+            "a_stage_one.host_call_sig_id(Reg::EFFECT, host_sig_id, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);",
+            "a_stage_one.ret(Reg::EFFECT, &[Reg(3)]);",
         ],
         &[
-            "a_stage_two.call(Reg(0), stage_one, Reg(0), &[Reg(1)], &[Reg(2)]);",
-            "a_stage_two.ret(Reg(0), &[Reg(2)]);",
+            "a_stage_two.call(Reg::EFFECT, stage_one, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);",
+            "a_stage_two.ret(Reg::EFFECT, &[Reg(2)]);",
         ],
         &[
             "a_main.const_i64(Reg(1), 42);",
-            "a_main.call(Reg(0), stage_two, Reg(0), &[Reg(1)], &[Reg(2)]);",
-            "a_main.host_call_sig_id(Reg(0), host_sig_id, Reg(0), &[Reg(2)], &[Reg(3)]);",
-            "a_main.ret(Reg(0), &[Reg(3)]);",
+            "a_main.call(Reg::EFFECT, stage_two, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);",
+            "a_main.host_call_sig_id(Reg::EFFECT, host_sig_id, Reg::EFFECT, &[Reg(2)], &[Reg(3)]);",
+            "a_main.ret(Reg::EFFECT, &[Reg(3)]);",
         ],
     ];
     let mut mappings = Vec::new();

@@ -58,7 +58,7 @@ fn program(kind: ValueType) -> VerifiedProgram {
             .u64_sub_ovf(regs[2], regs[3], Reg(1), Reg(2))
             .u64_mul_ovf(regs[4], regs[5], Reg(1), Reg(2));
     }
-    body.ret(Reg(0), &regs);
+    body.ret(Reg::EFFECT, &regs);
     builder.define_function(id, body).unwrap();
     let bytes = builder.build().encode();
     verify_program_owned(Program::decode(&bytes).unwrap(), &VerifyConfig::default()).unwrap()
@@ -259,7 +259,7 @@ fn verifier_requires_a_bool_flag_and_matching_operands() {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, operand, operand, result, flag]);
         a.i64_add_ovf(Reg(3), Reg(4), Reg(1), Reg(2));
-        a.ret(Reg(0), &[]);
+        a.ret(Reg::EFFECT, &[]);
         let mut pb = ProgramBuilder::new();
         pb.push_function_checked(
             a,

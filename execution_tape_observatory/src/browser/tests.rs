@@ -13,7 +13,7 @@ fn fixture() -> Program {
     builder.set_program_name("branch and call");
     let mut helper = Asm::new();
     helper.set_register_types(vec![ValueType::Unit]);
-    helper.ret(Reg(0), &[]);
+    helper.ret(Reg::EFFECT, &[]);
     let helper = builder
         .push_function_checked(
             helper,
@@ -31,9 +31,10 @@ fn fixture() -> Program {
     root.span(SpanId::try_from(42).unwrap());
     root.const_bool(Reg(1), true).br(Reg(1), yes, no);
     root.place(yes).unwrap();
-    root.call(Reg(0), helper, Reg(0), &[], &[]).ret(Reg(0), &[]);
+    root.call(Reg::EFFECT, helper, Reg::EFFECT, &[], &[])
+        .ret(Reg::EFFECT, &[]);
     root.place(no).unwrap();
-    root.ret(Reg(0), &[]);
+    root.ret(Reg::EFFECT, &[]);
     let root = builder
         .push_function_checked(
             root,
@@ -198,8 +199,8 @@ fn imported_calls_constants_and_aggregate_types_are_inspectable_without_bindings
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     body.const_i64(Reg(1), 7)
-        .host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(1)])
-        .ret(Reg(0), &[Reg(1)]);
+        .host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(1)])
+        .ret(Reg::EFFECT, &[Reg(1)]);
     builder
         .push_function_checked(
             body,
@@ -382,7 +383,7 @@ fn compositional_signature_previews_are_nested_and_bounded() {
     }
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-    body.ret(Reg(0), &[Reg(1)]);
+    body.ret(Reg::EFFECT, &[Reg(1)]);
     b.push_function_checked(
         body,
         execution_tape::asm::FunctionAbi {
@@ -438,7 +439,7 @@ fn nested_fixture(caller: bool) -> (Program, FuncId, execution_tape::contract::C
         .const_bool(Reg(2), true)
         .tuple_new(Reg(3), &[Reg(1)])
         .tuple_new(Reg(4), &[Reg(3), Reg(2)])
-        .ret(Reg(0), &[Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(4)]);
     let make = b
         .push_function_checked(
             make,
@@ -452,10 +453,10 @@ fn nested_fixture(caller: bool) -> (Program, FuncId, execution_tape::contract::C
     if let Some(entry) = entry {
         let mut main = Asm::new();
         main.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
-        main.call(Reg(0), make, Reg(0), &[], &[Reg(1)])
+        main.call(Reg::EFFECT, make, Reg::EFFECT, &[], &[Reg(1)])
             .tuple_get(Reg(1), Reg(1), 0)
             .tuple_get(Reg(2), Reg(1), 0)
-            .ret(Reg(0), &[Reg(2)]);
+            .ret(Reg::EFFECT, &[Reg(2)]);
         b.define_function(entry, main).unwrap();
         b.set_function_name(entry, "main").unwrap();
     }
@@ -528,7 +529,7 @@ fn contract_diagnostics_resolve_named_fields_and_bound_deep_paths() {
         .unwrap();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-    body.ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[]);
     let callee = b
         .push_function_checked(
             body,
@@ -653,7 +654,9 @@ fn rejected_and_unreachable_code_never_claim_inferred_value_facts() {
     let mut b = ProgramBuilder::new();
     let mut body = Asm::new();
     body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
-    body.ret(Reg(0), &[]).const_i64(Reg(1), 7).ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[])
+        .const_i64(Reg(1), 7)
+        .ret(Reg::EFFECT, &[]);
     let function = b
         .push_function_checked(
             body,
@@ -698,7 +701,7 @@ fn join_details_show_common_facts_and_each_simultaneous_input_arm() {
     );
     let header = body.pc();
     body.place(join).unwrap();
-    body.tuple_len(Reg(8), Reg(6)).ret(Reg(0), &[Reg(8)]);
+    body.tuple_len(Reg(8), Reg(6)).ret(Reg::EFFECT, &[Reg(8)]);
     let function = b
         .push_function_checked(
             body,
@@ -756,7 +759,7 @@ fn wide_constructors_keep_the_destination_fact_and_disclose_the_scan_limit() {
     }
     let pc = body.pc();
     body.tuple_new(Reg(101), &(1..101).map(Reg).collect::<Vec<_>>())
-        .ret(Reg(0), &[]);
+        .ret(Reg::EFFECT, &[]);
     let function = b
         .push_function_checked(
             body,
@@ -794,7 +797,7 @@ fn entry_loops_disclose_invocation_seeds_separately_from_cfg_arms() {
     body.place(head).unwrap();
     body.br(Reg(1), head, done);
     body.place(done).unwrap();
-    body.ret(Reg(0), &[]);
+    body.ret(Reg::EFFECT, &[]);
     b.push_function_checked(
         body,
         FunctionSig {

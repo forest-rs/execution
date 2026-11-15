@@ -722,7 +722,7 @@ fn program(case: &Case) -> Program {
     encode_instruction(case.op, &operands, &mut bytecode).unwrap();
     encode_instruction(
         Opcode::Ret,
-        &[Operand::Reg(Reg(0)), Operand::RegList(&outs)],
+        &[Operand::Reg(Reg::EFFECT), Operand::RegList(&outs)],
         &mut bytecode,
     )
     .unwrap();
@@ -827,7 +827,7 @@ fn constants_round_trip_with_exact_bits() {
         .const_u32(Reg(2), u32::MAX)
         .const_f32(Reg(3), -0.0)
         .const_f32_bits(Reg(4), 0x7FA0_0001)
-        .ret(Reg(0), &[Reg(1), Reg(2), Reg(3), Reg(4)]);
+        .ret(Reg::EFFECT, &[Reg(1), Reg(2), Reg(3), Reg(4)]);
     let mut builder = execution_tape::asm::ProgramBuilder::new();
     builder
         .push_function_checked(

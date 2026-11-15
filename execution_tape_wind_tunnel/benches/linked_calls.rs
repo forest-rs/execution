@@ -62,7 +62,9 @@ fn program() -> Arc<VerifiedProgram> {
     let x = b.argument(step, 0).unwrap();
     let one = body.alloc_register(ValueType::I64);
     let y = body.alloc_register(ValueType::I64);
-    body.const_i64(one, 1).i64_add(y, x, one).ret(Reg(0), &[y]);
+    body.const_i64(one, 1)
+        .i64_add(y, x, one)
+        .ret(Reg::EFFECT, &[y]);
     b.define_function(step, body).unwrap();
     let link = b.declare_link("step", step).unwrap();
     assert_eq!(link, LINK, "the only link");
@@ -99,13 +101,15 @@ fn program() -> Arc<VerifiedProgram> {
         a.place(body).unwrap();
         match call {
             Call::Inline => a.i64_add(next, acc, unit_step),
-            Call::Direct => a.call(Reg(0), step, Reg(0), &[acc], &[next]),
-            Call::Link => a.call_link(Reg(0), link, Reg(0), &[acc], &[next]),
-            Call::Indirect => a.call_indirect(Reg(0), signature, callee, Reg(0), &[acc], &[next]),
+            Call::Direct => a.call(Reg::EFFECT, step, Reg::EFFECT, &[acc], &[next]),
+            Call::Link => a.call_link(Reg::EFFECT, link, Reg::EFFECT, &[acc], &[next]),
+            Call::Indirect => {
+                a.call_indirect(Reg::EFFECT, signature, callee, Reg::EFFECT, &[acc], &[next])
+            }
         };
         a.mov(acc, next).u64_add(counter, counter, one).jmp(head);
         a.place(exit).unwrap();
-        a.ret(Reg(0), &[acc]);
+        a.ret(Reg::EFFECT, &[acc]);
         b.define_function(function, a).unwrap();
     }
     Arc::new(b.build_verified().unwrap())

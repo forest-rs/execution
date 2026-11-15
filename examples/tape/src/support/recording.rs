@@ -59,12 +59,12 @@ pub(super) fn program(calls: i64) -> Arc<VerifiedProgram> {
         .const_i64(Reg(5), 1);
     body.jmp(head);
     body.place(head).unwrap();
-    body.host_call_sig_id(Reg(0), import, Reg(0), &[Reg(1)], &[Reg(2)]);
+    body.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(2)]);
     body.i64_add(Reg(3), Reg(3), Reg(5))
         .i64_lt(Reg(6), Reg(3), Reg(4))
         .br(Reg(6), head, exit);
     body.place(exit).unwrap();
-    body.ret(Reg(0), &[Reg(2)]);
+    body.ret(Reg::EFFECT, &[Reg(2)]);
     builder
         .push_function_checked(
             body,
