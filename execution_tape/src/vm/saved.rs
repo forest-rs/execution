@@ -36,10 +36,11 @@ pub enum ResumeError {
     Unknown,
     /// The ID names a computation another VM saved.
     ForeignVm,
-    /// The options carry a trace or access observer.
+    /// The options carry a trace observer, and the computation waits at a host request with a
+    /// guest callback running on top of it.
     ///
-    /// An observer of a resumed computation would see it mid-run, with no record of the frames
-    /// and scopes already open; resuming observed computations needs that handoff first.
+    /// The open scopes and instruction attempts of nested callbacks are not handed to a new
+    /// observer yet. Resume it unobserved, or observe it once the callbacks have returned.
     Observed,
 }
 
@@ -49,7 +50,7 @@ impl fmt::Display for ResumeError {
             Self::Unknown => f.write_str("no saved computation has this ID"),
             Self::ForeignVm => f.write_str("the ID names a computation of another VM"),
             Self::Observed => {
-                f.write_str("a resumed computation cannot be observed yet; resume it unobserved")
+                f.write_str("a computation running a guest callback cannot be observed on resuming")
             }
         }
     }
@@ -133,15 +134,15 @@ impl Store {
         }
     }
 
-    /// Checks that `id` names a computation this store holds.
-    pub(super) fn check(&self, id: ComputationId) -> Result<(), ResumeError> {
+    /// The computation `id` names, if this store holds it.
+    pub(super) fn get(&self, id: ComputationId) -> Result<&Saved, ResumeError> {
         if id.vm != self.vm {
             return Err(ResumeError::ForeignVm);
         }
         self.slots
             .get(id.slot as usize)
-            .filter(|entry| entry.generation == id.generation && entry.saved.is_some())
-            .map(|_| ())
+            .filter(|entry| entry.generation == id.generation)
+            .and_then(|entry| entry.saved.as_deref())
             .ok_or(ResumeError::Unknown)
     }
 

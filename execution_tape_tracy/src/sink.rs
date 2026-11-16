@@ -176,6 +176,23 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         TraceMask::CALL | TraceMask::HOST
     }
 
+    fn attach(&mut self, _program: &Program, attachment: execution_tape::trace::Attachment<'_>) {
+        self.drop_active_scopes();
+        for scope in attachment.scopes {
+            self.on_scope_enter(
+                scope.program,
+                scope.kind,
+                scope.depth,
+                scope.location.code(),
+            );
+        }
+    }
+
+    fn release(&mut self, _program: &Program) {
+        // The computation keeps running elsewhere; its spans end here for this observer.
+        self.drop_active_scopes();
+    }
+
     fn scope_enter(
         &mut self,
         program: &Program,

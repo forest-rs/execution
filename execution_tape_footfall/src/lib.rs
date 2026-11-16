@@ -39,7 +39,9 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use execution_tape::program::{Pc, Program, SpanId};
-use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
+use execution_tape::trace::{
+    Attachment, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink,
+};
 use execution_tape::value::{FuncId, FuncRef, UnitId};
 use footfall::{Args, ContextHandle, EventDesc, ScopeDesc, ScopeGuard};
 
@@ -58,6 +60,7 @@ static SCOPE_TRAP: EventDesc = EventDesc::new("execution_tape.scope_trap");
 static RUN_TRAP: EventDesc = EventDesc::new("execution_tape.run_trap");
 static SCOPE_END: EventDesc = EventDesc::new("execution_tape.scope_end");
 static RUN_END: EventDesc = EventDesc::new("execution_tape.run_end");
+static RELEASE: EventDesc = EventDesc::new("execution_tape.release");
 
 /// Translates VM events into Footfall observations under an application-owned context.
 ///
@@ -69,6 +72,8 @@ static RUN_END: EventDesc = EventDesc::new("execution_tape.run_end");
 /// callbacks omitted by that run's mask; pass an explicit mask when that behavior is needed.
 pub struct FootfallSink {
     context: ContextHandle,
+    /// What the current run delivers, which says whether its run scope ever closes.
+    delivered: TraceMask,
     run: Option<ScopeGuard>,
     scopes: Vec<ScopeGuard>,
     thread: PhantomData<Rc<()>>,
@@ -83,6 +88,7 @@ impl FootfallSink {
     pub const fn new(context: ContextHandle) -> Self {
         Self {
             context,
+            delivered: TraceMask::NONE,
             run: None,
             scopes: Vec::new(),
             thread: PhantomData,
@@ -118,6 +124,19 @@ impl FootfallSink {
         }
     }
 
+    fn open(&mut self, kind: ScopeKind, depth: usize, location: TraceLocation) {
+        let args = Args::none()
+            .with("func", code(location.unit, location.func))
+            .with("pc", location.pc.0)
+            .with("depth", depth as u64);
+        let (desc, args) = match kind {
+            ScopeKind::CallFrame { .. } => (&CALL, args),
+            ScopeKind::HostCall { host_sig, .. } => (&HOST, args.with("host_sig", host_sig.0)),
+        };
+        self.scopes
+            .push(footfall::scope_with(desc, self.context, &args));
+    }
+
     fn close_scopes(&mut self) {
         while let Some(scope) = self.scopes.pop() {
             drop(scope);
@@ -149,6 +168,10 @@ impl TraceSink for FootfallSink {
         } else {
             TraceMask::NONE
         }
+    }
+
+    fn run_mask(&mut self, _program: &Program, mask: TraceMask) {
+        self.delivered = mask;
     }
 
     fn run_start(&mut self, _program: &Program, entry: FuncRef, arg_count: usize) {
@@ -211,6 +234,32 @@ impl TraceSink for FootfallSink {
         self.outcome(&INSTR_END, &INSTR_TRAP, &args, outcome);
     }
 
+    fn attach(&mut self, _program: &Program, attachment: Attachment<'_>) {
+        self.close_scopes();
+        // Only a run whose end is delivered gets a run scope, as when it starts.
+        if self.delivered.contains(TraceMask::RUN) {
+            let args = Args::none()
+                .with("entry", code(attachment.entry.unit, attachment.entry.func))
+                .with("resumed", 1_u64);
+            self.run = Some(footfall::scope_with(&RUN, self.context, &args));
+        }
+        for scope in attachment.scopes {
+            self.open(scope.kind, scope.depth, scope.location);
+        }
+    }
+
+    fn release(&mut self, _program: &Program) {
+        let mut args = Args::none();
+        if let Some(run) = &self.run
+            && run.token().is_valid()
+        {
+            args = args.with("scope_token", run.token().get());
+        }
+        // The computation keeps running elsewhere: close the intervals without an outcome.
+        footfall::message_with(&RELEASE, self.context, "released", &args);
+        self.close_scopes();
+    }
+
     fn scope_enter(
         &mut self,
         _program: &Program,
@@ -219,16 +268,7 @@ impl TraceSink for FootfallSink {
         location: TraceLocation,
         _span_id: Option<SpanId>,
     ) {
-        let args = Args::none()
-            .with("func", code(location.unit, location.func))
-            .with("pc", location.pc.0)
-            .with("depth", depth as u64);
-        let (desc, args) = match kind {
-            ScopeKind::CallFrame { .. } => (&CALL, args),
-            ScopeKind::HostCall { host_sig, .. } => (&HOST, args.with("host_sig", host_sig.0)),
-        };
-        self.scopes
-            .push(footfall::scope_with(desc, self.context, &args));
+        self.open(kind, depth, location);
     }
 
     fn scope_exit(

@@ -307,3 +307,49 @@ fn host_panic_unwinds_active_scopes_and_a_fresh_sink_can_run_again() {
         [Value::I64(42)]
     );
 }
+
+#[test]
+fn attaching_reopens_the_scopes_already_open_and_releasing_closes_them() {
+    use execution_tape::program::Pc;
+    use execution_tape::trace::{Attachment, OpenScope, ScopeKind, TraceOutcome};
+    use execution_tape::value::UnitId;
+
+    let (program, entry, _) = build_program();
+    let call_frames = Arc::new(AtomicUsize::new(0));
+    let host_scopes = Arc::new(AtomicUsize::new(0));
+    let mut sink = ProfilingTraceSink::with_resolver(CountingResolver {
+        call_frames: call_frames.clone(),
+        host_calls: host_scopes.clone(),
+    });
+    let at = |func: FuncId, pc: u32| TraceLocation {
+        unit: UnitId(0),
+        func,
+        pc: Pc(pc),
+    };
+    let frame = ScopeKind::CallFrame {
+        func: FuncRef::new(UnitId(0), entry),
+        caller: None,
+    };
+    let host = ScopeKind::HostCall {
+        host_sig: execution_tape::program::HostSigId(0),
+        symbol: execution_tape::program::SymbolId(core::num::NonZeroU32::MIN),
+        sig_hash: SigHash(0),
+    };
+    let scopes = [
+        OpenScope::new(program.program(), frame, 1, at(entry, 0), None),
+        OpenScope::new(program.program(), host, 1, at(entry, 9), None),
+    ];
+    let program = program.program();
+    sink.attach(
+        program,
+        Attachment::new(FuncRef::new(UnitId(0), entry), &scopes, None),
+    );
+    assert!(format!("{sink:?}").contains("stack_depth: 2"));
+    assert_eq!(call_frames.load(Ordering::Relaxed), 1);
+    assert_eq!(host_scopes.load(Ordering::Relaxed), 1);
+    // The host scope exits as it would have had the sink entered it.
+    sink.scope_exit(program, host, 1, at(entry, 9), None, TraceOutcome::Ok);
+    assert!(format!("{sink:?}").contains("stack_depth: 1"));
+    sink.release(program);
+    assert!(format!("{sink:?}").contains("stack_depth: 0"));
+}

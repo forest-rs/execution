@@ -7,8 +7,9 @@
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::ValueType,
-    trace::{TraceMask, TraceSink},
+    program::{Pc, Program, SpanId, ValueType},
+    recording::{CaptureFault, RecordLimits, Recorder},
+    trace::{Attachment, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink},
     value::{FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::{
@@ -337,8 +338,259 @@ fn a_resumed_computation_keeps_its_frames_and_activation_ids() {
     assert!(matches!(error.trap, Trap::CallDepthExceeded), "{error:?}");
 }
 
+/// Checks that every exit closes the innermost thing open, whether it was entered or attached.
+#[derive(Default)]
+struct Balanced {
+    /// Open scopes with where they were entered and that place's span.
+    open: Vec<(ScopeKind, usize, TraceLocation, Option<SpanId>)>,
+    attempt: Option<TraceLocation>,
+    events: Vec<&'static str>,
+    attached: Vec<(ScopeKind, usize, TraceLocation, Option<SpanId>)>,
+}
+impl TraceSink for Balanced {
+    fn run_start(&mut self, _: &Program, _: FuncRef, _: usize) {
+        self.events.push("start");
+    }
+    fn attach(&mut self, _: &Program, attachment: Attachment<'_>) {
+        self.events.push("attach");
+        assert!(
+            self.open.is_empty() && self.attempt.is_none(),
+            "a fresh observer"
+        );
+        self.open = attachment
+            .scopes
+            .iter()
+            .map(|scope| (scope.kind, scope.depth, scope.location, scope.span_id))
+            .collect();
+        self.attached.clone_from(&self.open);
+        self.attempt = attachment.attempt;
+    }
+    fn instr(&mut self, _: &Program, location: TraceLocation, _: Pc, _: Option<SpanId>, _: u16) {
+        assert!(self.attempt.is_none(), "one attempt at a time");
+        self.attempt = Some(location);
+    }
+    fn instr_end(
+        &mut self,
+        _: &Program,
+        location: TraceLocation,
+        _: Option<TraceLocation>,
+        _: TraceOutcome<'_>,
+    ) {
+        assert_eq!(self.attempt.take(), Some(location), "ends the open attempt");
+    }
+    fn scope_enter(
+        &mut self,
+        _: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        location: TraceLocation,
+        span: Option<SpanId>,
+    ) {
+        self.open.push((kind, depth, location, span));
+    }
+    fn scope_exit(
+        &mut self,
+        _: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        _: TraceLocation,
+        _: Option<SpanId>,
+        _: TraceOutcome<'_>,
+    ) {
+        assert_eq!(
+            self.open.pop().map(|(kind, depth, ..)| (kind, depth)),
+            Some((kind, depth)),
+            "exits the innermost scope"
+        );
+    }
+    fn release(&mut self, _: &Program) {
+        self.events.push("release");
+    }
+    fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
+        assert!(matches!(outcome, TraceOutcome::Ok), "{outcome:?}");
+        assert!(self.open.is_empty(), "every scope closed: {:?}", self.open);
+        assert!(self.attempt.is_none(), "every attempt ended");
+        self.events.push("end");
+    }
+}
+
 #[test]
-fn only_unobserved_waiting_invocations_on_a_borrowed_vm_are_saved() {
+fn observers_hand_over_a_waiting_computation_without_inventing_events() {
+    let (program, entry) = nested();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let mask = TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR;
+
+    let mut first = Balanced::default();
+    let mut invocation = vm
+        .start(
+            entry,
+            &[],
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut first),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let id = invocation.save().unwrap();
+    assert_eq!(first.events, ["start", "release"]);
+    assert_eq!(
+        first.open.len(),
+        3,
+        "two frames and the host call stay open"
+    );
+
+    let mut second = Balanced::default();
+    let mut invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut second),
+        )
+        .unwrap();
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(0)], Ok(0))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(invocation);
+    assert_eq!(second.events, ["attach", "end"]);
+    assert_eq!(
+        second.attached, first.open,
+        // Including where each scope was entered and its span, as `scope_enter` reported them.
+        "the same scopes, at the same depths"
+    );
+}
+
+#[test]
+fn a_computation_saved_between_quanta_hands_over_its_frames() {
+    let (program, entry) = nested();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let mask = TraceMask::RUN | TraceMask::CALL | TraceMask::INSTR;
+    let mut invocation = vm.start(entry, &[], InvocationOptions::default()).unwrap();
+    // Inside `mid`, before its host call.
+    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().unwrap();
+
+    let mut observer = Balanced::default();
+    let mut invocation = vm
+        .resume(id, InvocationOptions::default().trace(mask, &mut observer))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(invocation);
+    assert_eq!(observer.events, ["attach", "end"]);
+    assert_eq!(observer.attached.len(), 2, "entry and mid");
+}
+
+#[test]
+fn a_recorder_reports_a_saved_invocation_as_incomplete() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(Arc::clone(&program)).unwrap();
+    let mut recorder = Recorder::new(program, RecordLimits::default());
+    let mask = recorder.mask();
+    let args = [Value::Str("text".into())];
+    let mut invocation = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let id = invocation.save().unwrap();
+    assert_eq!(
+        recorder.finish().status(),
+        Err(&CaptureFault::Saved),
+        "a recording covers one invocation"
+    );
+    assert_eq!(finish_asking(&mut vm, id, 1), ("text".into(), 1));
+}
+
+/// `entry()` asks the host; `spin()` adds twice and returns, for the host to call back.
+fn calls_back() -> (Arc<VerifiedProgram>, FuncId, FuncId) {
+    let mut b = ProgramBuilder::new();
+    let ask = b.host_sig_for(
+        "ask",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let spin = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let mut a = b.function_asm(spin).unwrap();
+    let n = a.alloc_register(ValueType::I64);
+    a.const_i64(n, 1).i64_add(n, n, n).i64_add(n, n, n);
+    a.ret(Reg::EFFECT, &[n]);
+    b.define_function(spin, a).unwrap();
+    let mut a = b.function_asm(entry).unwrap();
+    let n = a.alloc_register(ValueType::I64);
+    a.host_call_sig_id(Reg::EFFECT, ask, Reg::EFFECT, &[], &[n])
+        .ret(Reg::EFFECT, &[n]);
+    b.define_function(entry, a).unwrap();
+    (Arc::new(b.build_verified().unwrap()), entry, spin)
+}
+
+#[test]
+fn a_computation_running_a_callback_resumes_only_unobserved() {
+    let (program, entry, spin) = calls_back();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(program).unwrap();
+    let mut invocation = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &[],
+            InvocationOptions::default().yield_host_calls(),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
+        .unwrap();
+    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().unwrap();
+
+    let mut observer = Balanced::default();
+    assert!(matches!(
+        vm.resume(
+            id,
+            InvocationOptions::default().trace(TraceMask::CALL, &mut observer)
+        ),
+        Err(ResumeError::Observed)
+    ));
+    let mut invocation = vm
+        .resume(id, InvocationOptions::default().yield_host_calls())
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::CallbackReturned
+    );
+    let mut request = invocation.pending_host_call().unwrap();
+    assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
+    request.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(8)]);
+}
+
+#[test]
+fn only_waiting_invocations_on_a_borrowed_vm_are_saved() {
     let (program, entry) = asks();
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
@@ -352,23 +604,6 @@ fn only_unobserved_waiting_invocations_on_a_borrowed_vm_are_saved() {
     let invocation = invocation.save().unwrap_err();
     assert!(invocation.result().unwrap().is_ok());
     drop(invocation);
-
-    // Observed: observers belong to one invocation.
-    let mut sink = Silent;
-    let mut invocation = vm
-        .start(
-            entry,
-            &args,
-            InvocationOptions::default()
-                .yield_host_calls()
-                .trace(TraceMask::RUN, &mut sink),
-        )
-        .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    drop(invocation.save().unwrap_err());
 
     // Owned: saving would drop the VM with it.
     let (program, function) = asks();
@@ -388,18 +623,6 @@ fn only_unobserved_waiting_invocations_on_a_borrowed_vm_are_saved() {
         RunStatus::AwaitingHost
     );
     drop(invocation.save().unwrap_err());
-
-    // A resumed computation cannot be observed yet, and refusing keeps it saved.
-    let id = save_asking(&mut vm, entry, "kept");
-    let mut sink = Silent;
-    assert!(matches!(
-        vm.resume(
-            id,
-            InvocationOptions::default().trace(TraceMask::RUN, &mut sink)
-        ),
-        Err(ResumeError::Observed)
-    ));
-    assert_eq!(finish_asking(&mut vm, id, 7), ("kept".into(), 7));
 }
 
 /// `entry()` asks the host to `make` a tuple and returns it; `spin()` returns 4, for the host
@@ -751,3 +974,344 @@ fn interleaved_computations_allocate_across_leases_and_collections() {
 #[derive(Default)]
 struct Silent;
 impl TraceSink for Silent {}
+
+/// Checks that every exit and completion closes the innermost thing open, entered or attached,
+/// that `release` and `run_end` are last, and that what an exit names was open.
+#[derive(Default)]
+struct Strict {
+    scopes: Vec<(ScopeKind, usize)>,
+    attempts: Vec<TraceLocation>,
+    done: Option<&'static str>,
+    panic_on_release: bool,
+}
+impl Strict {
+    fn event(&self) {
+        assert!(self.done.is_none(), "an event after {:?}", self.done);
+    }
+}
+impl TraceSink for Strict {
+    fn attach(&mut self, _: &Program, attachment: Attachment<'_>) {
+        self.event();
+        assert!(
+            self.scopes.is_empty() && self.attempts.is_empty(),
+            "a fresh observer"
+        );
+        self.scopes = attachment
+            .scopes
+            .iter()
+            .map(|scope| (scope.kind, scope.depth))
+            .collect();
+        self.attempts = attachment.attempt.into_iter().collect();
+    }
+    fn instr(&mut self, _: &Program, location: TraceLocation, _: Pc, _: Option<SpanId>, _: u16) {
+        self.event();
+        self.attempts.push(location);
+    }
+    fn instr_end(
+        &mut self,
+        _: &Program,
+        location: TraceLocation,
+        _: Option<TraceLocation>,
+        _: TraceOutcome<'_>,
+    ) {
+        self.event();
+        assert_eq!(
+            self.attempts.pop(),
+            Some(location),
+            "ends the innermost attempt"
+        );
+    }
+    fn scope_enter(
+        &mut self,
+        _: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        _: TraceLocation,
+        _: Option<SpanId>,
+    ) {
+        self.event();
+        self.scopes.push((kind, depth));
+    }
+    fn scope_exit(
+        &mut self,
+        _: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        _: TraceLocation,
+        _: Option<SpanId>,
+        _: TraceOutcome<'_>,
+    ) {
+        self.event();
+        assert_eq!(
+            self.scopes.pop(),
+            Some((kind, depth)),
+            "exits the innermost scope"
+        );
+    }
+    fn release(&mut self, _: &Program) {
+        self.event();
+        self.done = Some("release");
+        assert!(!self.panic_on_release, "injected release panic");
+    }
+    fn run_end(&mut self, _: &Program, _: TraceOutcome<'_>) {
+        self.event();
+        assert!(
+            self.scopes.is_empty(),
+            "every scope closed: {:?}",
+            self.scopes
+        );
+        assert!(self.attempts.is_empty(), "every attempt ended");
+        self.done = Some("end");
+    }
+}
+
+/// `body()` catches `failed((7,))` as a reference and parks to `entry`, which handles `park`,
+/// asks the host to `pause`, resumes the parked continuation, and returns what `body` rethrew
+/// and caught: 7.
+fn throws_and_parks() -> (Arc<VerifiedProgram>, FuncId) {
+    use execution_tape::asm::Catch;
+    use execution_tape::contract::Contract;
+    let mut b = ProgramBuilder::new();
+    let pause = b.host_sig_for(
+        "pause",
+        HostSig {
+            args: vec![],
+            rets: vec![],
+        },
+    );
+    let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let boxed = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+    let failed = b.declare_tag("failed", &[boxed.into()]).unwrap();
+    let park = b.declare_tag_with_results("park", &[], &[]).unwrap();
+    let thunk = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
+    let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let body = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+
+    let mut a = b.function_asm(body).unwrap();
+    let (seven, tuple, caught, unboxed, n) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::Agg),
+        a.alloc_register(ValueType::Exn),
+        a.alloc_register(ValueType::Agg),
+        a.alloc_register(ValueType::I64),
+    );
+    a.const_i64(seven, 7).tuple_new(tuple, &[seven]);
+    let handler = a.block(&[caught]);
+    a.begin_region(&[Catch::AllRef(handler)]);
+    b.emit_throw(&mut a, failed, &[tuple]).unwrap();
+    a.end_region();
+    a.place(handler).unwrap();
+    a.suspend(Reg::EFFECT, park, Reg::EFFECT, &[], &[]);
+    let unbox = a.block(&[unboxed]);
+    a.begin_region(&[Catch::Tag(failed, unbox)]);
+    a.throw_ref(Reg::EFFECT, caught);
+    a.end_region();
+    a.place(unbox).unwrap();
+    a.tuple_get(n, unboxed, 0).ret(Reg::EFFECT, &[n]);
+    b.define_function(body, a).unwrap();
+
+    let mut a = b.function_asm(entry).unwrap();
+    let (function, cont, parked, result) = (
+        a.alloc_register(ValueType::Func),
+        a.alloc_register(ValueType::Cont),
+        a.alloc_register(ValueType::Cont),
+        a.alloc_register(ValueType::I64),
+    );
+    a.const_func(function, body).cont_new(cont, thunk, function);
+    let handle = a.block(&[parked]);
+    a.begin_region(&[Catch::On(park, handle)]);
+    a.resume(Reg::EFFECT, thunk, cont, Reg::EFFECT, &[], &[result]);
+    a.end_region();
+    a.ret(Reg::EFFECT, &[result]);
+    a.place(handle).unwrap();
+    a.host_call_sig_id(Reg::EFFECT, pause, Reg::EFFECT, &[], &[])
+        .resume(Reg::EFFECT, thunk, parked, Reg::EFFECT, &[], &[result])
+        .ret(Reg::EFFECT, &[result]);
+    b.define_function(entry, a).unwrap();
+    (Arc::new(b.build_verified().unwrap()), entry)
+}
+
+/// Runs `entry` to its end, answering requests and suspensions, and calling `callback` back
+/// once from the first host request if given. With `rotate`, the computation is saved after
+/// every instruction and resumed under the next of several trace masks, each with a fresh
+/// [`Strict`] observer.
+fn drive_rotating(
+    program: &Arc<VerifiedProgram>,
+    entry: FuncId,
+    args: &[Value],
+    callback: Option<FuncId>,
+    rotate: bool,
+) -> Result<Vec<Value>, Trap> {
+    let masks = [
+        TraceMask::NONE,
+        TraceMask::RUN,
+        TraceMask::RUN | TraceMask::CALL,
+        TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR,
+        TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR | TraceMask::VALUES,
+    ];
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(Arc::clone(program)).unwrap();
+    fn options<'a>() -> InvocationOptions<'a> {
+        InvocationOptions::default()
+            .yield_host_calls()
+            .yield_suspensions()
+    }
+    let mut saved: Option<ComputationId> = None;
+    let mut called_back = false;
+    let mut calling_back = false;
+    for lease in 0.. {
+        let mut sink = Strict::default();
+        let mask = if rotate {
+            masks[lease % masks.len()]
+        } else {
+            masks[masks.len() - 1]
+        };
+        let mut invocation = match saved {
+            None => vm
+                .start(
+                    FuncRef::new(unit, entry),
+                    args,
+                    options().trace(mask, &mut sink),
+                )
+                .unwrap(),
+            // While a callback runs, it can only be resumed unobserved.
+            Some(id) if calling_back => vm.resume(id, options()).unwrap(),
+            Some(id) => vm.resume(id, options().trace(mask, &mut sink)).unwrap(),
+        };
+        let quantum = if rotate { 1 } else { u64::MAX };
+        let status = match invocation.resume(quantum) {
+            Ok(status) => status,
+            Err(error) => return Err(error.trap),
+        };
+        match status {
+            RunStatus::Suspended => {}
+            RunStatus::Complete => return Ok(invocation.take_outputs().unwrap()),
+            RunStatus::AwaitingHandler => invocation
+                .pending_suspension()
+                .unwrap()
+                .resume(vec![Value::I64(41)])
+                .unwrap(),
+            RunStatus::CallbackReturned => {
+                calling_back = false;
+                let mut request = invocation.pending_host_call().unwrap();
+                request.take_callback_results().unwrap();
+                request.complete(&mut [Value::I64(5)], Ok(0)).unwrap();
+            }
+            RunStatus::AwaitingHost => {
+                let request = invocation.pending_host_call().unwrap();
+                if let Some(callback) = callback.filter(|_| !called_back) {
+                    called_back = true;
+                    calling_back = true;
+                    request
+                        .call_guest(Value::Func(FuncRef::new(unit, callback)), vec![])
+                        .unwrap();
+                } else {
+                    let mut answer = match request.symbol() {
+                        "pause" => vec![],
+                        _ => vec![Value::I64(5)],
+                    };
+                    request.complete(&mut answer, Ok(0)).unwrap();
+                }
+            }
+            status => panic!("unexpected {status:?}"),
+        }
+        saved = Some(invocation.save().unwrap());
+    }
+    unreachable!("the computation ends")
+}
+
+#[test]
+fn saving_after_every_instruction_under_rotating_observers_keeps_every_trace_balanced() {
+    let (nested, nested_entry) = nested();
+    let (calls, calls_entry, spin) = calls_back();
+    let (suspending, suspending_entry) = suspends();
+    let (twice, twice_entry) = asks_twice();
+    let (throwing, throwing_entry) = throws_and_parks();
+    let text = [Value::Str("text".into())];
+    /// A program, its entry, the entry's arguments and a function to call back, if any.
+    type Case<'a> = (
+        &'a Arc<VerifiedProgram>,
+        FuncId,
+        &'a [Value],
+        Option<FuncId>,
+    );
+    let cases: [Case<'_>; 5] = [
+        (&nested, nested_entry, &[], None),
+        (&calls, calls_entry, &[], Some(spin)),
+        (&suspending, suspending_entry, &[], None),
+        (&twice, twice_entry, &text, None),
+        (&throwing, throwing_entry, &[], None),
+    ];
+    for (program, entry, args, callback) in cases {
+        let rotated = drive_rotating(program, entry, args, callback, true).unwrap();
+        let straight = drive_rotating(program, entry, args, callback, false).unwrap();
+        assert_eq!(rotated.len(), straight.len());
+        if !matches!(straight[..], [Value::Agg(_)]) {
+            assert_eq!(rotated, straight, "the same result as without saving");
+        }
+    }
+}
+
+#[test]
+fn a_trap_and_a_cancellation_after_an_observed_resume_close_what_was_attached() {
+    let (program, entry) = counts();
+    let mask = TraceMask::RUN | TraceMask::CALL | TraceMask::INSTR;
+    let limits = Limits {
+        fuel: 5,
+        ..Limits::default()
+    };
+    let mut vm = Vm::new(Answers, limits);
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    for trap in [true, false] {
+        let mut invocation = vm.start(entry, &[], InvocationOptions::default()).unwrap();
+        assert_eq!(invocation.resume(4).unwrap(), RunStatus::Suspended);
+        let id = invocation.save().unwrap();
+        let mut sink = Strict::default();
+        let mut invocation = vm
+            .resume(id, InvocationOptions::default().trace(mask, &mut sink))
+            .unwrap();
+        if trap {
+            let error = invocation.resume(u64::MAX).unwrap_err();
+            assert!(matches!(error.trap, Trap::FuelExceeded), "{error:?}");
+        } else {
+            assert_eq!(invocation.resume(2).unwrap(), RunStatus::Suspended);
+        }
+        drop(invocation);
+        assert_eq!(sink.done, Some("end"), "the run ended, balanced");
+    }
+}
+
+#[test]
+// Panic-abort targets, including default WASI, cannot catch the panic.
+#[cfg(panic = "unwind")]
+fn release_is_the_last_event_even_when_it_panics() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let args = [Value::Str("text".into())];
+    let mut sink = Strict {
+        panic_on_release: true,
+        ..Strict::default()
+    };
+    let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut invocation = vm
+            .start(
+                entry,
+                &args,
+                InvocationOptions::default().yield_host_calls().trace(
+                    TraceMask::RUN | TraceMask::CALL | TraceMask::HOST,
+                    &mut sink,
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            invocation.resume(u64::MAX).unwrap(),
+            RunStatus::AwaitingHost
+        );
+        invocation.save().map(drop).map_err(drop)
+    }));
+    // The panic cancelled the computation instead, without reporting to the released sink.
+    assert!(saved.is_err());
+    assert_eq!(sink.done, Some("release"));
+    assert_eq!(vm.heap_stats().saved_computations, 0);
+}
