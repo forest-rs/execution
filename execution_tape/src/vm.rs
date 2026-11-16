@@ -766,6 +766,25 @@ pub struct Vm<H: Host> {
     /// This VM's identity, which activation IDs and registered groups carry so another VM's
     /// cannot be mistaken for its own.
     identity: Arc<()>,
+    /// A number no other VM in this process had, which computation, stack and request IDs
+    /// carry. Unlike an address, it is never reused after the VM is dropped.
+    number: u64,
+}
+
+/// Numbers a new VM; no two VMs in a process get the same number.
+fn next_vm_number() -> u64 {
+    use core::sync::atomic::Ordering;
+    #[cfg(target_has_atomic = "64")]
+    {
+        static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+    // Without 64-bit atomics, numbers repeat only after `usize::MAX` VMs.
+    #[cfg(not(target_has_atomic = "64"))]
+    {
+        static NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed) as u64
+    }
 }
 
 impl<H: Host> fmt::Debug for Vm<H> {
@@ -1422,17 +1441,19 @@ impl<H: Host> Vm<H> {
     #[must_use]
     pub fn new(host: H, limits: Limits) -> Self {
         let identity = Arc::new(());
+        let number = next_vm_number();
         Self {
             host,
             limits,
             units: UnitTable::default(),
             memory: ProgramMemory::new(),
             roots: roots::RootTable::default(),
-            saved: saved::Store::new(Arc::as_ptr(&identity).addr()),
+            saved: saved::Store::new(number),
             exec: None,
             lease: None,
             stacks: 0,
             identity,
+            number,
         }
     }
 
@@ -5304,6 +5325,7 @@ impl<H: Host> Vm<H> {
             lease,
             stacks,
             identity,
+            number,
         } = self;
         (
             Vm {
@@ -5317,6 +5339,7 @@ impl<H: Host> Vm<H> {
                 lease,
                 stacks,
                 identity,
+                number,
             },
             previous,
         )

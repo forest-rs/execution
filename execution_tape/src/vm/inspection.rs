@@ -16,19 +16,18 @@ use core::hash::{Hash, Hasher};
 /// Identifies one computation for its whole life: the same in every invocation that runs it,
 /// whichever [`ComputationId`] each of its saves receives.
 ///
-/// It names the computation's stack and its VM. Like a [`ComputationId`],
-/// it is a process-local handle, and an identity that outlives its VM could match a later VM
-/// that reuses the address.
+/// It names the computation's stack and, like a [`ComputationId`], its VM by a number no other
+/// VM in the process has. It is a process-local handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StackId {
-    vm: usize,
+    vm: u64,
     stack: u64,
 }
 
 impl StackId {
-    pub(super) fn new(vm: &Arc<()>, control: &ExecutionControl) -> Self {
+    pub(super) fn new(vm: u64, control: &ExecutionControl) -> Self {
         Self {
-            vm: Arc::as_ptr(vm).addr(),
+            vm,
             stack: control.owner(),
         }
     }

@@ -2471,3 +2471,116 @@ fn a_request_a_callback_returned_to_keeps_its_id() {
     pending.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
     assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
 }
+
+#[test]
+fn ids_from_a_dropped_vm_name_nothing_in_a_later_one() {
+    let (program, entry) = asks();
+    fn options<'a>() -> InvocationOptions<'a> {
+        InvocationOptions::default().yield_host_calls()
+    }
+    let (old_computation, old_request) = {
+        let mut vm = Vm::new(Answers, Limits::default());
+        let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+        let id = save_asking(&mut vm, entry, "old");
+        let mut invocation = vm.resume(id, options()).unwrap();
+        let request = invocation.pending_host_call().unwrap().id();
+        (invocation.save().ok().unwrap(), request)
+    };
+    // The same program, numbered and admitted the same way, in a VM made after the first one
+    // was dropped.
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let id = save_asking(&mut vm, entry, "new");
+    assert!(matches!(
+        vm.discard(old_computation),
+        Err(ResumeError::ForeignVm)
+    ));
+    assert!(matches!(
+        vm.resume(old_computation, options()),
+        Err(ResumeError::ForeignVm)
+    ));
+    let mut invocation = vm.resume(id, options()).unwrap();
+    assert!(matches!(
+        invocation.host_request(old_request),
+        Err(RequestError::OtherComputation)
+    ));
+    let request = invocation.pending_host_call().unwrap().id();
+    assert_ne!(request, old_request);
+    drop(invocation);
+}
+
+/// `entry()` asks the host; `inner()` asks too, for the host to call back while it waits.
+fn asks_from_callbacks() -> (Arc<VerifiedProgram>, FuncId, FuncId) {
+    let mut b = ProgramBuilder::new();
+    let ask = b.host_sig_for(
+        "ask",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let inner = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    for function in [entry, inner] {
+        let mut a = b.function_asm(function).unwrap();
+        let n = a.alloc_register(ValueType::I64);
+        a.host_call_sig_id(Reg::EFFECT, ask, Reg::EFFECT, &[], &[n])
+            .ret(Reg::EFFECT, &[n]);
+        b.define_function(function, a).unwrap();
+    }
+    (Arc::new(b.build_verified().unwrap()), entry, inner)
+}
+
+#[test]
+fn request_ids_of_a_request_and_its_callbacks_request_survive_a_save() {
+    let (program, entry, inner) = asks_from_callbacks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(program).unwrap();
+    fn options<'a>() -> InvocationOptions<'a> {
+        InvocationOptions::default().yield_host_calls()
+    }
+    let mut invocation = vm.start(FuncRef::new(unit, entry), &[], options()).unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let outer = invocation.pending_host_call().unwrap().id();
+    invocation
+        .host_request(outer)
+        .unwrap()
+        .call_guest(Value::Func(FuncRef::new(unit, inner)), vec![])
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let nested = invocation.pending_host_call().unwrap().id();
+    assert_ne!(nested, outer);
+    let id = invocation.save().ok().unwrap();
+
+    let mut invocation = vm.resume(id, options()).unwrap();
+    assert!(matches!(
+        invocation.host_request(outer),
+        Err(RequestError::NotWaiting)
+    ));
+    invocation
+        .host_request(nested)
+        .unwrap()
+        .complete(&mut [Value::I64(4)], Ok(0))
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::CallbackReturned
+    );
+    let id = invocation.save().ok().unwrap();
+    let mut invocation = vm.resume(id, options()).unwrap();
+    assert!(matches!(
+        invocation.host_request(nested),
+        Err(RequestError::NotWaiting)
+    ));
+    let mut request = invocation.host_request(outer).unwrap();
+    assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
+    request.complete(&mut [Value::I64(9)], Ok(0)).unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(9)]);
+}
