@@ -475,16 +475,17 @@ fn inspection<'a, H: Host>(
     InvocationInspection {
         vm: &vm.identity,
         units,
-        ctx: &continuation.ctx,
+        ctx: &continuation.stack.ctx,
         args: &continuation.args,
         outputs: continuation
+            .stack
             .outcome
             .as_ref()
             .and_then(|outcome| outcome.as_ref().ok())
-            .map_or(&[][..], |()| continuation.outputs.as_slice()),
+            .map_or(&[][..], |()| continuation.stack.outputs.as_slice()),
         aggregates: vm.memory.aggs(),
-        control: &continuation.control,
-        active: continuation.outcome.is_none(),
+        control: &continuation.stack.control,
+        active: continuation.stack.outcome.is_none(),
         facts: FrameFacts::new(units),
     }
 }

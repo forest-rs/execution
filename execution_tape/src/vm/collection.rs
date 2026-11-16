@@ -28,6 +28,7 @@
 use super::*;
 use crate::aggregates::{AggRemap, Compaction, PlanError, aggregate_handle};
 use crate::arena::{ArenaPlan, DanglingPayload};
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use inspection::{FrameFacts, FrameRegisters};
 
@@ -365,12 +366,13 @@ fn trace_frame(
     }
 }
 
-impl continuation::Continuation<'_> {
+impl continuation::Stack {
     /// Finds this stack's roots and plans its own relocation, mutating nothing.
     ///
     /// Aggregates the stack keeps alive are appended to `handles`.
     pub(super) fn plan_collection(
         &self,
+        args: &[Value],
         units: &UnitTable,
         heap: &AggHeap,
         handles: &mut Vec<AggHandle>,
@@ -405,7 +407,7 @@ impl continuation::Continuation<'_> {
         {
             return Err(CollectError::HostStaging);
         }
-        roots.values(&self.args);
+        roots.values(args);
         if let Some(callbacks) = &control.callbacks {
             if let Some(returned) = &callbacks.returned {
                 roots.values(returned);
@@ -431,7 +433,7 @@ impl continuation::Continuation<'_> {
             let live = &mut plan.held.last_mut().expect("pushed above").1;
             trace_frame(&mut facts, &frame, live, &mut roots)?;
         }
-        let sources = ValueSources::new(units, &self.args, heap);
+        let sources = ValueSources::new(units, args, heap);
         plan.arena = ctx.arena.plan_compaction(
             roots.bytes.drain(..),
             roots.strs.drain(..),
@@ -458,7 +460,12 @@ impl continuation::Continuation<'_> {
     }
 
     /// Rewrites every root the plan found, after the heap was compacted with `remap`.
-    pub(super) fn relocate(&mut self, plan: &StackPlan, compaction: &Compaction) {
+    pub(super) fn relocate(
+        &mut self,
+        args: &mut Cow<'_, [Value]>,
+        plan: &StackPlan,
+        compaction: &Compaction,
+    ) {
         let remap = compaction.remap();
         let moved = |values: &mut [Value]| {
             remap
@@ -469,13 +476,9 @@ impl continuation::Continuation<'_> {
         if self.outcome.is_some() {
             return;
         }
-        if self
-            .args
-            .iter()
-            .any(|value| aggregate_handle(value).is_some())
-        {
+        if args.iter().any(|value| aggregate_handle(value).is_some()) {
             // Borrowed inputs stay the embedding's; the stack keeps its own relocated copy.
-            moved(self.args.to_mut());
+            moved(args.to_mut());
         }
         if let Some(callbacks) = &mut self.control.callbacks {
             // Promoted ranges never move: a plan that would move them was refused.

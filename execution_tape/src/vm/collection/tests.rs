@@ -92,6 +92,7 @@ fn paused(vm: &mut Vm<NoHost>) -> Invocation<'_, NoHost> {
 /// The active frame's exception reference registers, in register order.
 fn exceptions(run: &Invocation<'_, NoHost>) -> Vec<Arc<Exception>> {
     run.continuation
+        .stack
         .ctx
         .exns
         .iter()
@@ -219,7 +220,8 @@ fn held_continuations_that_shared_an_exception_still_share_its_relocated_copy() 
         )
         .unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    let held = |run: &Invocation<'_, NoHost>| run.continuation.ctx.continuations.held_exceptions();
+    let held =
+        |run: &Invocation<'_, NoHost>| run.continuation.stack.ctx.continuations.held_exceptions();
     assert_eq!(
         shared_payload(held(&run), run.aggregates()),
         (true, Value::I64(7))
@@ -241,19 +243,19 @@ fn held_continuations_that_shared_an_exception_still_share_its_relocated_copy() 
 fn a_dangling_register_refuses_collection_without_moving_anything() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = paused(&mut vm);
-    let aggs = run.continuation.ctx.aggs.clone();
-    let strs = run.continuation.ctx.strs.clone();
+    let aggs = run.continuation.stack.ctx.aggs.clone();
+    let strs = run.continuation.stack.ctx.strs.clone();
     let length = run.aggregates().len_u32();
     let label = strs.last().copied().expect("the label register");
-    run.continuation.ctx.strs[strs.len() - 1] = StrHandle(77);
+    run.continuation.stack.ctx.strs[strs.len() - 1] = StrHandle(77);
     assert_eq!(run.collect(), Err(CollectError::DanglingPayload));
     assert_eq!(run.aggregates().len_u32(), length);
-    assert_eq!(run.continuation.ctx.aggs, aggs);
+    assert_eq!(run.continuation.stack.ctx.aggs, aggs);
     assert_eq!(exceptions(&run)[0].payload(), [Value::Agg(AggHandle(1))]);
     assert_eq!(run.heap_stats().collections, 0);
 
-    run.continuation.ctx.strs[strs.len() - 1] = label;
-    run.continuation.ctx.aggs[0] = AggHandle(99);
+    run.continuation.stack.ctx.strs[strs.len() - 1] = label;
+    run.continuation.stack.ctx.aggs[0] = AggHandle(99);
     assert_eq!(
         run.collect(),
         Err(CollectError::DanglingHandle {
@@ -261,12 +263,12 @@ fn a_dangling_register_refuses_collection_without_moving_anything() {
         })
     );
     assert_eq!(run.aggregates().len_u32(), length);
-    run.continuation.ctx.aggs[0] = aggs[0];
+    run.continuation.stack.ctx.aggs[0] = aggs[0];
 
     // The handler's payload register is not written yet: whatever its slot holds is ignored.
-    run.continuation.ctx.aggs[1] = AggHandle(99);
+    run.continuation.stack.ctx.aggs[1] = AggHandle(99);
     assert_eq!(run.collect().unwrap().aggregates.live, 2);
-    assert_eq!(run.continuation.ctx.aggs[1], AggHandle(99));
+    assert_eq!(run.continuation.stack.ctx.aggs[1], AggHandle(99));
     let request = run.pending_host_call().unwrap();
     request.complete(&mut [], Ok(0)).unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
@@ -456,7 +458,7 @@ fn an_abandoned_continuation_keeps_no_exception_alive_once_its_run_ends() {
         )
         .unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    let held = run.continuation.ctx.continuations.held_exceptions();
+    let held = run.continuation.stack.ctx.continuations.held_exceptions();
     let [exception] = held.as_slice() else {
         panic!("one held exception, not {}", held.len());
     };
