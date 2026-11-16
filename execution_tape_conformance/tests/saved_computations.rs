@@ -2496,6 +2496,10 @@ fn ids_from_a_dropped_vm_name_nothing_in_a_later_one() {
         Err(ResumeError::ForeignVm)
     ));
     assert!(matches!(
+        vm.inspect(old_computation),
+        Err(ResumeError::ForeignVm)
+    ));
+    assert!(matches!(
         vm.resume(old_computation, options()),
         Err(ResumeError::ForeignVm)
     ));
@@ -2669,4 +2673,51 @@ fn a_waiting_request_inspects_another_saved_computation() {
     assert!(invocation.inspect_saved(other).is_ok());
     drop(invocation);
     assert_eq!(finish_asking(&mut vm, other, 4), ("other".into(), 4));
+}
+
+#[test]
+fn a_spawned_computation_inspects_the_same_before_and_after_its_first_resume() {
+    let (program, entry) = nested();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let id = vm.spawn(entry, vec![]).unwrap();
+    let before: Vec<_> = vm.inspect(id).unwrap().frames().collect();
+    assert_eq!(before.len(), 1, "its entry frame");
+    let invocation = vm
+        .resume(id, InvocationOptions::default().yield_host_calls())
+        .unwrap();
+    let after: Vec<_> = invocation.inspect().frames().collect();
+    assert_eq!(after, before, "same frame, location and activation ID");
+}
+
+#[test]
+fn a_saved_computation_is_inspected_where_a_collection_moved_its_aggregates() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    // Garbage below the computation's box, so the collection moves the box.
+    vm.aggregates_mut().tuple_new(vec![Value::I64(0)]).unwrap();
+    let id = save_asking(&mut vm, entry, "moved");
+    let boxed = |vm: &Vm<Answers>| {
+        let mut inspection = vm.inspect(id).unwrap();
+        let frame = inspection.frames().next().unwrap();
+        let Some(ValueRef::Agg(handle)) = inspection
+            .register(&frame.activation, Reg(2))
+            .unwrap()
+            .value
+        else {
+            panic!("the boxed text");
+        };
+        handle
+    };
+    let before = boxed(&vm);
+    let report = vm.collect().unwrap();
+    assert_eq!(report.aggregates.live, 1, "only the box survives");
+    let after = boxed(&vm);
+    assert_ne!(after, before, "the box moved");
+    assert_eq!(
+        vm.aggregates().tuple_get(after, 0).unwrap(),
+        Value::Str("moved".into())
+    );
+    assert_eq!(finish_asking(&mut vm, id, 2), ("moved".into(), 2));
 }
