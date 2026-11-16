@@ -16,6 +16,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Inspect saved computations without resuming them. `Vm::inspect(id)` returns the
+  `InvocationInspection` the computation will have once resumed: frames, initialized
+  registers, object roots and the same activation IDs. `inspect_saved(id)` on `Invocation`,
+  `PendingHostCall` and `PendingSuspension` does the same while another computation runs or
+  waits, so a debugger can show one computation while another is stopped. `ResumeError`
+  reports the refusals.
 - Name the requests a computation waits at. `PendingHostCall::id` and `PendingSuspension::id`
   return a `RequestId` that stays valid while the computation waits there, across `save` and
   `Vm::resume`; `Invocation::host_request(id)` and `Invocation::suspension(id)` borrow that

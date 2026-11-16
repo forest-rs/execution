@@ -243,6 +243,15 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
         self.running.inspect()
     }
 
+    /// Borrows the paused state of another computation saved in this VM while this suspension
+    /// waits, as [`Vm::inspect`] does.
+    pub fn inspect_saved(
+        &self,
+        id: ComputationId,
+    ) -> Result<InvocationInspection<'_>, ResumeError> {
+        self.running.inspect_saved(id)
+    }
+
     /// Resumes the suspension: the `suspend`'s results receive `values`.
     ///
     /// The values must match the tag's [`result kinds`](Self::result_types) and its refined

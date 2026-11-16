@@ -2584,3 +2584,89 @@ fn request_ids_of_a_request_and_its_callbacks_request_survive_a_save() {
     assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(9)]);
 }
+
+#[test]
+fn a_saved_computation_is_inspected_as_it_will_resume() {
+    let (program, entry) = nested();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let mut invocation = vm
+        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let live: Vec<_> = invocation.inspect().frames().collect();
+    let id = invocation.save().unwrap();
+
+    let saved: Vec<_> = vm.inspect(id).unwrap().frames().collect();
+    assert_eq!(saved, live, "same frames, locations and activation IDs");
+    assert!(saved.iter().all(|frame| frame.waiting_for_return));
+    let mut invocation = vm
+        .resume(id, InvocationOptions::default().yield_host_calls())
+        .unwrap();
+    let resumed: Vec<_> = invocation.inspect().frames().collect();
+    assert_eq!(resumed, saved);
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(0)], Ok(0))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(invocation);
+    assert!(matches!(vm.inspect(id), Err(ResumeError::Unknown)));
+}
+
+#[test]
+fn a_waiting_request_inspects_another_saved_computation() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let other = save_asking(&mut vm, entry, "other");
+    let gone = save_asking(&mut vm, entry, "gone");
+    vm.discard(gone).unwrap();
+    let mut elsewhere = Vm::new(Answers, Limits::default());
+    let (program, asks) = asks();
+    let asks = FuncRef::new(elsewhere.install(program).unwrap(), asks);
+    let foreign = save_asking(&mut elsewhere, asks, "foreign");
+
+    let args = [Value::Str("mine".into())];
+    let mut invocation = vm
+        .start(
+            entry,
+            &args,
+            InvocationOptions::default().yield_host_calls(),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let request = invocation.pending_host_call().unwrap();
+    let mut inspection = request.inspect_saved(other).unwrap();
+    let frame = inspection.frames().next().unwrap();
+    assert_ne!(
+        frame.activation,
+        request.inspect().frames().next().unwrap().activation,
+        "another computation's activation"
+    );
+    let text = inspection.register(&frame.activation, Reg(1)).unwrap();
+    assert!(
+        matches!(text.value, Some(ValueRef::Str("other"))),
+        "{text:?}"
+    );
+    assert!(matches!(
+        request.inspect_saved(gone),
+        Err(ResumeError::Unknown)
+    ));
+    assert!(matches!(
+        request.inspect_saved(foreign),
+        Err(ResumeError::ForeignVm)
+    ));
+    request.complete(&mut [Value::I64(3)], Ok(0)).unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert!(invocation.inspect_saved(other).is_ok());
+    drop(invocation);
+    assert_eq!(finish_asking(&mut vm, other, 4), ("other".into(), 4));
+}

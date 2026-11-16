@@ -274,6 +274,14 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn inspect(&self) -> InvocationInspection<'_> {
         self.running.inspect()
     }
+    /// Borrows the paused state of another computation saved in this VM while this request
+    /// waits, as [`Vm::inspect`] does.
+    pub fn inspect_saved(
+        &self,
+        id: ComputationId,
+    ) -> Result<InvocationInspection<'_>, ResumeError> {
+        self.running.inspect_saved(id)
+    }
     /// Declared host symbol, without allocating a label.
     #[must_use]
     pub fn symbol(&self) -> &str {
