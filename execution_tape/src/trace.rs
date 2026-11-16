@@ -454,6 +454,39 @@ pub enum ValueEvent<'a> {
         /// Storage after the collection.
         aggregates: &'a AggHeap,
     },
+    /// This invocation is about to be saved with [`crate::vm::Invocation::save`]; the
+    /// computation continues in a later invocation.
+    ///
+    /// Precedes [`TraceSink::release`]. Observers that follow the computation across
+    /// invocations, such as recordings, note where it stopped.
+    Saved {
+        /// The computation saved.
+        stack: crate::vm::StackId,
+        /// The work this invocation admitted, which a replay must reach before it saves too.
+        work: crate::vm::ExecutionWork,
+        /// How many invocations ran the computation before this one.
+        invocation: u64,
+        /// Storage when saved. Anything that changes it before the computation is resumed,
+        /// another invocation, a collection or the embedding, moves later allocations.
+        aggregates: &'a AggHeap,
+    },
+    /// This invocation resumed a saved computation with [`crate::vm::Vm::resume`].
+    ///
+    /// Follows [`TraceSink::attach`] and precedes the computation's other events.
+    Resumed {
+        /// The computation resumed.
+        stack: crate::vm::StackId,
+        /// How many invocations ran the computation before this one; one more than the
+        /// invocation that saved it last.
+        invocation: u64,
+        /// Limits this invocation's fresh work allowance comes from.
+        limits: &'a Limits,
+        /// Storage when resumed.
+        aggregates: &'a AggHeap,
+        /// The VM's units, tags and links when resumed, including any installed, defined or
+        /// relinked while the computation was saved.
+        units: Units<'a>,
+    },
     /// Raw host outcome after the call, before fuel debit and return validation.
     ///
     /// A VM denial before invoking the host produces no such event. A returned value is not
@@ -616,6 +649,32 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .debug_struct("Collected")
                 .field("report", report)
                 .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::Saved {
+                stack,
+                work,
+                invocation,
+                aggregates,
+            } => f
+                .debug_struct("Saved")
+                .field("stack", stack)
+                .field("work", work)
+                .field("invocation", invocation)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::Resumed {
+                stack,
+                invocation,
+                limits,
+                aggregates,
+                units,
+            } => f
+                .debug_struct("Resumed")
+                .field("stack", stack)
+                .field("invocation", invocation)
+                .field("limits", limits)
+                .field("aggregate_count", &aggregates.len_u32())
+                .field("units", units)
                 .finish(),
             Self::Installed { unit, units } => f
                 .debug_struct("Installed")

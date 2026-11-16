@@ -5,12 +5,14 @@
 //! allowance.
 
 use execution_tape::{
+    aggregates::{AggHeap, AggShape},
     asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{Pc, Program, SpanId, ValueType},
-    recording::{CaptureFault, RecordLimits, Recorder},
+    program::LinkId,
+    program::{Pc, Program, SpanId, StructTypeDef, ValueType},
+    recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     trace::{Attachment, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink},
-    value::{FuncId, FuncRef, Value},
+    value::{AggType, FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::{
         CollectError, ComputationId, InvocationOptions, Limits, ResumeError, RunStatus, Trap, Vm,
@@ -489,13 +491,93 @@ fn a_computation_saved_between_quanta_hands_over_its_frames() {
 }
 
 #[test]
-fn a_recorder_reports_a_saved_invocation_as_incomplete() {
+fn a_recording_follows_its_computation_across_invocations_and_replays() {
     let (program, entry) = asks();
     let mut vm = Vm::new(Answers, Limits::default());
-    let unit = vm.install(Arc::clone(&program)).unwrap();
-    let mut recorder = Recorder::new(program, RecordLimits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
     let mask = recorder.mask();
     let args = [Value::Str("text".into())];
+    let mut invocation = vm
+        .start(
+            entry,
+            &args,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let id = invocation.save().unwrap();
+
+    let mut invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(7)], Ok(0))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(invocation);
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()));
+    assert!(matches!(
+        recording.replay().unwrap(),
+        ReplayOutcome::Returned(_)
+    ));
+}
+
+#[test]
+fn replay_gives_each_invocation_the_allowance_the_original_had() {
+    let (program, entry) = counts();
+    // Too little fuel for the whole computation in one invocation.
+    let limits = Limits {
+        fuel: 12,
+        ..Limits::default()
+    };
+    let mut vm = Vm::new(Answers, limits);
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(program, RecordLimits::default());
+    let mask = recorder.mask();
+    let mut invocation = vm
+        .start(
+            entry,
+            &[],
+            InvocationOptions::default().trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(invocation.resume(11).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().unwrap();
+    let mut invocation = vm
+        .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(invocation);
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()));
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay ran out of fuel where the original did not");
+    };
+    assert_eq!(values.values(), [Value::I64(20)]);
+}
+
+#[test]
+fn installs_and_relinks_while_saved_are_replayed_before_the_next_invocation() {
+    let (program, entry) = asks_then_links(2);
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(Arc::clone(&program)).unwrap();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let args = [Value::I64(3)];
     let mut invocation = vm
         .start(
             FuncRef::new(unit, entry),
@@ -510,12 +592,130 @@ fn a_recorder_reports_a_saved_invocation_as_incomplete() {
         RunStatus::AwaitingHost
     );
     let id = invocation.save().unwrap();
+    // While it is saved: install a replacement and point the link at it.
+    let (replacement, _) = asks_then_links(10);
+    let replacement = vm.install(replacement).unwrap();
+    // `scale` is each program's first function.
+    vm.relink(unit, LinkId(0), FuncRef::new(replacement, FuncId(0)))
+        .unwrap();
+
+    let mut invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(0)], Ok(0))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(30)]);
+    drop(invocation);
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()));
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay trapped");
+    };
+    assert_eq!(values.values(), [Value::I64(30)]);
+}
+
+#[test]
+fn a_recording_refuses_a_heap_changed_while_its_computation_was_saved() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let args = [Value::Str("text".into())];
+    let mut invocation = vm
+        .start(
+            entry,
+            &args,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
     assert_eq!(
-        recorder.finish().status(),
-        Err(&CaptureFault::Saved),
-        "a recording covers one invocation"
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
     );
-    assert_eq!(finish_asking(&mut vm, id, 1), ("text".into(), 1));
+    let id = invocation.save().unwrap();
+    // Another run allocates meanwhile.
+    vm.run(entry, &args, TraceMask::NONE, None).unwrap();
+    let invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    drop(invocation);
+    assert_eq!(recorder.finish().status(), Err(&CaptureFault::Interleaved));
+}
+
+#[test]
+fn a_recorder_cannot_join_a_computation_it_did_not_see_start() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let id = save_asking(&mut vm, entry, "text");
+    let mut recorder = Recorder::new(program, RecordLimits::default());
+    let mask = recorder.mask();
+    let invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    drop(invocation);
+    assert_eq!(recorder.finish().status(), Err(&CaptureFault::MissingEntry));
+}
+
+/// `scale(x) = x * factor` and `entry(x)`, which asks the host, then calls `scale` through link
+/// `"scale"`.
+fn asks_then_links(factor: i64) -> (Arc<VerifiedProgram>, FuncId) {
+    let mut b = ProgramBuilder::new();
+    let ask = b.host_sig_for(
+        "ask",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let scale = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let mut a = b.function_asm(scale).unwrap();
+    let (k, y) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::I64),
+    );
+    a.const_i64(k, factor)
+        .i64_mul(y, Reg(1), k)
+        .ret(Reg::EFFECT, &[y]);
+    b.define_function(scale, a).unwrap();
+    let link = b.declare_link("scale", scale).unwrap();
+    let entry = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let mut a = b.function_asm(entry).unwrap();
+    let (n, y) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::I64),
+    );
+    a.host_call_sig_id(Reg::EFFECT, ask, Reg::EFFECT, &[], &[n])
+        .call_link(Reg::EFFECT, link, Reg::EFFECT, &[Reg(1)], &[y])
+        .ret(Reg::EFFECT, &[y]);
+    b.define_function(entry, a).unwrap();
+    (Arc::new(b.build_verified().unwrap()), entry)
 }
 
 /// `entry()` asks the host; `spin()` adds twice and returns, for the host to call back.
@@ -763,7 +963,7 @@ fn clearing_the_heap_of_saved_computations_panics_instead_of_aliasing() {
         assert!(cleared.is_err());
     }
     // Replacing the heap outright is caught before the saved handles are used.
-    let fresh = execution_tape::aggregates::AggHeap::new();
+    let fresh = AggHeap::new();
     let previous = core::mem::replace(vm.aggregates_mut(), fresh);
     let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drop(vm.resume(id, InvocationOptions::default()));
@@ -1314,4 +1514,596 @@ fn release_is_the_last_event_even_when_it_panics() {
     assert!(saved.is_err());
     assert_eq!(sink.done, Some("release"));
     assert_eq!(vm.heap_stats().saved_computations, 0);
+}
+
+/// `entry()` waits, by asking the host or suspending with `need`, then adds one twenty times to
+/// the answer: about 23 instructions.
+fn waits_then_counts(suspend: bool) -> (Arc<VerifiedProgram>, FuncId) {
+    let mut b = ProgramBuilder::new();
+    let ask = b.host_sig_for(
+        "ask",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let need = b
+        .declare_tag_with_results("need", &[], &[ValueType::I64.into()])
+        .unwrap();
+    let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let mut a = b.function_asm(entry).unwrap();
+    let (sum, one) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::I64),
+    );
+    if suspend {
+        a.suspend(Reg::EFFECT, need, Reg::EFFECT, &[], &[sum]);
+    } else {
+        a.host_call_sig_id(Reg::EFFECT, ask, Reg::EFFECT, &[], &[sum]);
+    }
+    a.const_i64(one, 1);
+    for _ in 0..20 {
+        a.i64_add(sum, sum, one);
+    }
+    a.ret(Reg::EFFECT, &[sum]);
+    b.define_function(entry, a).unwrap();
+    (Arc::new(b.build_verified().unwrap()), entry)
+}
+
+/// Replays `recorder`'s recording and returns its values, which must be one `I64`.
+fn replayed(recorder: Recorder) -> i64 {
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()), "a complete recording");
+    match recording.replay() {
+        Ok(ReplayOutcome::Returned(values)) => match values.values() {
+            [Value::I64(n)] => *n,
+            other => panic!("replay returned {other:?}"),
+        },
+        other => panic!("replay ended {other:?}"),
+    }
+}
+
+#[test]
+fn replay_saves_where_the_original_saved_at_a_wait_and_resumes_under_its_limits() {
+    for suspend in [false, true] {
+        let (program, entry) = waits_then_counts(suspend);
+        // Enough fuel to reach the wait, not to finish.
+        let mut vm = Vm::new(
+            Answers,
+            Limits {
+                fuel: 2,
+                ..Limits::default()
+            },
+        );
+        let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+        let mut recorder = Recorder::new(program, RecordLimits::default());
+        let mask = recorder.mask();
+        let mut invocation = vm
+            .start(
+                entry,
+                &[],
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .yield_suspensions()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        let waiting = invocation.resume(u64::MAX).unwrap();
+        assert_ne!(waiting, RunStatus::Suspended);
+        let id = invocation.save().ok().unwrap();
+        vm.set_limits(Limits::default());
+        let mut invocation = vm
+            .resume(
+                id,
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .yield_suspensions()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        if suspend {
+            invocation
+                .pending_suspension()
+                .unwrap()
+                .resume(vec![Value::I64(10)])
+                .unwrap();
+        } else {
+            invocation
+                .pending_host_call()
+                .unwrap()
+                .complete(&mut [Value::I64(10)], Ok(0))
+                .unwrap();
+        }
+        assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(30)]);
+        drop(invocation);
+        // Without saving at the wait, replay would run out of the first invocation's fuel.
+        assert_eq!(replayed(recorder), 30);
+    }
+}
+
+#[test]
+fn replay_repeats_every_save_of_a_computation_saved_many_times() {
+    let (program, entry) = counts();
+    let mut vm = Vm::new(
+        Answers,
+        Limits {
+            fuel: 5,
+            ..Limits::default()
+        },
+    );
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(program, RecordLimits::default());
+    let mask = recorder.mask();
+    let mut invocation = vm
+        .start(
+            entry,
+            &[],
+            InvocationOptions::default().trace(mask, &mut recorder),
+        )
+        .unwrap();
+    let mut saves = 0;
+    while invocation.resume(4).unwrap() == RunStatus::Suspended {
+        let id = invocation.save().ok().unwrap();
+        saves += 1;
+        invocation = vm
+            .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+            .unwrap();
+    }
+    drop(invocation);
+    assert!(saves >= 5, "{saves}");
+    assert_eq!(replayed(recorder), 20);
+}
+
+/// `fwd(x)` calls `scale` (`x * factor`) through link `"scale"`; `fwd` is function 1.
+fn forwards(factor: i64) -> Arc<VerifiedProgram> {
+    let mut b = ProgramBuilder::new();
+    let scale = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let mut a = b.function_asm(scale).unwrap();
+    let (k, y) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::I64),
+    );
+    a.const_i64(k, factor)
+        .i64_mul(y, Reg(1), k)
+        .ret(Reg::EFFECT, &[y]);
+    b.define_function(scale, a).unwrap();
+    let link = b.declare_link("scale", scale).unwrap();
+    let fwd = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let mut a = b.function_asm(fwd).unwrap();
+    let y = a.alloc_register(ValueType::I64);
+    a.call_link(Reg::EFFECT, link, Reg::EFFECT, &[Reg(1)], &[y])
+        .ret(Reg::EFFECT, &[y]);
+    b.define_function(fwd, a).unwrap();
+    Arc::new(b.build_verified().unwrap())
+}
+
+#[test]
+fn units_installed_and_relinked_while_saved_replay_with_their_links() {
+    let (program, entry) = asks_then_links(2);
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(Arc::clone(&program)).unwrap();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let args = [Value::I64(3)];
+    let mut invocation = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    // Saved before its first instruction.
+    assert_eq!(invocation.resume(0).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().ok().unwrap();
+    let forward = vm.install(forwards(10)).unwrap();
+    let hundred = vm.install(forwards(100)).unwrap();
+    vm.relink(forward, LinkId(0), FuncRef::new(hundred, FuncId(0)))
+        .unwrap();
+    vm.relink(unit, LinkId(0), FuncRef::new(forward, FuncId(1)))
+        .unwrap();
+    let mut invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(0)], Ok(0))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(300)]);
+    drop(invocation);
+    assert_eq!(replayed(recorder), 300);
+}
+
+#[test]
+fn tags_defined_while_saved_replay_before_the_next_invocation() {
+    for install_first in [true, false] {
+        let (program, entry) = counts();
+        let mut vm = Vm::new(Answers, Limits::default());
+        let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+        let mut recorder = Recorder::new(program, RecordLimits::default());
+        let mask = recorder.mask();
+        let mut invocation = vm
+            .start(
+                entry,
+                &[],
+                InvocationOptions::default().trace(mask, &mut recorder),
+            )
+            .unwrap();
+        assert_eq!(invocation.resume(3).unwrap(), RunStatus::Suspended);
+        let id = invocation.save().ok().unwrap();
+        if install_first {
+            vm.install(forwards(1)).unwrap();
+        }
+        vm.define_tag("later", &[]).unwrap();
+        let mut invocation = vm
+            .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+            .unwrap();
+        assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        drop(invocation);
+        assert_eq!(replayed(recorder), 20);
+    }
+}
+
+#[test]
+fn an_invocation_run_without_the_recorder_makes_the_capture_incomplete() {
+    let (program, entry) = counts();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut invocation = vm
+        .start(
+            entry,
+            &[],
+            InvocationOptions::default().trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(invocation.resume(6).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().ok().unwrap();
+    // Another recorder, or none, runs the next invocation.
+    let mut stranger = Recorder::new(program, RecordLimits::default());
+    let mut invocation = vm
+        .resume(id, InvocationOptions::default().trace(mask, &mut stranger))
+        .unwrap();
+    assert_eq!(invocation.resume(6).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().ok().unwrap();
+    assert_eq!(stranger.finish().status(), Err(&CaptureFault::MissingEntry));
+    let mut invocation = vm
+        .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(invocation);
+    assert_eq!(recorder.finish().status(), Err(&CaptureFault::Unrecorded));
+}
+
+/// `entry(x)` returns `x + x`, one addition at a time.
+fn doubles() -> (Arc<VerifiedProgram>, FuncId) {
+    let mut b = ProgramBuilder::new();
+    let entry = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let mut a = b.function_asm(entry).unwrap();
+    let y = a.alloc_register(ValueType::I64);
+    a.const_i64(y, 0)
+        .i64_add(y, y, Reg(1))
+        .i64_add(y, y, Reg(1))
+        .ret(Reg::EFFECT, &[y]);
+    b.define_function(entry, a).unwrap();
+    (Arc::new(b.build_verified().unwrap()), entry)
+}
+
+#[test]
+fn a_recorder_handed_another_computations_resume_is_incomplete() {
+    let (program, entry) = doubles();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut first = vm
+        .start(
+            entry,
+            &[Value::I64(3)],
+            InvocationOptions::default().trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(first.resume(1).unwrap(), RunStatus::Suspended);
+    let first = first.save().ok().unwrap();
+    let mut second = vm
+        .start(entry, &[Value::I64(4)], InvocationOptions::default())
+        .unwrap();
+    assert_eq!(second.resume(1).unwrap(), RunStatus::Suspended);
+    let second = second.save().ok().unwrap();
+
+    // The recorded computation finishes unobserved, without allocating; the other one, whose
+    // invocation count matches, resumes with the recorder.
+    let mut invocation = vm.resume(first, InvocationOptions::default()).unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(6)]);
+    drop(invocation);
+    let mut invocation = vm
+        .resume(
+            second,
+            InvocationOptions::default().trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(8)]);
+    drop(invocation);
+    assert_eq!(recorder.finish().status(), Err(&CaptureFault::MissingEntry));
+}
+
+#[test]
+fn a_save_inside_a_callback_resumed_unobserved_leaves_the_recording_incomplete() {
+    let (program, entry, spin) = calls_back();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(Arc::clone(&program)).unwrap();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut invocation = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &[],
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
+        .unwrap();
+    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().ok().unwrap();
+    // A running callback is resumed only unobserved.
+    let mut invocation = vm
+        .resume(id, InvocationOptions::default().yield_host_calls())
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::CallbackReturned
+    );
+    let id = invocation.save().ok().unwrap();
+    let mut invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    let mut request = invocation.pending_host_call().unwrap();
+    assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
+    request.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(invocation);
+    assert_eq!(recorder.finish().status(), Err(&CaptureFault::Unrecorded));
+}
+
+#[test]
+fn a_computation_saved_where_its_callback_returned_replays_under_tight_fuel() {
+    let (program, entry, spin) = calls_back();
+    // The least fuel that reaches the callback's return.
+    let fuel = (1..32)
+        .find(|&fuel| {
+            let mut vm = Vm::new(
+                Answers,
+                Limits {
+                    fuel,
+                    ..Limits::default()
+                },
+            );
+            let unit = vm.install(Arc::clone(&program)).unwrap();
+            let mut invocation = vm
+                .start(
+                    FuncRef::new(unit, entry),
+                    &[],
+                    InvocationOptions::default().yield_host_calls(),
+                )
+                .unwrap();
+            if invocation.resume(u64::MAX).ok() != Some(RunStatus::AwaitingHost) {
+                return false;
+            }
+            invocation
+                .pending_host_call()
+                .unwrap()
+                .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
+                .is_ok()
+                && invocation.resume(u64::MAX).ok() == Some(RunStatus::CallbackReturned)
+        })
+        .expect("some fuel reaches the return");
+    let mut vm = Vm::new(
+        Answers,
+        Limits {
+            fuel,
+            ..Limits::default()
+        },
+    );
+    let unit = vm.install(Arc::clone(&program)).unwrap();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut invocation = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &[],
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::CallbackReturned
+    );
+    let id = invocation.save().ok().unwrap();
+    vm.set_limits(Limits::default());
+    let mut invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    let mut request = invocation.pending_host_call().unwrap();
+    assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
+    request.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(8)]);
+    drop(invocation);
+    assert_eq!(replayed(recorder), 8);
+}
+
+/// `entry(n)` asks the host, then calls `make(n)` through a link; `make` boxes `n` in a tuple.
+fn asks_then_makes() -> (Arc<VerifiedProgram>, FuncId) {
+    let mut b = ProgramBuilder::new();
+    let ask = b.host_sig_for(
+        "ask",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let make = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::Agg]))
+        .unwrap();
+    let mut a = b.function_asm(make).unwrap();
+    let boxed = a.alloc_register(ValueType::Agg);
+    a.tuple_new(boxed, &[Reg(1)]).ret(Reg::EFFECT, &[boxed]);
+    b.define_function(make, a).unwrap();
+    let link = b.declare_link("make", make).unwrap();
+    let entry = b.declare_function(sig(&[], &[ValueType::Agg])).unwrap();
+    let mut a = b.function_asm(entry).unwrap();
+    let (n, made) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::Agg),
+    );
+    a.host_call_sig_id(Reg::EFFECT, ask, Reg::EFFECT, &[], &[n])
+        .call_link(Reg::EFFECT, link, Reg::EFFECT, &[n], &[made])
+        .ret(Reg::EFFECT, &[made]);
+    b.define_function(entry, a).unwrap();
+    (Arc::new(b.build_verified().unwrap()), entry)
+}
+
+/// `make(n)` builds the struct `{ x: n, y: n }`.
+fn makes_structs() -> Arc<VerifiedProgram> {
+    let mut b = ProgramBuilder::new();
+    let point = b.struct_type(StructTypeDef {
+        field_names: vec!["x".into(), "y".into()],
+        field_types: vec![ValueType::I64, ValueType::I64],
+    });
+    let make = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::Agg]))
+        .unwrap();
+    let mut a = b.function_asm(make).unwrap();
+    let made = a.alloc_register(ValueType::Agg);
+    a.struct_new(made, point, &[Reg(1), Reg(1)])
+        .ret(Reg::EFFECT, &[made]);
+    b.define_function(make, a).unwrap();
+    Arc::new(b.build_verified().unwrap())
+}
+
+/// The struct shape and fields of `value` in `heap`.
+fn struct_of(heap: &AggHeap, value: &Value) -> (AggShape, Vec<Value>) {
+    let Value::Agg(handle) = value else {
+        panic!("an aggregate: {value:?}");
+    };
+    let AggType::Struct { shape, .. } = heap.agg_type(*handle).unwrap() else {
+        panic!("a struct");
+    };
+    let fields = (0..heap.struct_field_count(*handle).unwrap())
+        .map(|field| heap.struct_get(*handle, field).unwrap())
+        .collect();
+    (heap.shape(shape).unwrap().clone(), fields)
+}
+
+#[test]
+fn shapes_interned_while_saved_replay_the_same_structs() {
+    let (program, entry) = asks_then_makes();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(Arc::clone(&program)).unwrap();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut invocation = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &[],
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let id = invocation.save().ok().unwrap();
+    // The host interns a shape of its own, then a unit whose struct shape is new is linked in.
+    vm.aggregates_mut()
+        .intern_shape(AggShape::Struct(StructTypeDef {
+            field_names: vec!["host".into()],
+            field_types: vec![ValueType::Bool],
+        }))
+        .unwrap();
+    let structs = vm.install(makes_structs()).unwrap();
+    vm.relink(unit, LinkId(0), FuncRef::new(structs, FuncId(0)))
+        .unwrap();
+    let mut invocation = vm
+        .resume(
+            id,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    invocation
+        .pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(7)], Ok(0))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    let live = invocation.take_outputs().unwrap();
+    drop(invocation);
+    let live = struct_of(vm.aggregates(), &live[0]);
+    assert_eq!(live.1, [Value::I64(7), Value::I64(7)]);
+
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()), "a complete recording");
+    let Ok(ReplayOutcome::Returned(replayed)) = recording.replay() else {
+        panic!("replay returns");
+    };
+    assert_eq!(
+        struct_of(replayed.aggregates(), &replayed.values()[0]),
+        live
+    );
 }

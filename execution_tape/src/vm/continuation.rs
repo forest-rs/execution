@@ -25,6 +25,8 @@ pub(super) struct Stack {
     pub(super) host_results: Option<crate::host::HostResults>,
     pub(super) outputs: Vec<Value>,
     pub(super) outcome: Option<Result<(), TrapInfo>>,
+    /// Invocations that ran this computation before the current one.
+    pub(super) invocations: u64,
 }
 
 impl Stack {
@@ -39,6 +41,7 @@ impl Stack {
             host_results: None,
             outputs: Vec::new(),
             outcome: None,
+            invocations: self.invocations,
         };
         core::mem::replace(self, empty)
     }
@@ -79,6 +82,7 @@ impl<'a> Continuation<'a> {
                 host_results: None,
                 outputs: Vec::new(),
                 outcome: None,
+                invocations: 0,
             },
             args,
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),

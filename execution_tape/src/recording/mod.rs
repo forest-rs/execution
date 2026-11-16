@@ -18,6 +18,19 @@
 //! again in a fresh VM, checks host arguments and the final values/trap, and returns the actual
 //! replay result. It invokes no live host or resource-access sink.
 //!
+//! A recording follows one computation from its entry to its outcome, across invocations when
+//! the computation is saved ([`crate::vm::Invocation::save`]) and resumed
+//! ([`crate::vm::Vm::resume`]): pass the same recorder to each invocation that runs it. It notes
+//! where each invocation saved the computation, the limits each resuming invocation's allowance
+//! came from, and the installs, tag definitions and relinks made while it was saved; replay
+//! saves and resumes its own run at the same points, so fuel and work limits apply as they did.
+//! Nothing else may change the heap while the computation is saved, neither another
+//! invocation or run nor a collection, or the capture reports
+//! [`CaptureFault::Interleaved`]: replay identifies guest-created aggregates by their order.
+//! An invocation of the computation the recorder did not observe makes it report
+//! [`CaptureFault::Unrecorded`], and a recorder that joins a computation it did not see start
+//! reports [`CaptureFault::MissingEntry`].
+//!
 //! Embedding-requested guest callbacks through `PendingHostCall::call_guest` are retained as
 //! [`ControlCommand`]s. Replay issues those commands into the same invocation and executes the
 //! guest bodies again; it checks actual callback results rather than supplying saved guest results.
@@ -226,7 +239,8 @@ pub enum CaptureResource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CaptureFault {
-    /// The sink did not observe invocation values.
+    /// The sink did not observe invocation values, or was handed a computation it did not see
+    /// enter.
     MissingEntry,
     /// The invocation never returned or trapped: completion was missing or execution was cancelled.
     MissingCompletion,
@@ -259,10 +273,19 @@ pub enum CaptureFault {
     /// a moving collection does not preserve. Collect between recorded runs instead, with
     /// [`crate::vm::Vm::collect`]: each recording captures the aggregates it observes at entry.
     Relocated,
-    /// The recorded invocation was saved, or the recorder joined a resumed one.
+    /// While the recorded computation was saved, something changed the heap: another
+    /// invocation or run allocated, a collection moved aggregates, or the embedding built or
+    /// released some.
     ///
-    /// A recording covers one invocation from entry to its outcome.
-    Saved,
+    /// Replay identifies guest-created aggregates by their order in an append-only heap, which
+    /// such a change breaks. Run nothing else on the VM, and collect, only after the recorded
+    /// computation finishes.
+    Interleaved,
+    /// An invocation ran the recorded computation without the recorder, between two it
+    /// recorded.
+    ///
+    /// Pass the same recorder to every invocation that runs the computation.
+    Unrecorded,
 }
 
 impl core::fmt::Display for CaptureFault {
@@ -321,6 +344,20 @@ pub struct RecordedRelink {
     pub relinked: usize,
 }
 
+/// Where a recorded computation was saved and then resumed in a new invocation.
+#[derive(Debug)]
+struct Resumption {
+    /// The observation sequence when it was saved; nothing is observed while it is saved.
+    sequence: usize,
+    /// Fuel the saving invocation spent, which replay reaches before it saves too.
+    fuel: u64,
+    /// Store records repeated before resuming: installs, tags and relinks up to here happened
+    /// before the resuming invocation ran.
+    stored: usize,
+    /// Limits the resuming invocation's allowance came from.
+    limits: Limits,
+}
+
 /// One install, tag definition or relink of the recorded VM, in the order it happened.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
@@ -347,6 +384,9 @@ struct TagRecord {
     name: Box<str>,
     payload: Box<[ValueType]>,
     results: Box<[ValueType]>,
+    /// The observation sequence before which the tag was defined while the recorded
+    /// computation was saved; `None` before entry.
+    defined: Option<usize>,
 }
 #[derive(Debug)]
 enum Store {
@@ -362,7 +402,7 @@ impl Store {
     fn during(&self, units: &[UnitRecord]) -> Option<usize> {
         match self {
             Self::Unit(index) => units[*index].installed,
-            Self::Tag(_) => None,
+            Self::Tag(tag) => tag.defined,
             Self::Relink(relink) => Some(relink.relinked),
         }
     }
@@ -567,6 +607,8 @@ struct Caught {
 /// them before executing guest code. Callback arguments and outcome payloads are never formatted.
 pub struct Recording {
     history: Option<Box<instructions::History>>,
+    /// Where the recorded computation was saved and resumed, in order.
+    resumptions: Vec<Resumption>,
     program: Arc<VerifiedProgram>,
     units: Vec<UnitRecord>,
     store: Vec<Store>,

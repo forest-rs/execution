@@ -7,7 +7,7 @@ use crate::program::{HostSigId, LinkId, Pc, Program, SpanId};
 use crate::recording::control::Action;
 use crate::recording::{
     AggregateId, Answer, CallOutcome, CaptureFault, End, RecordedRelink, RecordedValue, Recording,
-    Store, UnitRecord,
+    Store, TagRecord, UnitRecord,
 };
 use crate::trace::{
     ScopeKind, SuspensionAnswer, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
@@ -641,6 +641,10 @@ trait Installs {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError>;
     fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError>;
     fn units(&self) -> Units<'_>;
+    /// Defines a recorded tag; only the VM between invocations can.
+    fn define_tag(&mut self, _tag: &TagRecord) -> Option<TagRef> {
+        None
+    }
 }
 impl Installs for crate::vm::PendingHostCall<'_, '_, NoReplayEffects> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
@@ -674,9 +678,13 @@ impl<H: Host> Installs for Vm<H> {
     fn units(&self) -> Units<'_> {
         Self::units(self)
     }
+    fn define_tag(&mut self, tag: &TagRecord) -> Option<TagRef> {
+        self.define_tag_with_results(&tag.name, &tag.payload, &tag.results)
+            .ok()
+    }
 }
 
-/// Repeats one recorded install or relink in a VM no invocation borrows, checking its outcome.
+/// Repeats one recorded install, relink or tag definition, checking its outcome.
 fn repeat_store(
     state: &State,
     record: &Recording,
@@ -694,7 +702,19 @@ fn repeat_store(
             let _ = request.relink(relink);
             check_relink(state, relink, request.units())
         }
-        Store::Tag(_) => unreachable!("tags are defined only before entry"),
+        Store::Tag(tag) => check_tag(state, tag, request.define_tag(tag)),
+    }
+}
+
+/// Checks that defining a recorded tag gave it its recorded identity.
+fn check_tag(state: &State, tag: &TagRecord, defined: Option<TagRef>) -> Result<(), ReplayError> {
+    if defined == Some(tag.tag) {
+        Ok(())
+    } else {
+        Err(state.mismatch(Divergence::Tag {
+            expected: tag.tag,
+            actual: defined,
+        }))
     }
 }
 
@@ -751,7 +771,11 @@ impl RecordedHost<'_> {
                     };
                     check_relink(&state, relink, request.units())?;
                 }
-                Store::Tag(_) => unreachable!("tags are defined only before entry"),
+                Store::Tag(tag) => {
+                    // Tags are defined between invocations, where replay repeats them.
+                    let state = self.state.borrow();
+                    check_tag(&state, tag, request.define_tag(tag))?;
+                }
             }
             self.state.borrow_mut().stored += 1;
         }
@@ -1125,8 +1149,11 @@ impl TraceSink for Check<'_> {
                 ValueEvent::Entry { .. }
                 | ValueEvent::Installed { .. }
                 | ValueEvent::Relinked { .. } => {}
-                // Replay drives its own invocation and never collects it.
-                ValueEvent::Collected { .. } => {}
+                // Replay drives its own invocation and never collects it. It saves and resumes
+                // it where the recording did, and checks that in the driver.
+                ValueEvent::Collected { .. }
+                | ValueEvent::Saved { .. }
+                | ValueEvent::Resumed { .. } => {}
                 ValueEvent::HostCall {
                     location,
                     host_sig,
@@ -1540,37 +1567,87 @@ impl Recording {
             record: self,
             state: Rc::clone(&state),
         };
-        let mut options = crate::vm::InvocationOptions::default().yield_host_calls();
-        if !self.suspensions.is_empty() {
-            // The original yielded suspensions, so it opted in; replay answers them again.
-            options = options.yield_suspensions();
+        let mask = TraceMask::INSTR
+            | TraceMask::VALUES
+            | if self
+                .history
+                .as_ref()
+                .is_some_and(|h| !h.config.watches.is_empty())
+            {
+                TraceMask::REGISTERS
+            } else {
+                TraceMask::NONE
+            }
+            | if self.frames.is_empty() {
+                TraceMask::NONE
+            } else {
+                TraceMask::CALL
+            };
+        // The original yielded suspensions if it recorded any, so it opted in; replay answers
+        // them again. A function, not a closure, so each invocation's options borrow anew.
+        fn options<'a>(yields: bool) -> crate::vm::InvocationOptions<'a> {
+            let options = crate::vm::InvocationOptions::default().yield_host_calls();
+            if yields {
+                options.yield_suspensions()
+            } else {
+                options
+            }
         }
-        let options = options.trace(
-            TraceMask::INSTR
-                | TraceMask::VALUES
-                | if self
-                    .history
-                    .as_ref()
-                    .is_some_and(|h| !h.config.watches.is_empty())
-                {
-                    TraceMask::REGISTERS
-                } else {
-                    TraceMask::NONE
-                }
-                | if self.frames.is_empty() {
-                    TraceMask::NONE
-                } else {
-                    TraceMask::CALL
-                },
-            &mut check,
-        );
-        let result = match vm.start_prepaid(entry.func, &args, options, entry.work) {
-            Err(error) => Err(error),
-            Ok(mut invocation) => loop {
-                match invocation.resume(u64::MAX) {
+        let yields = !self.suspensions.is_empty();
+        let mut resumptions = self.resumptions.iter();
+        let mut next = resumptions.next();
+        let mut saved = None;
+        // One pass per invocation of the recorded computation: replay saves and resumes it
+        // where the recording did, so each invocation gets the allowance the original had.
+        let result = loop {
+            let mut invocation = match saved.take() {
+                None => match vm.start_prepaid(
+                    entry.func,
+                    &args,
+                    options(yields).trace(mask, &mut check),
+                    entry.work,
+                ) {
+                    Ok(invocation) => invocation,
                     Err(error) => break Err(error),
-                    Ok(crate::vm::RunStatus::Suspended) => {}
-                    Ok(crate::vm::RunStatus::AwaitingHandler) => {
+                },
+                Some(id) => match vm.resume(id, options(yields).trace(mask, &mut check)) {
+                    Ok(invocation) => invocation,
+                    Err(_) => return Err(state.borrow().mismatch(Divergence::Outcome)),
+                },
+            };
+            let finished = loop {
+                // The recording saved its computation after this many observations and this
+                // much fuel; replay runs exactly that far before saving too.
+                let mut quantum = u64::MAX;
+                if let Some(resumption) = next
+                    && state.borrow().sequence == resumption.sequence
+                {
+                    let fuel = invocation.work().fuel;
+                    if fuel == resumption.fuel {
+                        break None;
+                    }
+                    if fuel > resumption.fuel {
+                        return Err(state.borrow().mismatch(Divergence::Outcome));
+                    }
+                    quantum = resumption.fuel - fuel;
+                }
+                let status = match invocation.resume(quantum) {
+                    Err(error) => break Some(Err(error)),
+                    Ok(status) => status,
+                };
+                // A computation saved while it waited is saved before its wait is answered.
+                if status != crate::vm::RunStatus::Suspended
+                    && status != crate::vm::RunStatus::Complete
+                    && next.is_some_and(|resumption| {
+                        state.borrow().sequence == resumption.sequence
+                            && invocation.work().fuel == resumption.fuel
+                    })
+                {
+                    break None;
+                }
+                match status {
+                    crate::vm::RunStatus::Suspended => {}
+                    crate::vm::RunStatus::AwaitingHandler => {
                         let mut pending = invocation
                             .pending_suspension()
                             .expect("yielded replay suspension");
@@ -1580,15 +1657,15 @@ impl Recording {
                             Reply::Discard => Err(pending.discard()),
                         };
                         if let Err(error) = delivered {
-                            break Err(error);
+                            break Some(Err(error));
                         }
                     }
-                    Ok(crate::vm::RunStatus::Complete) => {
-                        break Ok(invocation.take_outputs().expect("completed replay outputs"));
+                    crate::vm::RunStatus::Complete => {
+                        break Some(Ok(invocation
+                            .take_outputs()
+                            .expect("completed replay outputs")));
                     }
-                    Ok(
-                        crate::vm::RunStatus::AwaitingHost | crate::vm::RunStatus::CallbackReturned,
-                    ) => {
+                    crate::vm::RunStatus::AwaitingHost | crate::vm::RunStatus::CallbackReturned => {
                         let mut request = invocation
                             .pending_host_call()
                             .expect("yielded replay request");
@@ -1596,7 +1673,7 @@ impl Recording {
                         let outcome = match outcome {
                             Delivery::CallGuest { callee, args } => {
                                 if let Err(error) = request.call_guest(callee, args) {
-                                    break Err(error);
+                                    break Some(Err(error));
                                 }
                                 continue;
                             }
@@ -1607,11 +1684,37 @@ impl Recording {
                             Err(error) => (Vec::new(), Err(error)),
                         };
                         if let Err(error) = request.complete(&mut values, outcome) {
-                            break Err(error);
+                            break Some(Err(error));
                         }
                     }
                 }
-            },
+            };
+            if let Some(result) = finished {
+                // Every recorded save must have been repeated.
+                if next.is_some() {
+                    return Err(state.borrow().mismatch(Divergence::Outcome));
+                }
+                break result;
+            }
+            let resumption = next.expect("replay saves only at a recorded resumption");
+            let Ok(id) = invocation.save() else {
+                return Err(state.borrow().mismatch(Divergence::Outcome));
+            };
+            // Installs, tags and relinks made while it was saved come before the next invocation.
+            {
+                let mut state = state.borrow_mut();
+                while state.stored < resumption.stored {
+                    let store = &self.store[state.stored];
+                    state.boundary = ReplayBoundary::Store {
+                        index: state.stored,
+                    };
+                    repeat_store(&state, self, store, &mut vm)?;
+                    state.stored += 1;
+                }
+            }
+            vm.set_limits(resumption.limits.clone());
+            saved = Some(id);
+            next = resumptions.next();
         };
         let mut state = state.borrow_mut();
         if let Some(error) = &state.error {

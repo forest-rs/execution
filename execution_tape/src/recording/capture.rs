@@ -6,7 +6,7 @@ use crate::program::{Pc, Program, SpanId};
 use crate::recording::{
     Answer, Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry,
     InstructionCapture, InstructionOutcome, InstructionStatus, Propagation, RecordLimits,
-    RecordedRelink, Recording, Store, TagRecord, Thrown, UnitRecord, Yielded,
+    RecordedRelink, Recording, Resumption, Store, TagRecord, Thrown, UnitRecord, Yielded,
     control::{Action, Command, Returned},
     frames::{ActivationExit, ActivationOutcome, Frame, FrameId},
     instructions::History,
@@ -18,12 +18,13 @@ use crate::trace::{
 };
 use crate::value::{FuncRef, UnitId};
 use crate::verifier::VerifiedProgram;
-use crate::vm::{StoreEvent, Trap, Units};
+use crate::vm::{StackId, StoreEvent, Trap, Units};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-/// Owns boundary observations for one invocation and the units it runs.
+/// Owns boundary observations for one computation and the units it runs, across the
+/// invocations that save and resume it.
 ///
 /// At entry the recorder snapshots the VM's units and tags, sharing their programs; installs
 /// while the invocation is suspended are recorded where they happen. Replay rebuilds the same
@@ -32,7 +33,8 @@ use core::ops::Range;
 /// Pass [`Self::mask`] to the ordinary VM run, then consume the recorder with [`Self::finish`].
 /// Capture failure stops value/graph retention; guest execution and live host effects continue.
 /// The final VM trap is still retained when its payload budget permits. Create a new
-/// recorder for each invocation. The recorder never changes the VM, host or supplied values.
+/// recorder for each computation, and pass it to every invocation that runs it. The recorder
+/// never changes the VM, host or supplied values.
 pub struct Recorder {
     history: Option<alloc::boxed::Box<History>>,
     program: Arc<VerifiedProgram>,
@@ -60,6 +62,22 @@ pub struct Recorder {
     store: Vec<Store>,
     /// Entries of the VM's store log already recorded.
     logged: usize,
+    /// The recorded computation, once it was first saved.
+    stack: Option<StackId>,
+    /// Where the recorded computation was saved, until it is resumed.
+    saved: Option<Saved>,
+    resumptions: Vec<Resumption>,
+}
+
+/// A recorded computation's state when its invocation saved it.
+#[derive(Clone, Copy)]
+struct Saved {
+    sequence: usize,
+    fuel: u64,
+    /// How many invocations ran the computation before the one that saved it.
+    invocation: u64,
+    /// The heap's end, which must not move before the computation is resumed.
+    heap_end: u32,
 }
 
 impl Recorder {
@@ -91,6 +109,9 @@ impl Recorder {
             units: Vec::new(),
             store: Vec::new(),
             logged: 0,
+            stack: None,
+            saved: None,
+            resumptions: Vec::new(),
         }
     }
 
@@ -140,6 +161,7 @@ impl Recorder {
         let (arena, initial) = self.builder.finish();
         Recording {
             history: self.history,
+            resumptions: self.resumptions,
             program: self.program,
             units: self.units,
             store: self.store,
@@ -201,10 +223,13 @@ impl Recorder {
         location
     }
 
-    /// Records the VM's installs and tag definitions not yet recorded, with each new unit's
-    /// current link targets.
+    /// Records the VM's installs and tag definitions not yet recorded.
     ///
-    /// `installed` is the observation sequence for installs during the invocation.
+    /// `installed` is the observation sequence for those made after entry, during an
+    /// invocation or while the computation was saved; `None` records the store at entry. A
+    /// unit installed after entry is recorded with the links its program declares, which
+    /// replay's install gives it too; [`Self::record_relinks`] records any relink since. A
+    /// unit recorded at entry keeps its links as they are.
     fn record_store(&mut self, units: Units<'_>, installed: Option<usize>) {
         for &event in &units.log()[self.logged.min(units.log().len())..] {
             match event {
@@ -213,12 +238,23 @@ impl Recorder {
                         self.fail(CaptureFault::ForeignUnit);
                         return;
                     }
+                    let program = units.program(unit).expect("logged unit");
+                    let links = if installed.is_some() {
+                        program
+                            .program()
+                            .links
+                            .iter()
+                            .map(|link| FuncRef::new(unit, link.target))
+                            .collect()
+                    } else {
+                        units.links(unit).expect("logged unit").into()
+                    };
                     self.store.push(Store::Unit(self.units.len()));
                     self.units.push(UnitRecord {
                         unit,
-                        program: Arc::clone(units.program(unit).expect("logged unit")),
+                        program: Arc::clone(program),
                         tags: units.tags(unit).expect("logged unit").into(),
-                        links: units.links(unit).expect("logged unit").into(),
+                        links,
                         installed,
                     });
                 }
@@ -227,10 +263,42 @@ impl Recorder {
                     name: units.tag_name(tag).expect("logged tag").into(),
                     payload: units.tag_payload(tag).expect("logged tag").into(),
                     results: units.tag_results(tag).expect("logged tag").into(),
+                    defined: installed,
                 })),
             }
         }
         self.logged = units.log().len();
+    }
+
+    /// Records as relinks the links that differ from what the recording has them name, with
+    /// the observation sequence before which they changed.
+    fn record_relinks(&mut self, units: Units<'_>) {
+        let mut expected: Vec<Vec<FuncRef>> =
+            self.units.iter().map(|unit| unit.links.to_vec()).collect();
+        for store in &self.store {
+            if let Store::Relink(relink) = store {
+                expected[relink.unit.0 as usize][relink.link.0 as usize] = relink.target;
+            }
+        }
+        for (index, links) in expected.into_iter().enumerate() {
+            let unit = self.units[index].unit;
+            let Some(current) = units.links(unit) else {
+                self.fail(CaptureFault::ForeignUnit);
+                return;
+            };
+            for (link, (&was, &now)) in links.iter().zip(current).enumerate() {
+                if was != now {
+                    self.store.push(Store::Relink(RecordedRelink {
+                        unit,
+                        link: crate::program::LinkId(
+                            u32::try_from(link).expect("link ids fit u32"),
+                        ),
+                        target: now,
+                        relinked: self.sequence,
+                    }));
+                }
+            }
+        }
     }
 
     fn check_location(&self, location: TraceLocation) -> Result<(), CaptureFault> {
@@ -264,7 +332,9 @@ impl Recorder {
             // The unit table is recorded before capture; see `values`.
             ValueEvent::Installed { .. }
             | ValueEvent::Relinked { .. }
-            | ValueEvent::Collected { .. } => {}
+            | ValueEvent::Collected { .. }
+            | ValueEvent::Saved { .. }
+            | ValueEvent::Resumed { .. } => {}
             ValueEvent::CallbackEnter {
                 location,
                 callee,
@@ -795,6 +865,64 @@ impl TraceSink for Recorder {
                 self.fail(CaptureFault::Relocated);
                 return;
             }
+            ValueEvent::Saved {
+                stack,
+                work,
+                invocation,
+                aggregates,
+            } => {
+                if self.entry.is_none() || self.end.is_some() || self.saved.is_some() {
+                    self.fail(CaptureFault::InvalidSequence);
+                }
+                if *self.stack.get_or_insert(stack) != stack {
+                    // Another computation, whose entry this recorder did not see.
+                    self.fail(CaptureFault::MissingEntry);
+                    return;
+                }
+                self.saved = Some(Saved {
+                    sequence: self.sequence,
+                    fuel: work.fuel,
+                    invocation,
+                    heap_end: aggregates.handle_end(),
+                });
+                return;
+            }
+            ValueEvent::Resumed {
+                stack,
+                invocation,
+                limits,
+                aggregates,
+                units,
+            } => {
+                let Some(saved) = self.saved.take() else {
+                    self.fail(CaptureFault::InvalidSequence);
+                    return;
+                };
+                if self.stack != Some(stack) {
+                    // Another computation, whose entry this recorder did not see.
+                    self.fail(CaptureFault::MissingEntry);
+                    return;
+                }
+                if invocation != saved.invocation + 1 {
+                    self.fail(CaptureFault::Unrecorded);
+                    return;
+                }
+                if aggregates.handle_end() != saved.heap_end {
+                    self.fail(CaptureFault::Interleaved);
+                    return;
+                }
+                if self.fault.is_none() {
+                    self.record_store(units, Some(self.sequence));
+                    self.record_relinks(units);
+                }
+                self.resumptions.push(Resumption {
+                    sequence: saved.sequence,
+                    fuel: saved.fuel,
+                    stored: self.store.len(),
+                    limits: limits.clone(),
+                });
+                return;
+            }
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
@@ -809,7 +937,9 @@ impl TraceSink for Recorder {
             ValueEvent::Entry { .. }
             | ValueEvent::Installed { .. }
             | ValueEvent::Relinked { .. }
-            | ValueEvent::Collected { .. } => None,
+            | ValueEvent::Collected { .. }
+            | ValueEvent::Saved { .. }
+            | ValueEvent::Resumed { .. } => None,
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
@@ -936,11 +1066,19 @@ impl TraceSink for Recorder {
     }
 
     fn attach(&mut self, _program: &Program, _attachment: crate::trace::Attachment<'_>) {
-        self.fail(CaptureFault::Saved);
+        // A recording follows one computation from its entry: it rejoins the computation it
+        // saw saved, and its open frames are still its own.
+        if self.entry.is_none() {
+            self.fail(CaptureFault::MissingEntry);
+        } else if self.saved.is_none() {
+            self.fail(CaptureFault::InvalidSequence);
+        }
     }
 
     fn release(&mut self, _program: &Program) {
-        self.fail(CaptureFault::Saved);
+        if self.saved.is_none() {
+            self.fail(CaptureFault::InvalidSequence);
+        }
     }
 
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
