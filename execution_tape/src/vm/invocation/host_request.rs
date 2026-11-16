@@ -291,15 +291,16 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let inv = &self.running;
         let code = self.code();
         read_registers(
-            &inv.continuation.ctx,
+            &inv.continuation.stack.ctx,
             code.sources(&inv.continuation.args, inv.vm.memory.aggs()),
-            self.pending.base(&inv.continuation.ctx),
+            self.pending.base(&inv.continuation.stack.ctx),
             self.pending.args(code),
         )
     }
     pub(crate) fn restore_host_work(&mut self, work: DataWork) -> Result<(), Trap> {
         let inv = &mut self.running;
         inv.continuation
+            .stack
             .host_results
             .get_or_insert_with(|| inv.budget.host_results())
             .prepaid(work)
@@ -318,6 +319,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ) -> Result<AggHandle, AggError> {
         let inv = &mut self.running;
         inv.continuation
+            .stack
             .host_results
             .get_or_insert_with(|| inv.budget.host_results())
             .restore_node(inv.vm.memory.aggs(), kind, values)
@@ -337,6 +339,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             pending.import,
             inv.vm.memory.aggs(),
             inv.continuation
+                .stack
                 .host_results
                 .get_or_insert_with(|| inv.budget.host_results()),
             inv.continuation
@@ -413,10 +416,11 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
 }
 impl<H: Host> Drop for PendingHostCall<'_, '_, H> {
     fn drop(&mut self) {
-        if self.delivering && self.running.continuation.outcome.is_none() {
+        if self.delivering && self.running.continuation.stack.outcome.is_none() {
             let pending = self
                 .running
                 .continuation
+                .stack
                 .control
                 .pending_host
                 .get_or_insert(self.pending);
@@ -437,11 +441,12 @@ impl<'vm, H: Host> Invocation<'vm, H> {
 
 impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
     pub(in crate::vm) fn pending_host_call(self) -> Option<PendingHostCall<'request, 'vm, H>> {
-        if self.continuation.outcome.is_some() {
+        if self.continuation.stack.outcome.is_some() {
             return None;
         }
         let pending = self
             .continuation
+            .stack
             .control
             .pending_host
             .filter(|pending| !pending.abandoned)?;
@@ -455,8 +460,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
     fn code(&self) -> Code<'_> {
         Code::new(
             &self.vm.units,
-            self.continuation.unit,
-            &self.continuation.program,
+            self.continuation.stack.unit,
+            &self.continuation.stack.program,
         )
     }
 
@@ -464,8 +469,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         let vm = &mut *self.vm;
         let code = Code::new(
             &vm.units,
-            self.continuation.unit,
-            &self.continuation.program,
+            self.continuation.stack.unit,
+            &self.continuation.stack.program,
         );
         let site = request.resolve(code);
         let mut inline_args = [ValueRef::Unit; 8];
@@ -477,9 +482,9 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             &mut arg_vec
         };
         for (slot, value) in args.iter_mut().zip(read_registers(
-            &self.continuation.ctx,
+            &self.continuation.stack.ctx,
             code.sources(&self.continuation.args, vm.memory.aggs()),
-            request.base(&self.continuation.ctx),
+            request.base(&self.continuation.stack.ctx),
             site.args,
         )) {
             *slot = value;
@@ -497,6 +502,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             request.import,
             vm.memory.aggs(),
             self.continuation
+                .stack
                 .host_results
                 .get_or_insert_with(|| self.budget.host_results()),
             self.continuation
@@ -516,11 +522,12 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         values: &mut [Value],
         mut outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
-        if let Some(callbacks) = &mut self.continuation.control.callbacks {
+        if let Some(callbacks) = &mut self.continuation.stack.control.callbacks {
             callbacks.returned = None;
         }
         let mut results = self
             .continuation
+            .stack
             .host_results
             .take()
             .unwrap_or_else(|| self.budget.host_results());
@@ -533,12 +540,12 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         self.budget.payload_work += work.payload;
         let result = if self.continuation.trace.active() {
             finish_pending::<WithTracePolicy>(
-                &mut self.continuation.ctx,
+                &mut self.continuation.stack.ctx,
                 self.budget,
                 Code::new(
                     &self.vm.units,
-                    self.continuation.unit,
-                    &self.continuation.program,
+                    self.continuation.stack.unit,
+                    &self.continuation.stack.program,
                 ),
                 &self.continuation.args,
                 self.vm.memory.aggs(),
@@ -552,12 +559,12 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             )
         } else {
             finish_pending::<NoTracePolicy>(
-                &mut self.continuation.ctx,
+                &mut self.continuation.stack.ctx,
                 self.budget,
                 Code::new(
                     &self.vm.units,
-                    self.continuation.unit,
-                    &self.continuation.program,
+                    self.continuation.stack.unit,
+                    &self.continuation.stack.program,
                 ),
                 &self.continuation.args,
                 self.vm.memory.aggs(),
@@ -572,11 +579,12 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         };
         let pending = self
             .continuation
+            .stack
             .control
             .pending_host
             .take()
             .expect("pending guard");
-        if let Some(callbacks) = &mut self.continuation.control.callbacks {
+        if let Some(callbacks) = &mut self.continuation.stack.control.callbacks {
             // Its outcome and registers now hold whatever it kept of its promoted aggregates.
             callbacks.completed(pending.depth);
         }
@@ -594,30 +602,31 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
     fn raise_pending(&mut self, pending: PendingHost, thrown: HostThrow) -> Result<(), TrapInfo> {
         let prepared = &self.vm.units.unit(pending.location.unit).program;
         let program = prepared.program();
-        let span =
-            self.continuation
-                .ctx
-                .span_at(program, pending.location.func, pending.location.pc.0);
+        let span = self.continuation.stack.ctx.span_at(
+            program,
+            pending.location.func,
+            pending.location.pc.0,
+        );
         let continuation = &mut *self.continuation;
         if continuation.trace.active() {
             self.vm.raise_host::<WithTracePolicy>(
-                &mut continuation.ctx,
+                &mut continuation.stack.ctx,
                 self.budget,
                 prepared,
                 thrown,
                 &mut continuation.trace,
-                &mut continuation.control,
+                &mut continuation.stack.control,
                 pending.location,
                 span,
             )
         } else {
             self.vm.raise_host::<NoTracePolicy>(
-                &mut continuation.ctx,
+                &mut continuation.stack.ctx,
                 self.budget,
                 prepared,
                 thrown,
                 &mut continuation.trace,
-                &mut continuation.control,
+                &mut continuation.stack.control,
                 pending.location,
                 span,
             )
@@ -625,46 +634,49 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
     }
 
     pub(super) fn finish_abandoned_host(&mut self, pending: PendingHost) -> TrapInfo {
-        if let Some(results) = self.continuation.host_results.take() {
+        if let Some(results) = self.continuation.stack.host_results.take() {
             self.budget.aggregate_work += results.work.aggregate;
             self.budget.payload_work += results.work.payload;
         }
-        self.continuation.control.pending_host = None;
+        self.continuation.stack.control.pending_host = None;
         self.finish_abandoned(pending.location)
     }
 
     /// Ends the invocation after a delivery to the waiting instruction at `location` was
     /// abandoned part way, so that it can be neither retried nor continued.
     pub(super) fn finish_abandoned(&mut self, location: TraceLocation) -> TrapInfo {
-        let span = self.continuation.ctx.span_at(
+        let span = self.continuation.stack.ctx.span_at(
             self.vm.units.unit(location.unit).program.program(),
             location.func,
             location.pc.0,
         );
-        let error =
-            self.continuation
-                .ctx
-                .trap(location.func, location.pc.0, span, Trap::HostCallAbandoned);
+        let error = self.continuation.stack.ctx.trap(
+            location.func,
+            location.pc.0,
+            span,
+            Trap::HostCallAbandoned,
+        );
         self.vm.memory.rollback(self.checkpoint);
-        self.budget.frames -= self.continuation.ctx.held_frames();
+        self.budget.frames -= self.continuation.stack.ctx.held_frames();
         self.budget.contract_scratch.clear_proofs();
-        self.continuation.outputs.clear();
+        self.continuation.stack.outputs.clear();
         // Install the terminal state before invoking observers, as in normal finish.
         // Unwinding from cancellation must not expose the fallthrough continuation.
-        self.continuation.outcome = Some(Err(error.clone()));
+        self.continuation.stack.outcome = Some(Err(error.clone()));
         self.vm.close_lease();
         self.continuation
             .trace
-            .cancel(self.continuation.program.program(), location, span);
+            .cancel(self.continuation.stack.program.program(), location, span);
         callback::finish_instructions(
-            &mut self.continuation.control,
+            &mut self.continuation.stack.control,
             &mut self.continuation.trace,
-            self.continuation.program.program(),
+            self.continuation.stack.program.program(),
             TraceOutcome::Cancelled,
         );
-        self.continuation
-            .trace
-            .run_end(self.continuation.program.program(), TraceOutcome::Cancelled);
+        self.continuation.trace.run_end(
+            self.continuation.stack.program.program(),
+            TraceOutcome::Cancelled,
+        );
         error
     }
 }

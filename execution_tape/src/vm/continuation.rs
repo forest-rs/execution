@@ -10,21 +10,30 @@ use super::*;
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
-pub(super) struct Continuation<'a> {
+/// One computation's execution state: its code, registers, control and outcome.
+///
+/// It owns everything and borrows nothing, and holds no observers, so the VM can keep it between
+/// leases. The lease that drives it adds its inputs, if borrowed, and its observers.
+pub(super) struct Stack {
     /// The entry unit's program, retained so suspended control never borrows the unit table.
     pub(super) program: Arc<VerifiedProgram>,
     pub(super) unit: UnitId,
     pub(super) entry: FuncId,
-    pub(super) args: Cow<'a, [Value]>,
     /// The register file and control this stack runs on, lent by its VM.
     pub(super) ctx: Registers,
     pub(super) control: ExecutionControl,
-    pub(super) trace: TraceCtx<'a>,
-    pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
     pub(super) host_results: Option<crate::host::HostResults>,
-    pub(super) register_state: observations::RegisterState,
     pub(super) outputs: Vec<Value>,
     pub(super) outcome: Option<Result<(), TrapInfo>>,
+}
+
+/// A stack driven by one lease, with that lease's inputs and observers.
+pub(super) struct Continuation<'a> {
+    pub(super) stack: Stack,
+    pub(super) args: Cow<'a, [Value]>,
+    pub(super) trace: TraceCtx<'a>,
+    pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
+    pub(super) register_state: observations::RegisterState,
 }
 
 impl<'a> Continuation<'a> {
@@ -44,26 +53,28 @@ impl<'a> Continuation<'a> {
         let mut ctx = core::mem::take(&mut exec.ctx);
         ctx.clear();
         Self {
-            program,
-            unit: entry.unit,
-            entry: entry.func,
+            stack: Stack {
+                program,
+                unit: entry.unit,
+                entry: entry.func,
+                ctx,
+                control,
+                host_results: None,
+                outputs: Vec::new(),
+                outcome: None,
+            },
             args,
-            ctx,
-            control,
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
             access: options.access,
-            host_results: None,
             register_state: observations::RegisterState::default(),
-            outputs: Vec::new(),
-            outcome: None,
         }
     }
 
     /// Returns the register file and control to the execution state they were taken from.
     pub(super) fn give_back(&mut self, exec: &mut Exec) {
-        self.ctx.release_payloads();
-        exec.ctx = core::mem::take(&mut self.ctx);
-        exec.control = core::mem::take(&mut self.control);
+        self.stack.ctx.release_payloads();
+        exec.ctx = core::mem::take(&mut self.stack.ctx);
+        exec.control = core::mem::take(&mut self.stack.control);
     }
 
     pub(super) fn initialize<H: Host>(
@@ -72,15 +83,15 @@ impl<'a> Continuation<'a> {
         budget: &mut Budget,
         work: DataWork,
     ) -> Result<(), TrapInfo> {
-        budget.select(&self.control);
+        budget.select(&self.stack.control);
         self.trace.run_start(
-            self.program.program(),
-            FuncRef::new(self.unit, self.entry),
+            self.stack.program.program(),
+            FuncRef::new(self.stack.unit, self.stack.entry),
             self.args.len(),
         );
         self.trace
-            .values(self.program.program(), || ValueEvent::Entry {
-                entry: FuncRef::new(self.unit, self.entry),
+            .values(self.stack.program.program(), || ValueEvent::Entry {
+                entry: FuncRef::new(self.stack.unit, self.stack.entry),
                 args: &self.args,
                 aggregates: vm.memory.aggs(),
                 limits: &vm.limits,
@@ -89,24 +100,24 @@ impl<'a> Continuation<'a> {
             });
         budget
             .charge_import(work)
-            .map_err(|trap| self.ctx.trap(self.entry, 0, None, trap))?;
+            .map_err(|trap| self.stack.ctx.trap(self.stack.entry, 0, None, trap))?;
         if self.trace.active() {
             vm.initialize_run::<WithTracePolicy>(
-                &mut self.ctx,
+                &mut self.stack.ctx,
                 budget,
-                &self.program,
-                self.unit,
-                self.entry,
+                &self.stack.program,
+                self.stack.unit,
+                self.stack.entry,
                 &self.args,
                 &mut self.trace,
             )?;
         } else {
             vm.initialize_run::<NoTracePolicy>(
-                &mut self.ctx,
+                &mut self.stack.ctx,
                 budget,
-                &self.program,
-                self.unit,
-                self.entry,
+                &self.stack.program,
+                self.stack.unit,
+                self.stack.entry,
                 &self.args,
                 &mut self.trace,
             )?;
@@ -124,35 +135,35 @@ impl Continuation<'_> {
         budget: &mut Budget,
         quantum: u64,
     ) -> Result<Progress, TrapInfo> {
-        budget.select(&self.control);
-        self.control.remaining = quantum;
+        budget.select(&self.stack.control);
+        self.stack.control.remaining = quantum;
         let access = self
             .access
             .as_mut()
             .map(|sink| &mut **sink as &mut dyn AccessSink);
         if self.trace.active() {
             vm.execute_loop::<WithTracePolicy, true>(
-                &mut self.ctx,
+                &mut self.stack.ctx,
                 budget,
-                self.entry,
+                self.stack.entry,
                 &self.args,
-                &mut self.outputs,
+                &mut self.stack.outputs,
                 &mut self.trace,
                 access,
                 &mut self.register_state,
-                &mut self.control,
+                &mut self.stack.control,
             )
         } else {
             vm.execute_loop::<NoTracePolicy, true>(
-                &mut self.ctx,
+                &mut self.stack.ctx,
                 budget,
-                self.entry,
+                self.stack.entry,
                 &self.args,
-                &mut self.outputs,
+                &mut self.stack.outputs,
                 &mut self.trace,
                 access,
                 &mut (),
-                &mut self.control,
+                &mut self.stack.control,
             )
         }
     }
@@ -245,7 +256,7 @@ mod tests {
             Ok(Progress::Returned(_))
         ));
         assert_eq!(vm.aggregates().len_u32(), 4);
-        assert_eq!(child.outputs, [Value::Agg(AggHandle(3))]);
+        assert_eq!(child.stack.outputs, [Value::Agg(AggHandle(3))]);
         assert_eq!(
             vm.aggregates().tuple_get(AggHandle(1), 0).unwrap(),
             Value::Str("parent".into())
@@ -254,11 +265,14 @@ mod tests {
             parent.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
-        assert_eq!(parent.outputs, [Value::Agg(AggHandle(1))]);
+        assert_eq!(parent.stack.outputs, [Value::Agg(AggHandle(1))]);
 
         // Only the execution owner knows the complete surviving root set. Both candidate
         // outputs are still private here; publication and remapping happen together.
-        let mut roots = vec![parent.outputs.pop().unwrap(), child.outputs.pop().unwrap()];
+        let mut roots = vec![
+            parent.stack.outputs.pop().unwrap(),
+            child.stack.outputs.pop().unwrap(),
+        ];
         vm.memory.commit(checkpoint, &mut roots).unwrap();
         assert_eq!(vm.aggregates().len_u32(), 2);
         for (root, expected) in roots.iter().zip(["parent", "child"]) {
@@ -293,7 +307,7 @@ mod tests {
         ));
         for (continuation, expected) in [(&parent, "old revision"), (&replacement, "new revision")]
         {
-            let Value::Agg(handle) = continuation.outputs[0] else {
+            let Value::Agg(handle) = continuation.stack.outputs[0] else {
                 panic!("expected tuple")
             };
             assert_eq!(
@@ -344,7 +358,7 @@ mod tests {
             child.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
-        let child_output = child.outputs[0].clone();
+        let child_output = child.stack.outputs[0].clone();
         Running::new(&mut vm, &mut parent, &mut budget, checkpoint)
             .pending_host_call()
             .unwrap()
@@ -354,7 +368,7 @@ mod tests {
             parent.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
-        assert_eq!(parent.outputs, [child_output]);
+        assert_eq!(parent.stack.outputs, [child_output]);
         assert_eq!(
             vm.aggregates().len_u32(),
             2,
@@ -416,7 +430,7 @@ mod tests {
                 ));
                 assert_eq!(budget.payload_work, 3);
             }
-            let Value::Agg(handle) = first.outputs[0] else {
+            let Value::Agg(handle) = first.stack.outputs[0] else {
                 panic!("expected tuple")
             };
             assert_eq!(

@@ -152,13 +152,13 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
             .verified(self.pending.location.func)
             .expect("suspended function");
         read_registers(
-            &continuation.ctx,
+            &continuation.stack.ctx,
             ValueSources::new(
                 &self.running.vm.units,
                 &continuation.args,
                 self.running.vm.memory.aggs(),
             ),
-            &continuation.ctx.frames[self.pending.depth - 1].base,
+            &continuation.stack.ctx.frames[self.pending.depth - 1].base,
             body.vregs(self.pending.payload),
         )
     }
@@ -274,11 +274,12 @@ impl<'vm, H: Host> Invocation<'vm, H> {
     /// Only invocations started with [`InvocationOptions::yield_suspensions`] yield suspensions.
     /// Repeated queries and dropped views neither execute guest code nor answer it.
     pub fn pending_suspension(&mut self) -> Option<PendingSuspension<'_, 'vm, H>> {
-        if self.continuation.outcome.is_some() {
+        if self.continuation.stack.outcome.is_some() {
             return None;
         }
         let pending = self
             .continuation
+            .stack
             .control
             .pending_suspension
             .filter(|pending| !pending.abandoned)?;
@@ -296,7 +297,7 @@ impl<H: Host> Running<'_, '_, H> {
     /// panics part way leaves the invocation terminal instead of resumable after a `suspend`
     /// whose results were never written.
     fn answer(&mut self, pending: PendingSuspend, answer: Answer) -> Result<(), TrapInfo> {
-        self.continuation.control.pending_suspension = Some(PendingSuspend {
+        self.continuation.stack.control.pending_suspension = Some(PendingSuspend {
             abandoned: true,
             ..pending
         });
@@ -305,7 +306,7 @@ impl<H: Host> Running<'_, '_, H> {
         } else {
             self.deliver::<NoTracePolicy>(pending, answer)
         };
-        self.continuation.control.pending_suspension = None;
+        self.continuation.stack.control.pending_suspension = None;
         if let Err(error) = &result {
             self.finish(Err(error.clone()));
         }
@@ -339,7 +340,7 @@ impl<H: Host> Running<'_, '_, H> {
                 aggregates: vm.memory.aggs(),
             }
         });
-        let ctx = &mut continuation.ctx;
+        let ctx = &mut continuation.stack.ctx;
         let fail =
             |ctx: &Registers, trap| ctx.trap(location.func, location.pc.0, pending.span, trap);
         match answer {
@@ -357,7 +358,7 @@ impl<H: Host> Running<'_, '_, H> {
                     &unit.program,
                     HostThrow { tag, payload },
                     &mut continuation.trace,
-                    &mut continuation.control,
+                    &mut continuation.stack.control,
                     location,
                     pending.span,
                 )

@@ -101,6 +101,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn callback_results(&self) -> Option<&[Value]> {
         self.running
             .continuation
+            .stack
             .control
             .callbacks
             .as_ref()?
@@ -119,6 +120,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn take_callback_results(&mut self) -> Option<Vec<Value>> {
         self.running
             .continuation
+            .stack
             .control
             .callbacks
             .as_mut()?
@@ -131,10 +133,11 @@ impl<H: Host> Running<'_, '_, H> {
     fn begin_callback(&mut self, callee: Value, args: Vec<Value>) -> Result<(), TrapInfo> {
         let pending = self
             .continuation
+            .stack
             .control
             .pending_host
             .expect("pending host guard");
-        let span = self.continuation.ctx.span_at(
+        let span = self.continuation.stack.ctx.span_at(
             self.vm.units.unit(pending.location.unit).program.program(),
             pending.location.func,
             pending.location.pc.0,
@@ -143,8 +146,8 @@ impl<H: Host> Running<'_, '_, H> {
         match result {
             Ok(()) => Ok(()),
             Err(trap) => {
-                self.continuation.control.pending_host = None;
-                let error = self.continuation.ctx.trap(
+                self.continuation.stack.control.pending_host = None;
+                let error = self.continuation.stack.ctx.trap(
                     pending.location.func,
                     pending.location.pc.0,
                     span,
@@ -164,11 +167,12 @@ impl<H: Host> Running<'_, '_, H> {
     ) -> Result<(), Trap> {
         debug_assert_eq!(
             pending.depth,
-            self.continuation.ctx.frames.len(),
+            self.continuation.stack.ctx.frames.len(),
             "only the active host request can enter a callback"
         );
         let mut staging = self
             .continuation
+            .stack
             .host_results
             .take()
             .unwrap_or_else(|| self.budget.host_results());
@@ -239,14 +243,15 @@ impl<H: Host> Running<'_, '_, H> {
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
         self.budget.charge_payload_bytes(payload, 1)?;
-        let base = self.continuation.ctx.alloc_frame(prepared);
+        let base = self.continuation.stack.ctx.alloc_frame(prepared);
         for (register, value) in prepared.reg_layout.arg_regs.iter().copied().zip(args) {
             self.continuation
+                .stack
                 .ctx
                 .write_owned_value(base, register, value)?;
         }
         self.vm.check_arg_contracts(
-            &mut self.continuation.ctx,
+            &mut self.continuation.stack.ctx,
             self.budget,
             unit,
             function,
@@ -280,7 +285,7 @@ impl<H: Host> Running<'_, '_, H> {
             }
         }
         self.budget.frames += 1;
-        self.continuation.ctx.frames.push(Frame {
+        self.continuation.stack.ctx.frames.push(Frame {
             unit,
             func: function,
             pc: prepared.pc_at_ix(0).unwrap_or(0),
@@ -289,9 +294,10 @@ impl<H: Host> Running<'_, '_, H> {
             base,
             return_to: None,
         });
-        self.continuation.control.enter(pending.location);
+        self.continuation.stack.control.enter(pending.location);
         let callbacks = self
             .continuation
+            .stack
             .control
             .callbacks
             .get_or_insert_with(|| Box::new(Callbacks::default()));
@@ -308,10 +314,10 @@ impl<H: Host> Running<'_, '_, H> {
             host: pending,
             instruction: instruction.is_some(),
         });
-        self.continuation.control.pending_host = None;
+        self.continuation.stack.control.pending_host = None;
         self.continuation.trace.call_scope_enter_if_enabled(
             program,
-            self.continuation.ctx.frames.len(),
+            self.continuation.stack.ctx.frames.len(),
             TraceLocation {
                 unit,
                 func: function,
