@@ -170,6 +170,17 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     fn code(&self) -> Code<'_> {
         self.running.code()
     }
+    /// Names this request for [`Invocation::host_request`], across the invocations that run its
+    /// computation.
+    #[must_use]
+    pub fn id(&self) -> RequestId {
+        RequestId::host(&self.running, self.pending.admission)
+    }
+
+    pub(super) fn admission(&self) -> u64 {
+        self.pending.admission
+    }
+
     /// Exact source instruction that admitted this request.
     #[must_use]
     pub fn location(&self) -> TraceLocation {

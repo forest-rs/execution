@@ -16,6 +16,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Name the requests a computation waits at. `PendingHostCall::id` and `PendingSuspension::id`
+  return a `RequestId` that stays valid while the computation waits there, across `save` and
+  `Vm::resume`; `Invocation::host_request(id)` and `Invocation::suspension(id)` borrow that
+  request again, or refuse with `RequestError::{OtherComputation, OtherKind, NotWaiting}`
+  once the computation has moved past it. Each admission is a new request; a host request a
+  guest callback returned to keeps its ID.
 - Create and end saved computations without running them, and bound what saved computations
   hold. `Vm::spawn(entry, args) -> Result<ComputationId, TrapInfo>` saves a new computation
   before its first instruction, checking its entry as `Vm::start` does, and `Vm::discard(id)`

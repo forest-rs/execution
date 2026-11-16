@@ -813,6 +813,7 @@ impl<H: Host> Vm<H> {
             payload,
             rets,
             depth: ctx.frames.len(),
+            admission: control.admit(),
             abandoned: true,
         });
         let program = self.units.unit(location.unit).program.program();

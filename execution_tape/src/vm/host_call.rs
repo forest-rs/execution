@@ -24,6 +24,8 @@ pub(super) struct PendingHost {
     // Admitting guest frame. A poisoned callback can leave this parent operation suspended
     // below a new guest leaf; inspection must not assign the parent's location to that leaf.
     pub(super) depth: usize,
+    /// Which of its stack's admissions this is, for [`super::RequestId`].
+    pub(super) admission: u64,
     pub(super) abandoned: bool,
     // A guest callback returned to this request, which is waiting again.
     pub(super) callback_returned: bool,

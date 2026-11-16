@@ -98,6 +98,8 @@ pub(super) struct ExecutionControl {
     owner: u64,
     frames: Vec<Activation>,
     last: u64,
+    /// Host requests and suspensions admitted on this stack, which number their request IDs.
+    admissions: u64,
 }
 impl ExecutionControl {
     /// Bytes of activation capacity held.
@@ -108,6 +110,12 @@ impl ExecutionControl {
     /// The caller location of the activation at `index`; `None` for a root.
     pub(super) fn caller(&self, index: usize) -> Option<TraceLocation> {
         self.frames.get(index).and_then(|frame| frame.caller)
+    }
+
+    /// Numbers a newly admitted host request or suspension.
+    pub(super) fn admit(&mut self) -> u64 {
+        self.admissions += 1;
+        self.admissions
     }
 
     pub(super) fn owner(&self) -> u64 {
@@ -149,6 +157,7 @@ impl ExecutionControl {
         self.owner = owner;
         self.frames.clear();
         self.last = 0;
+        self.admissions = 0;
     }
     pub(super) fn paused_location(&self, ctx: &Registers, index: usize) -> TraceLocation {
         if index + 1 < ctx.frames.len() {

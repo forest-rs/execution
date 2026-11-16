@@ -67,7 +67,8 @@ pub use saved::{ComputationId, ResumeError};
 mod units;
 mod work;
 pub use invocation::{
-    Invocation, InvocationOptions, PendingHostCall, PendingSuspension, RunStatus,
+    Invocation, InvocationOptions, PendingHostCall, PendingSuspension, RequestError, RequestId,
+    RunStatus,
 };
 use ownership::BorrowedOrOwned;
 pub use units::{InstallError, LinkMismatch, RelinkError, StoreEvent, TagError, Units};
@@ -3977,6 +3978,7 @@ impl<H: Host> Vm<H> {
                             args: arg_slice,
                             rets: ret_slice,
                             depth: frame_index + 1,
+                            admission: control.admit(),
                             abandoned: false,
                             callback_returned: false,
                         });
