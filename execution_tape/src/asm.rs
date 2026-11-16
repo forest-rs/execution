@@ -452,6 +452,18 @@ impl From<&Self> for FunctionAbi {
 ///
 /// For execution, see [`Vm::run`].
 ///
+/// ## Errors
+///
+/// Each fallible call returns the narrowest error that names what can go wrong with it:
+/// [`ContractBuildError`] for calls that resolve signatures ([`Self::declare_function`],
+/// [`Self::call_sig`], [`Self::contract`]), [`CallBuildError`] for call emission,
+/// [`LinkBuildError`] and [`TagBuildError`] for link and tag declarations, [`ClosureBuildError`]
+/// for closure captures,
+/// [`UnresolvedLabel`] for [`Asm::place`], and [`BuildError`] for calls that look up declared
+/// functions or build the program. Every one of them converts into [`BuildError`], so a frontend
+/// that returns `Result<_, BuildError>` uses `?` on all of them, and all of them implement
+/// [`Display`](core::fmt::Display) and [`core::error::Error`].
+///
 /// ## Example
 ///
 /// ```no_run
