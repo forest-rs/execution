@@ -1,7 +1,8 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Independently stored invocations use the same budgets, evidence and cancellation boundary.
+//! Tasks own their VM and keep their computation there between polls, with the same budgets,
+//! evidence and cancellation boundary as one invocation.
 
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
@@ -15,7 +16,7 @@ use execution_tape::{
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     trace::TraceSink,
     value::{Closure, Value},
-    vm::{Invocation, InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm},
+    vm::{ComputationId, InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -124,64 +125,80 @@ fn retained_closure() -> Callable {
 }
 fn require_static<T: 'static>(_: &T) {}
 
+/// A task: its VM and the computation it saved there.
+struct Task {
+    vm: Vm<Echo>,
+    computation: ComputationId,
+}
+
 #[test]
-fn an_owned_invocation_moves_between_containers_and_keeps_borrowed_inputs_stable() {
+fn a_task_moves_between_containers_with_its_saved_request_and_input_payload() {
     let callable = echo();
     let code = Arc::downgrade(callable.program());
     let effects = Rc::new(Effects::default());
     let input = String::from("owned input payload");
     let pointer = input.as_ptr();
-    let mut owned_vm = Vm::new(
+    let mut vm = Vm::new(
         Echo(Rc::clone(&effects)),
         Limits {
             fuel: 100,
             ..Limits::default()
         },
     );
-    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
-    let call = callable
-        .start_owned(
-            owned_vm,
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
+    let mut call = callable
+        .start(
+            &mut vm,
             unit,
             vec![Value::Str(input)],
             InvocationOptions::default().yield_host_calls(),
         )
         .unwrap();
-    require_static(&call);
-    let mut tasks: Vec<Invocation<'static, Echo>> = vec![call];
-    drop(callable);
-    assert!(code.upgrade().is_some());
-    let mut call = tasks.pop().unwrap();
     assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let computation = call.save().unwrap();
+    let task = Task { vm, computation };
+    require_static(&task);
+    let mut tasks = vec![task];
+    drop(callable);
+    assert!(code.upgrade().is_some(), "the VM keeps the code it runs");
+    let task = Box::new(tasks.pop().unwrap());
+    let mut task = *task;
+    let mut call = task
+        .vm
+        .resume(
+            task.computation,
+            InvocationOptions::default().yield_host_calls(),
+        )
+        .unwrap();
     assert_eq!(call.host().0.calls.get(), 0);
     {
         let request = call.pending_host_call().unwrap();
         let ValueRef::Str(input) = request.arguments().next().unwrap() else {
             panic!("string input")
         };
-        assert_eq!(input.as_ptr(), pointer);
+        assert_eq!(input.as_ptr(), pointer, "moving the task copied nothing");
     }
-    let call = Box::new(call);
-    let mut call = *call;
     call.pending_host_call().unwrap().dispatch().unwrap();
     assert_eq!(call.resume(1).unwrap(), RunStatus::Complete);
     assert_eq!(
         call.result().unwrap().unwrap(),
         [Value::Str("owned input payload".into())]
     );
-    assert_eq!(call.remaining_fuel(), 95);
-    assert_eq!(call.aggregates().len_u32(), 0);
     drop(call);
+    // The temporary the first invocation built stays until the task collects.
+    assert_eq!(task.vm.aggregates().len_u32(), 1);
+    task.vm.collect().unwrap();
+    assert_eq!(task.vm.aggregates().len_u32(), 0);
+    drop(task);
     assert_eq!(effects.calls.get(), 1);
     assert_eq!(effects.drops.get(), 1);
     assert!(code.upgrade().is_none());
 }
 
 #[test]
-fn owned_and_borrowed_entries_share_work_fuel_resource_observations_and_replay() {
+fn saved_and_unsaved_runs_share_results_resource_observations_and_replay() {
     let callable = echo();
-    let mut expected = None;
-    for owned in [false, true] {
+    for saved in [false, true] {
         let effects = Rc::new(Effects::default());
         let recorder = Rc::new(RefCell::new(Recorder::new(
             Arc::clone(callable.program()),
@@ -189,8 +206,17 @@ fn owned_and_borrowed_entries_share_work_fuel_resource_observations_and_replay()
         )));
         let reads = Rc::new(RefCell::new(Reads::default()));
         let mask = recorder.borrow().mask();
-        let mut observer = Rc::clone(&recorder);
-        let mut access = Rc::clone(&reads);
+        // A function, not a closure, so each invocation's options borrow the VM anew.
+        fn shared<'a>(
+            mask: execution_tape::trace::TraceMask,
+            recorder: &Rc<RefCell<Recorder>>,
+            reads: &Rc<RefCell<Reads>>,
+        ) -> InvocationOptions<'a> {
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace_owned(mask, Rc::clone(recorder))
+                .access_owned(Rc::clone(reads))
+        }
         let mut vm = Vm::new(
             Echo(Rc::clone(&effects)),
             Limits {
@@ -198,46 +224,32 @@ fn owned_and_borrowed_entries_share_work_fuel_resource_observations_and_replay()
                 ..Limits::default()
             },
         );
-        let options = if owned {
-            InvocationOptions::default()
-                .trace_owned(mask, Rc::clone(&recorder))
-                .access_owned(Rc::clone(&reads))
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
+        let mut call = callable
+            .start(
+                &mut vm,
+                unit,
+                vec![Value::Str("hello".into())],
+                shared(mask, &recorder, &reads),
+            )
+            .unwrap();
+        assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        let mut call = if saved {
+            let id = call.save().unwrap();
+            vm.resume(id, shared(mask, &recorder, &reads)).unwrap()
         } else {
-            InvocationOptions::default()
-                .trace(mask, &mut observer)
-                .access(&mut access)
+            call
         };
-        let mut call = if owned {
-            let unit = vm.install(Arc::clone(callable.program())).unwrap();
-            callable
-                .start_owned(vm, unit, vec![Value::Str("hello".into())], options)
-                .unwrap()
-        } else {
-            let unit = vm.install(Arc::clone(callable.program())).unwrap();
-            callable
-                .start(&mut vm, unit, vec![Value::Str("hello".into())], options)
-                .unwrap()
-        };
-        while call.resume(1).unwrap() == RunStatus::Suspended {}
-        let outcome = (
-            call.take_outputs().unwrap(),
-            call.remaining_fuel(),
-            call.data_work(),
-        );
+        call.pending_host_call().unwrap().dispatch().unwrap();
+        assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(call.take_outputs().unwrap(), [Value::Str("hello".into())]);
         drop(call);
-        drop(observer);
-        drop(access);
         assert_eq!(reads.borrow().0, ["file"]);
         assert_eq!(reads.borrow().1, ["calls"]);
-        if let Some(expected) = &expected {
-            assert_eq!(&outcome, expected);
-        } else {
-            expected = Some(outcome);
-        }
-        let recorder = Rc::try_unwrap(recorder)
+        let recording = Rc::try_unwrap(recorder)
             .expect("observer retired")
-            .into_inner();
-        let recording = recorder.finish();
+            .into_inner()
+            .finish();
         assert!(recording.status().is_ok());
         assert!(
             matches!(recording.replay().unwrap(), ReplayOutcome::Returned(result) if result.values() == [Value::Str("hello".into())])
@@ -251,7 +263,7 @@ fn owned_and_borrowed_entries_share_work_fuel_resource_observations_and_replay()
 }
 
 #[test]
-fn cancellation_releases_the_owned_vm_and_retains_explicitly_incomplete_evidence() {
+fn dropping_a_task_cancels_its_saved_computation_and_leaves_incomplete_evidence() {
     let callable = echo();
     let effects = Rc::new(Effects::default());
     let recorder = Rc::new(RefCell::new(Recorder::new(
@@ -259,11 +271,11 @@ fn cancellation_releases_the_owned_vm_and_retains_explicitly_incomplete_evidence
         RecordLimits::default(),
     )));
     let mask = recorder.borrow().mask();
-    let mut owned_vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
-    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
+    let mut vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
-        .start_owned(
-            owned_vm,
+        .start(
+            &mut vm,
             unit,
             vec![Value::Str("cancel".into())],
             InvocationOptions::default()
@@ -272,8 +284,10 @@ fn cancellation_releases_the_owned_vm_and_retains_explicitly_incomplete_evidence
         )
         .unwrap();
     assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    assert_eq!(call.aggregates().len_u32(), 1);
-    drop(call);
+    let computation = call.save().unwrap();
+    let task = Task { vm, computation };
+    assert_eq!(task.vm.heap_stats().saved_computations, 1);
+    drop(task);
     assert_eq!(effects.drops.get(), 1);
     assert_eq!(effects.calls.get(), 0);
     let recording = Rc::try_unwrap(recorder)
@@ -288,14 +302,14 @@ fn cancellation_releases_the_owned_vm_and_retains_explicitly_incomplete_evidence
 }
 
 #[test]
-fn failed_entry_and_failed_capture_admission_release_owned_host_state_without_effects() {
+fn failed_entry_and_failed_capture_admission_have_no_host_effects() {
     let effects = Rc::new(Effects::default());
-    let mut owned_vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
+    let mut vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
     let echo = echo();
-    let unit = owned_vm.install(Arc::clone(echo.program())).unwrap();
+    let unit = vm.install(Arc::clone(echo.program())).unwrap();
     assert!(matches!(
-        echo.start_owned(
-            owned_vm,
+        echo.start(
+            &mut vm,
             unit,
             vec![Value::I64(7)],
             InvocationOptions::default()
@@ -305,18 +319,18 @@ fn failed_entry_and_failed_capture_admission_release_owned_host_state_without_ef
         Trap::TypeMismatch { .. }
     ));
     let closure = retained_closure();
-    let mut owned_vm = Vm::new(
+    let mut vm = Vm::new(
         Echo(Rc::clone(&effects)),
         Limits {
             max_aggregate_work: 1,
             ..Limits::default()
         },
     );
-    let unit = owned_vm.install(Arc::clone(closure.program())).unwrap();
+    let unit = vm.install(Arc::clone(closure.program())).unwrap();
     assert!(matches!(
         closure
-            .start_owned(
-                owned_vm,
+            .start(
+                &mut vm,
                 unit,
                 vec![Value::I64(2)],
                 InvocationOptions::default()
@@ -325,12 +339,12 @@ fn failed_entry_and_failed_capture_admission_release_owned_host_state_without_ef
             .trap,
         Trap::AggregateWorkExceeded { .. }
     ));
-    assert_eq!(effects.drops.get(), 2);
+    assert_eq!(vm.aggregates().len_u32(), 0, "no capture was imported");
     assert_eq!(effects.calls.get(), 0);
 }
 
 #[test]
-fn owned_closure_entry_uses_the_same_capture_import_work_and_recording_contract() {
+fn closure_entry_uses_the_same_capture_import_work_and_recording_contract() {
     let callable = retained_closure();
     let effects = Rc::new(Effects::default());
     let recorder = Rc::new(RefCell::new(Recorder::new(
@@ -338,17 +352,17 @@ fn owned_closure_entry_uses_the_same_capture_import_work_and_recording_contract(
         RecordLimits::default(),
     )));
     let mask = recorder.borrow().mask();
-    let mut owned_vm = Vm::new(
+    let mut vm = Vm::new(
         Echo(Rc::clone(&effects)),
         Limits {
             max_aggregate_work: 2,
             ..Limits::default()
         },
     );
-    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
-        .start_owned(
-            owned_vm,
+        .start(
+            &mut vm,
             unit,
             vec![Value::I64(2)],
             InvocationOptions::default().trace_owned(mask, Rc::clone(&recorder)),
@@ -363,13 +377,18 @@ fn owned_closure_entry_uses_the_same_capture_import_work_and_recording_contract(
     assert!(
         matches!(recording.replay().unwrap(), ReplayOutcome::Returned(result) if result.values() == [Value::I64(42)])
     );
-    assert_eq!(effects.drops.get(), 1);
 }
 
-#[derive(Debug)]
+/// A graph task that owns its VM and resumes its computation on every poll.
 struct GraphGuest {
-    call: Invocation<'static, Echo>,
+    vm: Vm<Echo>,
+    computation: ComputationId,
     reply: Rc<RefCell<Option<String>>>,
+}
+impl std::fmt::Debug for GraphGuest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphGuest").finish_non_exhaustive()
+    }
 }
 impl execution_graph::NodeTask<String, TrapInfo> for GraphGuest {
     fn poll(
@@ -378,25 +397,28 @@ impl execution_graph::NodeTask<String, TrapInfo> for GraphGuest {
         outputs: &mut Vec<String>,
         access: &mut execution_graph::NodeAccess<'_, String>,
     ) -> Poll<Result<(), TrapInfo>> {
+        let mut call = self
+            .vm
+            .resume(
+                self.computation,
+                InvocationOptions::default().yield_host_calls(),
+            )
+            .expect("each poll resumes what the last one saved");
         loop {
-            match self.call.resume(u64::MAX) {
+            match call.resume(u64::MAX) {
                 Err(error) => return Poll::Ready(Err(error)),
-                Ok(RunStatus::Suspended) => unreachable!("unlimited quantum"),
-                Ok(RunStatus::CallbackReturned) => unreachable!("no guest callbacks"),
-                Ok(RunStatus::AwaitingHandler) => unreachable!("suspensions are not yielded"),
                 Ok(RunStatus::AwaitingHost) => {
                     access.read_host_state(execution_graph::HostOpId::new(1), 0);
                     let Some(reply) = self.reply.borrow_mut().take() else {
+                        self.computation = call.save().expect("waiting at its request");
                         return Poll::Pending;
                     };
-                    self.call
-                        .pending_host_call()
+                    call.pending_host_call()
                         .unwrap()
                         .complete(&mut [Value::Str(reply)], Ok(0))?;
                 }
                 Ok(RunStatus::Complete) => {
-                    let Value::Str(result) = self.call.take_outputs().unwrap().pop().unwrap()
-                    else {
+                    let Value::Str(result) = call.take_outputs().unwrap().pop().unwrap() else {
                         panic!("string result")
                     };
                     outputs.push(result);
@@ -409,7 +431,7 @@ impl execution_graph::NodeTask<String, TrapInfo> for GraphGuest {
 }
 
 #[test]
-fn graph_owned_guest_tasks_cancel_old_vms_and_reject_their_late_replies() {
+fn graph_tasks_own_their_vm_and_cancelled_ones_ignore_late_replies() {
     use execution_graph::{ExecutionGraph, FnExecutor, FnNode};
     let callable = echo();
     let effects = Rc::new(Effects::default());
@@ -423,15 +445,20 @@ fn graph_owned_guest_tasks_cancel_old_vms_and_reject_their_late_replies() {
                 move |inputs: &[String], _| {
                     let reply = Rc::new(RefCell::new(None));
                     replies.borrow_mut().push(Rc::clone(&reply));
-                    let mut owned_vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
-                    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
-                    let call = callable.start_owned(
-                        owned_vm,
+                    let mut vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
+                    let unit = vm.install(Arc::clone(callable.program())).unwrap();
+                    let call = callable.start(
+                        &mut vm,
                         unit,
                         vec![Value::Str(inputs[0].clone())],
                         InvocationOptions::default().yield_host_calls(),
                     )?;
-                    Ok(Box::new(GraphGuest { call, reply }))
+                    let computation = call.save().expect("not yet run");
+                    Ok(Box::new(GraphGuest {
+                        vm,
+                        computation,
+                        reply,
+                    }))
                 }
             }),
             vec!["source".into()],
@@ -442,7 +469,7 @@ fn graph_owned_guest_tasks_cancel_old_vms_and_reject_their_late_replies() {
     graph.run_all().unwrap();
     assert_eq!(effects.drops.get(), 0);
     graph.set_input_value(node, "source", "new".into()).unwrap();
-    assert_eq!(effects.drops.get(), 1);
+    assert_eq!(effects.drops.get(), 1, "the old task's VM is gone");
     replies.borrow()[0].borrow_mut().replace("obsolete".into());
     graph.run_all().unwrap();
     replies.borrow()[1].borrow_mut().replace("current".into());
@@ -556,11 +583,11 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
     let observer = Rc::new(RefCell::new(Events::default()));
     assert_eq!(observer.mask(), mask());
     let callable = echo();
-    let mut owned_vm = Vm::new(Echo(Rc::new(Effects::default())), Limits::default());
-    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
+    let mut vm = Vm::new(Echo(Rc::new(Effects::default())), Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
-        .start_owned(
-            owned_vm,
+        .start(
+            &mut vm,
             unit,
             vec![Value::Str("observed".into())],
             InvocationOptions::default().trace_owned(mask(), Rc::clone(&observer)),
@@ -575,45 +602,6 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
     assert_eq!((events.instructions, events.completions), (3, 3));
     assert_eq!((events.enters, events.exits), (2, 2));
     assert_eq!(events.values, 3);
-}
-
-#[test]
-fn owning_the_vm_does_not_require_host_resources_to_be_static() {
-    struct BorrowedHost<'a>(&'a Cell<usize>);
-    impl Host for BorrowedHost<'_> {
-        fn call(
-            &mut self,
-            _: &str,
-            _: SigHash,
-            args: &[ValueRef<'_>],
-            rets: &mut [Value],
-            _: HostContext<'_, '_>,
-        ) -> Result<u64, HostError> {
-            self.0.set(self.0.get() + 1);
-            rets[0] = args[0].to_value();
-            Ok(0)
-        }
-    }
-    let calls = Cell::new(0);
-    {
-        let mut owned_vm = Vm::new(BorrowedHost(&calls), Limits::default());
-        let echo = echo();
-        let unit = owned_vm.install(Arc::clone(echo.program())).unwrap();
-        let mut call = echo
-            .start_owned(
-                owned_vm,
-                unit,
-                vec![Value::Str("scoped".into())],
-                InvocationOptions::default(),
-            )
-            .unwrap();
-        assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
-        assert_eq!(
-            call.result().unwrap().unwrap(),
-            [Value::Str("scoped".into())]
-        );
-    }
-    assert_eq!(calls.get(), 1);
 }
 
 fn pack_text() -> Callable {
@@ -633,15 +621,15 @@ fn pack_text() -> Callable {
 }
 
 #[test]
-fn consume_owned_results_without_copying_their_nested_payloads() {
+fn retiring_a_vm_moves_its_results_without_copying_their_nested_payloads() {
     let target = pack_text();
     let code = Arc::downgrade(target.program());
     let effects = Rc::new(Effects::default());
-    let mut owned_vm = Vm::new(Echo(effects.clone()), Limits::default());
-    let unit = owned_vm.install(Arc::clone(target.program())).unwrap();
+    let mut vm = Vm::new(Echo(effects.clone()), Limits::default());
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut call = target
-        .start_owned(
-            owned_vm,
+        .start(
+            &mut vm,
             unit,
             vec![Value::Str("packed".into())],
             InvocationOptions::default(),
@@ -651,14 +639,16 @@ fn consume_owned_results_without_copying_their_nested_payloads() {
     call.resume(u64::MAX).unwrap();
     let owner = Arc::clone(call.program());
     assert!(Arc::ptr_eq(&owner, &code.upgrade().unwrap()));
-    let Value::Agg(root) = call.result().unwrap().unwrap()[0] else {
+    let outputs = call.take_outputs().unwrap();
+    drop(call);
+    let Value::Agg(root) = outputs[0] else {
         panic!("root")
     };
-    let Value::Str(text) = call.aggregates().tuple_get_ref(root, 0).unwrap() else {
+    let Value::Str(text) = vm.aggregates().tuple_get_ref(root, 0).unwrap() else {
         panic!("text")
     };
     let pointer = text.as_ptr();
-    let snapshot = call.into_snapshot().unwrap().unwrap();
+    let snapshot = vm.into_snapshot(outputs).unwrap();
     assert_eq!(effects.drops.get(), 1, "retirement releases the VM/host");
     let Value::Agg(root) = snapshot.values()[0] else {
         panic!("snapshot root")
@@ -669,7 +659,7 @@ fn consume_owned_results_without_copying_their_nested_payloads() {
     assert_eq!(
         text.as_ptr(),
         pointer,
-        "owned aggregate payload moved without a copy"
+        "aggregate payload moved without a copy"
     );
     drop(owner);
     assert!(
@@ -683,9 +673,10 @@ fn consume_owned_results_without_copying_their_nested_payloads() {
 }
 
 #[test]
-fn consume_borrowed_results_preserves_raw_handles_and_unfinished_consumption_cancels() {
+fn consuming_an_invocation_copies_its_results_and_an_unfinished_one_cancels() {
     let target = pack_text();
-    let mut vm = Vm::new(Echo(Rc::new(Effects::default())), Limits::default());
+    let effects = Rc::new(Effects::default());
+    let mut vm = Vm::new(Echo(effects.clone()), Limits::default());
     let args = [Value::Str("borrowed".into())];
     let unit = vm.install(target.program().clone()).unwrap();
     let mut call = vm
@@ -715,17 +706,53 @@ fn consume_borrowed_results_preserves_raw_handles_and_unfinished_consumption_can
         snapshot.aggregates().tuple_get(retained, 0),
         Ok(Value::Str("borrowed".into()))
     );
-    let effects = Rc::new(Effects::default());
-    let mut owned_vm = Vm::new(Echo(effects.clone()), Limits::default());
-    let unit = owned_vm.install(Arc::clone(target.program())).unwrap();
     let call = target
-        .start_owned(owned_vm, unit, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
         .unwrap();
     assert!(call.into_snapshot().unwrap().is_none());
-    assert_eq!(effects.drops.get(), 1);
     assert_eq!(
         effects.calls.get(),
         0,
         "consuming an unfinished invocation cancels without execution"
     );
+}
+
+#[test]
+fn a_vm_retired_with_saved_computations_leaves_its_snapshot_unpinned() {
+    let target = pack_text();
+    let effects = Rc::new(Effects::default());
+    let mut vm = Vm::new(Echo(effects), Limits::default());
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
+    let mut call = target
+        .start(
+            &mut vm,
+            unit,
+            vec![Value::Str("packed".into())],
+            InvocationOptions::default(),
+        )
+        .unwrap();
+    call.resume(u64::MAX).unwrap();
+    let outputs = call.take_outputs().unwrap();
+    drop(call);
+    // A computation waiting at its host request pins the VM's heap.
+    let echo = echo();
+    let echoes = vm.install(Arc::clone(echo.program())).unwrap();
+    let mut waiting = echo
+        .start(
+            &mut vm,
+            echoes,
+            vec![Value::Str("waiting".into())],
+            InvocationOptions::default().yield_host_calls(),
+        )
+        .unwrap();
+    assert_eq!(waiting.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    waiting.save().ok().unwrap();
+
+    let snapshot = vm.into_snapshot(outputs).unwrap();
+    let mut copy = snapshot.aggregates().clone();
+    let mut fresh = Vm::new(Echo(Rc::default()), Limits::default());
+    *fresh.aggregates_mut() = copy.clone();
+    copy.clear();
+    fresh.aggregates_mut().clear();
+    fresh.collect().unwrap();
 }

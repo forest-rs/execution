@@ -5209,7 +5209,7 @@ impl<H: Host> Vm<H> {
     /// [`Limits::max_aggregate_work`]) and stay valid. A run that needs more than the new limits
     /// allow traps as it would on a VM created with them.
     ///
-    /// An [`Invocation`] borrows or owns its VM and exposes no `&mut Vm`, so limits cannot change
+    /// An [`Invocation`] borrows its VM and exposes no `&mut Vm`, so limits cannot change
     /// while one is in progress; a suspended or awaiting invocation keeps the budget it started
     /// with. The limits move with the VM through [`Self::replace_host`].
     ///
@@ -5288,6 +5288,23 @@ impl<H: Host> Vm<H> {
             },
             previous,
         )
+    }
+
+    /// Consumes the VM and moves `values` and the aggregates they reach into a snapshot, without
+    /// copying byte or string payloads.
+    ///
+    /// Sharing is preserved and unreachable aggregates are left behind. Function, closure and
+    /// nominal IDs still need the programs that define them, and host objects stay host-owned.
+    /// Saved computations are dropped with the VM. To keep the VM, copy with
+    /// [`AggHeap::snapshot`] instead.
+    pub fn into_snapshot(
+        mut self,
+        values: Vec<Value>,
+    ) -> Result<crate::aggregates::ValueSnapshot, AggError> {
+        self.settle();
+        self.saved = saved::Store::new(0);
+        let heap = core::mem::take(self.memory.aggs_mut());
+        Ok(heap.into_snapshot(values)?.0)
     }
 
     /// Returns a reference to the aggregate heap.

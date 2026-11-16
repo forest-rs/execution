@@ -913,6 +913,8 @@ impl AggHeap {
         let remap = plan.remap;
         remap.remap_values_in_place(&mut values)?;
         self.nodes.shrink_to_fit();
+        // The snapshot owns its aggregates; no saved computation holds handles into them.
+        self.pinned = false;
         Ok((
             ValueSnapshot {
                 values,

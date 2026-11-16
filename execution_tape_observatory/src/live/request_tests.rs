@@ -311,28 +311,27 @@ fn stale_parent_sources_are_rejected_independently_of_the_child_source_map() {
 }
 
 #[test]
-fn a_stored_owned_invocation_can_use_local_sources_and_return_to_its_scheduler() {
+fn a_saved_computation_can_use_local_sources_and_return_to_its_scheduler() {
     use execution_tape::callable::Callable;
     use std::sync::Arc;
     let (program, entry, sources) = program(false);
     let callable = Callable::function(Arc::new(program), entry).unwrap();
-    let mut owned_vm = Vm::new(Counter::default(), Limits::default());
-    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
+    let mut vm = Vm::new(Counter::default(), Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let call = callable
-        .start_owned(owned_vm, unit, vec![], InvocationOptions::default())
+        .start(&mut vm, unit, vec![], InvocationOptions::default())
         .unwrap();
-    let mut stored: Option<Invocation<'static, Counter>> = Some(call);
-    {
-        let mut view = LiveExplorer::new(stored.take().unwrap())
-            .sources(&sources)
-            .unwrap();
+    let saved = {
+        let mut view = LiveExplorer::new(call).sources(&sources).unwrap();
         assert!(view.render_text(120, 40).unwrap().contains("method.expr"));
         view.step().unwrap();
-        stored = Some(view.into_invocation());
-    }
+        view.into_invocation()
+            .save()
+            .expect("waiting between quanta")
+    };
     drop(sources);
     drop(callable);
-    let mut call = stored.unwrap();
+    let mut call = vm.resume(saved, InvocationOptions::default()).unwrap();
     assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(call.result().unwrap().unwrap(), [Value::I64(42)]);
 }

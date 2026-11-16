@@ -21,7 +21,7 @@ fn returns(record: &Recording) -> usize {
         .count()
 }
 
-fn until_wait(runtime: &mut Runtime) {
+fn until_wait(runtime: &mut Runtime<'_>) {
     for _ in 0..10_000 {
         match runtime.poll(8).unwrap() {
             Status::Running => {}
@@ -31,7 +31,7 @@ fn until_wait(runtime: &mut Runtime) {
     }
     panic!("cleanup wait not reached");
 }
-fn until_cannot_return(runtime: &mut Runtime) -> CannotReturn {
+fn until_cannot_return(runtime: &mut Runtime<'_>) -> CannotReturn {
     for _ in 0..10_000 {
         match runtime.poll(8).unwrap() {
             Status::Running => {}
@@ -42,7 +42,7 @@ fn until_cannot_return(runtime: &mut Runtime) -> CannotReturn {
     }
     panic!("escaped return not reached");
 }
-fn drive(runtime: &mut Runtime, quantum: u64, recovery: i64) {
+fn drive(runtime: &mut Runtime<'_>, quantum: u64, recovery: i64) {
     for _ in 0..10_000 {
         match runtime.poll(quantum).unwrap() {
             Status::Running => {}
@@ -106,7 +106,8 @@ fn shared_escaping_blocks_and_lexical_returns_compose_with_ensure_and_checked_re
     for non_local in [false, true] {
         for quantum in [1, 128] {
             let fixture = program::compile(non_local).unwrap();
-            let mut runtime = Runtime::new(&fixture, Limits::default()).unwrap();
+            let mut runtime_vm = Runtime::vm(Limits::default());
+            let mut runtime = Runtime::new(&mut runtime_vm, &fixture).unwrap();
             drive(&mut runtime, quantum, -1);
             assert_eq!(runtime.outputs().unwrap(), [41, 42, 42, -1]);
             assert_eq!(runtime.run.host().value, Some(42));
@@ -129,7 +130,8 @@ fn shared_escaping_blocks_and_lexical_returns_compose_with_ensure_and_checked_re
 #[test]
 fn cleanup_waits_after_the_return_has_unwound_the_block() {
     let fixture = program::compile(true).unwrap();
-    let mut runtime = Runtime::new(&fixture, Limits::default()).unwrap();
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = Runtime::new(&mut runtime_vm, &fixture).unwrap();
     until_wait(&mut runtime);
     assert!(
         runtime.run.host().cleanups.is_empty(),
@@ -172,7 +174,8 @@ fn cleanup_waits_after_the_return_has_unwound_the_block() {
 #[test]
 fn expired_home_is_a_recoverable_language_condition_with_both_source_locations() {
     let fixture = program::compile(true).unwrap();
-    let mut runtime = Runtime::new(&fixture, Limits::default()).unwrap();
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = Runtime::new(&mut runtime_vm, &fixture).unwrap();
     let error = until_cannot_return(&mut runtime);
     assert_eq!(error.home_name, "makeEscaped:");
     assert_eq!(error.attempted_value, 42);
@@ -219,17 +222,15 @@ fn expired_home_is_a_recoverable_language_condition_with_both_source_locations()
 #[test]
 fn callbacks_and_cleanup_share_the_original_hard_fuel_budget() {
     let fixture = program::compile(true).unwrap();
-    let mut baseline = Runtime::new(&fixture, Limits::default()).unwrap();
+    let mut baseline_vm = Runtime::vm(Limits::default());
+    let mut baseline = Runtime::new(&mut baseline_vm, &fixture).unwrap();
     until_wait(&mut baseline);
     let spent = Limits::default().fuel - baseline.run.remaining_fuel();
-    let mut limited = Runtime::new(
-        &fixture,
-        Limits {
-            fuel: spent,
-            ..Limits::default()
-        },
-    )
-    .unwrap();
+    let mut limited_vm = Runtime::vm(Limits {
+        fuel: spent,
+        ..Limits::default()
+    });
+    let mut limited = Runtime::new(&mut limited_vm, &fixture).unwrap();
     until_wait(&mut limited);
     assert_eq!(limited.run.remaining_fuel(), 0);
     limited.finish_native_wait().unwrap();
@@ -254,7 +255,8 @@ fn callbacks_and_cleanup_share_the_original_hard_fuel_budget() {
 #[test]
 fn cancellation_during_cleanup_runs_no_guest_code_and_leaves_incomplete_evidence() {
     let fixture = program::compile(true).unwrap();
-    let mut runtime = Runtime::new(&fixture, Limits::default()).unwrap();
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = Runtime::new(&mut runtime_vm, &fixture).unwrap();
     until_wait(&mut runtime);
     let session = runtime.into_session();
     assert!(session.cleanups.is_empty());
@@ -331,18 +333,16 @@ fn requiring_a_block_checks_a_dynamic_payload_before_typed_invocation() {
 #[test]
 fn nonlocal_return_boxing_preserves_the_owned_aggregate_budget_failure() {
     let fixture = program::compile(true).unwrap();
-    let mut baseline = Runtime::new(&fixture, Limits::default()).unwrap();
+    let mut baseline_vm = Runtime::vm(Limits::default());
+    let mut baseline = Runtime::new(&mut baseline_vm, &fixture).unwrap();
     until_wait(&mut baseline);
     // The return boxes its value before any cleanup runs; deny exactly that construction.
     let spent = baseline.run.data_work().aggregate;
-    let mut limited = Runtime::new(
-        &fixture,
-        Limits {
-            max_aggregate_work: spent - 1,
-            ..Limits::default()
-        },
-    )
-    .unwrap();
+    let mut limited_vm = Runtime::vm(Limits {
+        max_aggregate_work: spent - 1,
+        ..Limits::default()
+    });
+    let mut limited = Runtime::new(&mut limited_vm, &fixture).unwrap();
     let failure = loop {
         match limited.poll(128) {
             Ok(Status::Running) => {}

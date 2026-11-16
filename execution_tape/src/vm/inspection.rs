@@ -484,7 +484,7 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows paused state. Register indexes are built only for queried functions.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(&self.continuation, &self.vm)
+        inspection(&self.continuation, self.vm)
     }
 
     /// Mutates host state between quanta. Preserve the validity of referenced object handles.

@@ -298,10 +298,10 @@ cargo run -p execution_tape_examples --bin bound_host
 - Recursion via `call` and frames.
 - Typed block parameters express joins directly; edge transfers are simultaneous preparation details.
 
-`Callable::start_owned` transfers a VM, code and arguments into the existing invocation type,
-so tasks can store it without self-references. Owned trace/access observers retain their state
-across polls; shared collectors remain inspectable after retirement. Borrowed entry still supports
-reusable VM storage. Limits, capture import, cancellation, host completion and checked replay
+A task owns its VM and keeps its computation there between polls: `Invocation::save` keeps a
+waiting computation and `Vm::resume` continues it, so the task stores no self-references.
+Owned trace/access observers can follow it across polls; shared collectors remain inspectable
+after retirement. Limits, capture import, cancellation, host completion and checked replay
 are shared. Raw aggregate/function/closure IDs still need their original ownership domain;
 retention or snapshots are explicit. Observatory borrows local sources separately from the
 invocation, then returns the same owned handle to its scheduler after inspection.
