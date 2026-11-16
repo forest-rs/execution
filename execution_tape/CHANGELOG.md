@@ -547,6 +547,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Entering a function from the embedding costs less. Entry checks read the argument kinds and
+  guest-only signature kinds resolved at verification instead of walking the signature through
+  the contract table, a run resets only the continuation table and contract proofs it used,
+  and frames skip empty register banks. A 14-instruction pure run on a parked VM
+  drops from about 150 ns to 125 ns, and its fixed cost from about 88 ns to 63 ns; the
+  `short_runs` wind-tunnel bench measures both.
+
 - A host result or suspension answer whose aggregate handle or closure environment names no
   aggregate now traps where it is delivered, with `Trap::AggError(AggError::BadHandle)`,
   instead of passing into a register and failing when it is read or returned. A raw value

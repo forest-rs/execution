@@ -1281,8 +1281,39 @@ fn abandoned_continuations_hold_their_frames_until_the_invocation_ends() {
         run(&program, take_first, &[Value::I64(7)], limits.clone()).unwrap(),
         vec![Value::I64(0)]
     );
-    let result = run(&program, take_first, &[Value::I64(8)], limits);
+    let result = run(&program, take_first, &[Value::I64(8)], limits.clone());
     assert!(matches!(result, Err(Trap::CallDepthExceeded)), "{result:?}");
+
+    // A reused context releases what an earlier run abandoned: a later run that traps, after
+    // entry or before it, gives back exactly its own frames, and every run has the full depth.
+    let mut vm = Vm::new(NoHost, limits);
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), take_first);
+    let mut ctx = execution_tape::vm::ExecutionContext::new();
+    let mut run = |vm: &mut Vm<NoHost>, arg: Value| {
+        let mut outputs = Vec::new();
+        vm.run_with_ctx(
+            &mut ctx,
+            entry,
+            &[arg],
+            &mut outputs,
+            execution_tape::trace::TraceMask::NONE,
+            None,
+            None,
+        )
+        .map(|()| outputs)
+        .map_err(|info| info.trap)
+    };
+    assert_eq!(run(&mut vm, Value::I64(7)).unwrap(), [Value::I64(0)]);
+    let mismatch = run(&mut vm, Value::Bool(true));
+    assert!(
+        matches!(mismatch, Err(Trap::TypeMismatch { .. })),
+        "{mismatch:?}"
+    );
+    let deep = run(&mut vm, Value::I64(8));
+    assert!(matches!(deep, Err(Trap::CallDepthExceeded)), "{deep:?}");
+    for n in [7, 0, 7] {
+        assert_eq!(run(&mut vm, Value::I64(n)).unwrap(), [Value::I64(0)]);
+    }
 }
 
 #[test]

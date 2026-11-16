@@ -3946,6 +3946,9 @@ fn verify_function_bytecode(
     );
     drop(reg_map);
     let span_by_instr_ix = build_span_by_instr_ix(decoded, spans, execution_count);
+    let entry_boundary =
+        crate::typed::EntryBoundary::find(arg_types.iter().chain(ret_types.iter()).copied());
+    let arg_types: Vec<ValueType> = arg_types.iter().copied().collect();
 
     Ok(ExecFuncContainer {
         exec: ExecFunc {
@@ -3957,6 +3960,8 @@ fn verify_function_bytecode(
             instrs: execution_instrs,
             span_by_instr_ix,
             protection,
+            arg_types,
+            entry_boundary,
         },
         init: init.finish(),
         lints,

@@ -1665,6 +1665,32 @@ pub(crate) struct ExecFunc {
     pub(crate) span_by_instr_ix: Vec<Option<SpanId>>,
     /// Protected regions in execution-index form; `None` for unprotected functions.
     pub(crate) protection: Option<alloc::boxed::Box<ExecProtection>>,
+    /// The argument kinds an embedding must supply to enter this function.
+    pub(crate) arg_types: Vec<ValueType>,
+    /// Why an embedding cannot enter this function, if its signature names a guest-only kind.
+    ///
+    /// Resolved once here so that entering does not walk the signature on every run.
+    pub(crate) entry_boundary: Option<EntryBoundary>,
+}
+
+/// A guest-only kind in a function signature, which keeps embeddings from entering it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntryBoundary {
+    /// An exception reference.
+    Exception,
+    /// A continuation.
+    Continuation,
+}
+
+impl EntryBoundary {
+    /// The first guest-only kind among `kinds`, if any.
+    pub(crate) fn find(kinds: impl IntoIterator<Item = ValueType>) -> Option<Self> {
+        kinds.into_iter().find_map(|kind| match kind {
+            ValueType::Exn => Some(Self::Exception),
+            ValueType::Cont => Some(Self::Continuation),
+            _ => None,
+        })
+    }
 }
 
 /// Protected regions prepared for unwinding.

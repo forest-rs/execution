@@ -1455,16 +1455,10 @@ impl<H: Host> Vm<H> {
         ctx.clear();
         ctx.unit = unit;
 
-        let entry_fn = program_ref
-            .functions
-            .get(entry.0 as usize)
-            .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
-        validate_entry_args(program_ref, entry_fn, args)
-            .map_err(|t| ctx.trap(entry, 0, None, t))?;
-
         let entry_vf = program
             .verified(entry)
             .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
+        validate_entry_args(entry_vf, args).map_err(|t| ctx.trap(entry, 0, None, t))?;
         if budget.frames >= max_call_depth {
             return Err(ctx.trap(
                 entry,
@@ -5193,34 +5187,41 @@ impl Registers {
             conts: self.conts.len(),
         };
 
-        self.bools.resize(base.bools + counts.bools, false);
-        self.i64s.resize(base.i64s + counts.i64s, 0);
-        self.u64s.resize(base.u64s + counts.u64s, 0);
-        self.f64s.resize(base.f64s + counts.f64s, 0.0);
-        self.w32s.resize(base.w32s + counts.w32s, 0);
-        self.decimals
-            .resize(base.decimals + counts.decimals, Decimal::new(0, 0));
-        self.bytes.resize(base.bytes + counts.bytes, BytesHandle(0));
-        self.strs.resize(base.strs + counts.strs, StrHandle(0));
-        self.objs.resize(
-            base.objs + counts.objs,
+        // Most functions use few banks. Growing an unused bank still calls into `resize`.
+        fn grow<T: Clone>(bank: &mut Vec<T>, count: usize, fill: T) {
+            if count != 0 {
+                bank.resize(bank.len() + count, fill);
+            }
+        }
+        grow(&mut self.bools, counts.bools, false);
+        grow(&mut self.i64s, counts.i64s, 0);
+        grow(&mut self.u64s, counts.u64s, 0);
+        grow(&mut self.f64s, counts.f64s, 0.0);
+        grow(&mut self.w32s, counts.w32s, 0);
+        grow(&mut self.decimals, counts.decimals, Decimal::new(0, 0));
+        grow(&mut self.bytes, counts.bytes, BytesHandle(0));
+        grow(&mut self.strs, counts.strs, StrHandle(0));
+        grow(
+            &mut self.objs,
+            counts.objs,
             Obj {
                 host_type: crate::program::HostTypeId(0),
                 handle: ObjHandle(0),
             },
         );
-        self.aggs.resize(base.aggs + counts.aggs, AggHandle(0));
+        grow(&mut self.aggs, counts.aggs, AggHandle(0));
         let placeholder = FuncRef::new(UnitId(0), FuncId(0));
-        self.funcs.resize(base.funcs + counts.funcs, placeholder);
-        self.closures.resize(
-            base.closures + counts.closures,
+        grow(&mut self.funcs, counts.funcs, placeholder);
+        grow(
+            &mut self.closures,
+            counts.closures,
             Closure {
                 func: placeholder,
                 env: AggHandle(0),
             },
         );
-        self.exns.resize(base.exns + counts.exns, None);
-        self.conts.resize(base.conts + counts.conts, ContRef::NONE);
+        grow(&mut self.exns, counts.exns, None);
+        grow(&mut self.conts, counts.conts, ContRef::NONE);
 
         base
     }
@@ -5785,22 +5786,23 @@ pub(crate) fn check_handle(heap: &AggHeap, value: &Value) -> Result<(), Trap> {
     }
 }
 
+/// Checks that an embedding may enter `entry` with `args`.
+///
+/// Uses the entry facts resolved at verification, so it walks no signature or contract table.
 #[inline]
-fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -> Result<(), Trap> {
-    let arg_types = entry_fn.arg_types(program).map_err(|_| Trap::InvalidPc)?;
-    let ret_types = entry_fn.ret_types(program).map_err(|_| Trap::InvalidPc)?;
-    for &kind in arg_types.iter().chain(ret_types.iter()) {
-        match kind {
-            ValueType::Exn => return Err(Trap::ExceptionBoundary),
-            ValueType::Cont => return Err(Trap::ContinuationBoundary),
-            _ => {}
+fn validate_entry_args(entry: &ExecFunc, args: &[Value]) -> Result<(), Trap> {
+    match entry.entry_boundary {
+        Some(crate::typed::EntryBoundary::Exception) => return Err(Trap::ExceptionBoundary),
+        Some(crate::typed::EntryBoundary::Continuation) => {
+            return Err(Trap::ContinuationBoundary);
         }
+        None => {}
     }
-    if arg_types.len() != args.len() {
+    if entry.arg_types.len() != args.len() {
         return Err(Trap::ArityMismatch);
     }
-    for (v, &t) in args.iter().zip(arg_types.iter()) {
-        v.check_type(t)?;
+    for (value, &kind) in args.iter().zip(&entry.arg_types) {
+        value.check_type(kind)?;
     }
     Ok(())
 }

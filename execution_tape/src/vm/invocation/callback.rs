@@ -222,14 +222,14 @@ impl<H: Host> Running<'_, '_, H> {
             .functions
             .get(function.0 as usize)
             .ok_or(Trap::InvalidPc)?;
+        let prepared = code.verified(function).ok_or(Trap::InvalidPc)?;
         if let Some(environment) = environment {
-            if body.arg_types(program).map_err(|_| Trap::InvalidPc)?.get(0) != Some(&ValueType::Agg)
-            {
+            if prepared.arg_types.first() != Some(&ValueType::Agg) {
                 return Err(Trap::ArityMismatch);
             }
             args.insert(0, Value::Agg(environment));
         }
-        validate_entry_args(program, body, &args)?;
+        validate_entry_args(prepared, &args)?;
         let payload = args.iter().try_fold(0_usize, |sum, value| {
             let bytes = match value {
                 Value::Bytes(bytes) => bytes.len(),
@@ -239,7 +239,6 @@ impl<H: Host> Running<'_, '_, H> {
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
         self.budget.charge_payload_bytes(payload, 1)?;
-        let prepared = code.verified(function).ok_or(Trap::InvalidPc)?;
         let base = self.continuation.ctx.alloc_frame(prepared);
         for (register, value) in prepared.reg_layout.arg_regs.iter().copied().zip(args) {
             self.continuation
