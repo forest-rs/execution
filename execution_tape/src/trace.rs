@@ -981,7 +981,7 @@ pub trait TraceSink {
     fn release(&mut self, _program: &Program) {}
 }
 
-// Shared ownership keeps observations available after an owned invocation is dropped.
+// Shared ownership keeps observations available after the invocations that fed them end.
 // Borrow only between execution calls: reentrant RefCell borrows intentionally panic.
 impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> {
     fn run_mask(&mut self, program: &Program, mask: TraceMask) {

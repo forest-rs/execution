@@ -184,13 +184,13 @@ cargo bench -p execution_tape_wind_tunnel --bench stepping -- \
   'frame_snapshot|live_inspection' --warm-up-time 1 --measurement-time 3 --sample-size 30 --noplot
 ```
 
-### Invocation ownership
+### Saving
 
-`stepping` also includes `invocation_ownership/{borrowed_vm,owned_vm}`. Both prepare a fresh
-VM, transfer an owned argument vector and retain the callable's code on each iteration, then
-execute the same 1,000 additions and destroy the invocation/VM. Only the owned variant boxes
-and transfers the VM into the invocation. This is a lifetime-boundary cost; compare reusable
-VM execution separately through `live_execution` above.
+`stepping` also includes `saving/{unsaved,saved_once}`. Both prepare a fresh VM, transfer an
+owned argument vector and retain the callable's code on each iteration, then execute the same
+1,000 additions and destroy the invocation/VM. Only `saved_once` saves the computation after
+its first instruction and resumes it, which isolates that round trip. Compare reusable VM
+execution separately through `live_execution` above.
 
 An ownership-change check against main `6bbafb0` on macOS arm64, Rust 1.99, 2026-10-30 used
 30 samples, 1 s warmup and 3 s measurement, without concurrent builds. Two candidate passes

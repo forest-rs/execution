@@ -54,7 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let mut runtime = runtime::Runtime::new(fixture.program, fixture.entry, Default::default())?;
+    let mut vm = runtime::Runtime::vm(Default::default());
+    let mut runtime = runtime::Runtime::new(&mut vm, fixture.program, fixture.entry)?;
     loop {
         match runtime.poll(128)? {
             runtime::Status::Running => {}

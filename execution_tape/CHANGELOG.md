@@ -601,6 +601,23 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- A task owns its VM instead of moving it into an invocation. `Callable::start_owned` and the
+  owned mode of `Invocation` are removed: every invocation borrows its VM, and a task that
+  outlives one poll keeps the VM and the `ComputationId` its waiting invocation saved, resuming
+  it each poll. `Vm::into_snapshot(self, values)` consumes a VM and moves the graph `values`
+  reach without copying payloads, which owned invocations did; `Invocation::into_snapshot`
+  always copies and leaves the VM's handles valid. Each invocation has its own allowance, so a
+  task that needs a total across polls sums `Invocation::work`. Migration: replace
+  `start_owned(vm, …)` with `start(&mut vm, …)` and keep `vm` in the task; save the invocation
+  where the task waits and resume it on the next poll. Owned observers (`trace_owned`,
+  `access_owned`) still follow a computation across the invocations they are passed to. An
+  owned invocation could be stored in states that `save` refuses, handing the invocation back:
+  a host request with staged host aggregates (complete or fail it first), a delivery a
+  panicking observer abandoned (drop the invocation; it is cancelled), and finished
+  invocations (take the result). A computation waiting with a guest callback running saves,
+  but resumes only without a trace observer until the callback returns: resume it unobserved,
+  or drive the callback to `RunStatus::CallbackReturned` before saving.
+
 - The VM owns its execution state. `Vm::run_with_ctx` and `ExecutionContext` are replaced by
   `Vm::run_into(entry, args, outputs, trace_mask, trace, access)`, which takes the same
   arguments without the context: the VM keeps its register file, control and work budget

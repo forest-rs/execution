@@ -136,8 +136,9 @@ impl<'a> InvocationOptions<'a> {
 
 /// One invocation that may suspend between instructions or at an admitted host request.
 ///
-/// `Vm::start` and `Callable::start` borrow their VM. `Callable::start_owned` transfers its VM
-/// into this same invocation type. Observers can be borrowed or owned. Every entry runs an
+/// `Vm::start`, `Callable::start` and `Vm::resume` borrow their VM; a task that outlives one
+/// borrow owns the VM and saves its computation between invocations ([`Self::save`]).
+/// Observers can be borrowed or owned. Every entry runs an
 /// installed unit and retains its program; raw entries borrow their inputs, while callable
 /// entries own theirs. These domains remain intact while suspended. Host calls dispatch synchronously by default; opting into yielded
 /// requests retains an admitted host instruction until the embedding supplies its completion.
@@ -150,7 +151,7 @@ impl<'a> InvocationOptions<'a> {
 /// Completed invocations cannot execute again. Their result remains available through
 /// [`Self::result`] until dropped, and owned outputs can be taken with [`Self::take_outputs`].
 pub struct Invocation<'a, H: Host> {
-    pub(super) vm: BorrowedOrOwned<'a, Vm<H>>,
+    pub(super) vm: &'a mut Vm<H>,
     pub(super) continuation: continuation::Continuation<'a>,
     checkpoint: Checkpoint,
     budget: Budget,
@@ -171,7 +172,7 @@ pub(super) struct Running<'request, 'state, H: Host> {
 impl<'a, H: Host> Invocation<'a, H> {
     pub(super) fn running(&mut self) -> Running<'_, 'a, H> {
         Running::new(
-            &mut self.vm,
+            self.vm,
             &mut self.continuation,
             &mut self.budget,
             self.checkpoint,
@@ -243,27 +244,19 @@ impl<H: Host> Vm<H> {
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
-        Invocation::prepare(
-            BorrowedOrOwned::Borrowed(self),
-            entry,
-            args,
-            options,
-            checkpoint,
-            work,
-        )
+        Invocation::prepare(self, entry, args, options, checkpoint, work)
     }
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
     fn prepare(
-        vm: BorrowedOrOwned<'a, Vm<H>>,
+        vm: &'a mut Vm<H>,
         entry: FuncRef,
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
-        let mut vm = vm;
         let program = Arc::clone(vm.entry_program(entry.unit)?);
         let mut exec = vm.lend(checkpoint);
         let mut budget = core::mem::take(&mut exec.budget);
@@ -281,7 +274,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         if let Err(error) =
             invocation
                 .continuation
-                .initialize(&mut invocation.vm, &mut invocation.budget, work)
+                .initialize(invocation.vm, &mut invocation.budget, work)
         {
             invocation.running().finish(Err(error.clone()));
             return Err(error);
@@ -320,7 +313,7 @@ impl<H: Host> Invocation<'_, H> {
         }
         let result = self
             .continuation
-            .advance(&mut self.vm, &mut self.budget, quantum)
+            .advance(self.vm, &mut self.budget, quantum)
             .and_then(|progress| match progress {
                 Progress::Suspended => Ok(RunStatus::Suspended),
                 Progress::AwaitingHandler => Ok(RunStatus::AwaitingHandler),
@@ -392,9 +385,9 @@ impl<H: Host> Invocation<'_, H> {
 
     /// Consumes a successful invocation and retains its result independently of the VM.
     ///
-    /// An owned VM transfers its reachable aggregate graph without copying byte/string payloads.
-    /// A borrowed VM copies reachable aggregates, leaving its existing retained handles valid.
-    /// Both paths move root payloads, preserve sharing and discard unreachable snapshot nodes.
+    /// Copies the reachable aggregates, leaving the VM's existing retained handles valid; root
+    /// payloads move, sharing is preserved and unreachable nodes are left behind. To move a VM's
+    /// whole graph without copying instead, take the outputs and use [`Vm::into_snapshot`].
     /// Function/closure/nominal IDs still need their original program; clone [`Self::program`]
     /// before consumption to retain that exact owner. Host objects stay host-owned. Snapshot work
     /// is explicit embedding work outside guest budgets.
@@ -407,15 +400,7 @@ impl<H: Host> Invocation<'_, H> {
             return Ok(None);
         }
         let outputs = core::mem::take(&mut self.continuation.stack.outputs);
-        let snapshot = match &mut self.vm {
-            BorrowedOrOwned::Borrowed(vm) => vm.memory.aggs().snapshot_owned(outputs)?,
-            BorrowedOrOwned::Owned(vm) => {
-                core::mem::take(vm.memory.aggs_mut())
-                    .into_snapshot(outputs)?
-                    .0
-            }
-        };
-        Ok(Some(snapshot))
+        Ok(Some(self.vm.memory.aggs().snapshot_owned(outputs)?))
     }
 
     /// Retains one successful function/closure result with its exact code and captures.
@@ -527,7 +512,7 @@ impl<H: Host> Invocation<'_, H> {
         &mut self,
         program: impl Into<Arc<VerifiedProgram>>,
     ) -> Result<UnitId, InstallError> {
-        install_observed(&mut self.vm, &mut self.continuation, program.into())
+        install_observed(self.vm, &mut self.continuation, program.into())
     }
 
     /// Inspects the units installed in this invocation's VM.
@@ -778,7 +763,7 @@ impl<'a, H: Host> Invocation<'a, H> {
     /// everything it saw open left open, and both observers are dropped.
     ///
     /// Returns the invocation unchanged, and saves nothing, when it has finished (take its
-    /// result instead), owns its VM (saving would drop the VM with it), waits at a host request
+    /// result instead), waits at a host request
     /// whose host has aggregates in staging (only the host's handles reach them, and they would
     /// alias aggregates later runs allocate: complete the request first, or call back to promote
     /// them), or holds an interrupted delivery (resume it to see its trap).
@@ -800,11 +785,7 @@ impl<'a, H: Host> Invocation<'a, H> {
                 .control
                 .pending_suspension
                 .is_some_and(|suspension| suspension.abandoned);
-        if stack.outcome.is_some()
-            || matches!(self.vm, BorrowedOrOwned::Owned(_))
-            || staging
-            || abandoned
-        {
+        if stack.outcome.is_some() || staging || abandoned {
             return Err(self);
         }
         let program = Arc::clone(&self.continuation.stack.program);
@@ -905,7 +886,7 @@ impl<H: Host> Vm<H> {
             register_state: observations::RegisterState::default(),
         };
         let mut invocation = Invocation {
-            vm: BorrowedOrOwned::Borrowed(self),
+            vm: self,
             continuation,
             checkpoint,
             budget,
@@ -965,35 +946,6 @@ impl Callable {
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         let (checkpoint, args, work) = self.prepare_inputs(vm, unit, args)?;
         vm.start_with_inputs(
-            FuncRef::new(unit, self.function_id()),
-            Cow::Owned(args),
-            options,
-            checkpoint,
-            work,
-        )
-    }
-
-    /// Starts an invocation that owns its VM, exact code and inputs.
-    ///
-    /// `unit` follows the same rule as [`Self::start`].
-    ///
-    /// Transfer this invocation into a task or scheduler without borrowing VM storage or using
-    /// self-references. It uses the same interpreter, limits, tracing and cancellation as `start`.
-    /// Supply owned observers in `InvocationOptions` when the invocation must be `'static`.
-    /// A host can still borrow external data when that data outlives the returned invocation.
-    /// Dropping the invocation releases its VM and cancels unfinished guest work; external host
-    /// effects remain real. Raw result handles still belong to that VM: explicitly snapshot or
-    /// retain values before dropping it. Borrowing `start` continues to support reusable VMs.
-    pub fn start_owned<'a, H: Host + 'a>(
-        &self,
-        mut vm: Vm<H>,
-        unit: UnitId,
-        args: Vec<Value>,
-        options: InvocationOptions<'a>,
-    ) -> Result<Invocation<'a, H>, TrapInfo> {
-        let (checkpoint, args, work) = self.prepare_inputs(&mut vm, unit, args)?;
-        Invocation::prepare(
-            BorrowedOrOwned::Owned(Box::new(vm)),
             FuncRef::new(unit, self.function_id()),
             Cow::Owned(args),
             options,

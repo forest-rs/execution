@@ -20,8 +20,8 @@ cargo run -p execution_graph_examples --features observatory --bin deferred_asse
 ```
 
 The guest compiles `points = asset.load_points(asset); return points` to a host call and return.
-Its owned invocation yields at the call. An application-owned worker reads a real loopback socket;
-the graph task keeps the guest and request across queries. Independent gain edits publish while
+It yields at the call. An application-owned worker reads a real loopback socket; the graph task
+owns its VM and keeps the guest saved there, with its request, across queries. Independent gain edits publish while
 the guest waits, without restarting the request or consuming more guest fuel. The script supplies
 responses and joins workers outside graph execution, so it needs no runtime or timed sleeps.
 

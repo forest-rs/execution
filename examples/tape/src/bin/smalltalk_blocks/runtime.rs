@@ -33,7 +33,8 @@ impl std::fmt::Display for ProtocolFailure {
 impl std::error::Error for ProtocolFailure {}
 
 #[derive(Default)]
-struct Cells {
+/// The host the story runs against: the cell its blocks write and the cleanups that ran.
+pub(super) struct Cells {
     value: Option<i64>,
     cleanups: Vec<i64>,
     after_ensure: bool,
@@ -138,8 +139,8 @@ pub(super) struct Session {
     pub(super) cleanups: Vec<i64>,
     pub(super) after_ensure: bool,
 }
-pub(super) struct Runtime {
-    run: Invocation<'static, Cells>,
+pub(super) struct Runtime<'vm> {
+    run: Invocation<'vm, Cells>,
     recorder: Rc<RefCell<Recorder>>,
     non_local: TagId,
     homes: Vec<Home>,
@@ -147,8 +148,13 @@ pub(super) struct Runtime {
     native_wait: bool,
     events: Vec<Event>,
 }
-impl Runtime {
-    pub(super) fn new(fixture: &Fixture, limits: Limits) -> Result<Self> {
+impl<'vm> Runtime<'vm> {
+    /// A VM for a runtime under `limits`; the runtime borrows it for its whole run.
+    pub(super) fn vm(limits: Limits) -> Vm<Cells> {
+        Vm::new(Cells::default(), limits)
+    }
+
+    pub(super) fn new(vm: &'vm mut Vm<Cells>, fixture: &Fixture) -> Result<Self> {
         let code = fixture.program.program();
         let non_local = (0..code.tags.len())
             .map(|index| TagId(u32::try_from(index).expect("bounded tag table")))
@@ -159,10 +165,9 @@ impl Runtime {
                 .with_instructions(InstructionCapture::default()),
         ));
         let callable = Callable::function(fixture.program.clone(), fixture.entry)?;
-        let mut owned_vm = Vm::new(Cells::default(), limits);
-        let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
-        let run = callable.start_owned(
-            owned_vm,
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
+        let run = callable.start(
+            vm,
             unit,
             vec![],
             InvocationOptions::default()

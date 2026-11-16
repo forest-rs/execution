@@ -356,36 +356,50 @@
 //! suspension time. Ordinary `run` and `run_into` remain run-to-completion conveniences and
 //! use the unbounded dispatch specialization without scheduling checks.
 //!
-//! A stored task can instead transfer its VM into [`callable::Callable::start_owned`].
-//! This returns the same `Invocation` type with independently owned VM, code and inputs;
-//! it needs no self-references or pinned VM allocation. Borrowed entry points still support
-//! reusable VM storage. Observations can also be owned, including shared collectors:
+//! A stored task instead owns its VM and keeps its computation there between polls: save the
+//! waiting invocation with [`vm::Invocation::save`] and continue it with [`vm::Vm::resume`],
+//! each invocation borrowing the VM only while it runs. Observers can be owned, including shared
+//! collectors that follow the computation across invocations:
 //!
 //! ```
 //! use std::{cell::RefCell, rc::Rc};
-//! use execution_tape::{callable::Callable, host::Host,
-//!     recording::{Recorder, RecordLimits}, trace::TraceSink, value::Value,
-//!     vm::{Invocation, InvocationOptions, TrapInfo, Vm}};
-//! fn stored<H: Host + 'static>(target: &Callable, mut vm: Vm<H>, args: Vec<Value>)
-//!     -> Result<(Invocation<'static, H>, Rc<RefCell<Recorder>>), Box<dyn std::error::Error>>
-//! {
-//!     let unit = vm.install(target.program().clone())?;
-//!     let capture = Rc::new(RefCell::new(Recorder::new(
-//!         target.program().clone(), RecordLimits::default())));
-//!     let mask = capture.mask();
-//!     let invocation = target.start_owned(vm, unit, args, InvocationOptions::default()
-//!         .yield_host_calls().trace_owned(mask, Rc::clone(&capture)))?;
-//!     Ok((invocation, capture))
+//! use execution_tape::{host::Host, recording::Recorder, trace::TraceSink, value::Value,
+//!     vm::{ComputationId, InvocationOptions, RunStatus, TrapInfo, Vm}};
+//!
+//! /// A guest task: its VM, its saved computation and the evidence it collects.
+//! struct Task<H: Host> {
+//!     vm: Vm<H>,
+//!     computation: ComputationId,
+//!     capture: Rc<RefCell<Recorder>>,
+//! }
+//!
+//! impl<H: Host> Task<H> {
+//!     /// Runs one quantum; returns the outputs once the computation returns.
+//!     fn poll(&mut self) -> Result<Option<Vec<Value>>, TrapInfo> {
+//!         let mask = self.capture.mask();
+//!         let options = InvocationOptions::default()
+//!             .yield_host_calls()
+//!             .trace_owned(mask, Rc::clone(&self.capture));
+//!         let mut invocation = self
+//!             .vm
+//!             .resume(self.computation, options)
+//!             .expect("each poll resumes what the last one saved");
+//!         if invocation.resume(1024)? == RunStatus::Complete {
+//!             return Ok(invocation.take_outputs());
+//!         }
+//!         // Waiting: keep it in the VM for the next poll.
+//!         self.computation = invocation.save().expect("a waiting invocation");
+//!         Ok(None)
+//!     }
 //! }
 //! ```
 //!
 //! Shared trace/access collectors forward normal callbacks and filtering. Borrow them only
 //! between execution calls, releasing all borrows before resuming or retiring the invocation.
-//! Dropping an owned invocation cancels unfinished work and releases
-//! its VM and observers; external collector handles can retain the incomplete evidence.
-//! Raw aggregate/callable result IDs still need that VM/code owner: explicitly snapshot or
-//! retain values before retirement. Owned execution does not make raw handles portable or
-//! automatically create a scheduler, worker thread or external effect rollback.
+//! Dropping a task drops its VM and the computations saved there; external collector handles
+//! can retain the evidence. Raw aggregate/callable result IDs still need that VM/code owner:
+//! explicitly snapshot or retain values before dropping it. A task does not make raw handles
+//! portable or create a scheduler, worker thread or external effect rollback.
 //!
 //! ## Structured host results
 //!
@@ -409,9 +423,9 @@
 //! handles; unused promoted nodes remain until root commit/rollback, as described below.
 //! Handles and nominal IDs belong to this invocation and program; these constructors do not
 //! make foreign handles portable. Use `retain` for results needed outside the host call.
-//! After successful execution, `Invocation::into_snapshot` consumes the invocation and moves
-//! an owned VM's reachable results out without copying payloads. A borrowed VM copies its
-//! reachable graph and keeps its existing raw handles valid. Clone `Invocation::program`
+//! After successful execution, `Invocation::into_snapshot` consumes the invocation and copies
+//! its reachable results, keeping the VM's existing raw handles valid; `Vm::into_snapshot`
+//! consumes a VM instead and moves the graph its values reach without copying payloads. Clone `Invocation::program`
 //! before consumption to retain the exact code domain for nominal/callable snapshot IDs, even
 //! after the original lookup handle has been dropped.
 //! Recordings preserve adopted node identities and all successful construction debits, so
@@ -559,7 +573,7 @@
 //!
 //! [`callable::Callable`] retains an exact prepared program and an optional independent closure
 //! environment. Callable entry retains its code and arguments independently of the lookup
-//! handle; `start_owned` additionally owns the VM. Retain a returned closure directly from the
+//! handle. Retain a returned closure directly from the
 //! successful invocation. That returned callable survives its creator's frames and VM:
 //!
 //! ```no_run

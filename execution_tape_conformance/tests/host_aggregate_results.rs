@@ -179,7 +179,7 @@ fn synchronous_and_yielded_hosts_build_shared_structures_and_replay_identically(
         };
         let unit = vm.install(Arc::clone(target.program())).unwrap();
         let mut run = target
-            .start_owned(vm, unit, vec![Value::Agg(input)], options)
+            .start(&mut vm, unit, vec![Value::Agg(input)], options)
             .unwrap();
         if yielded {
             assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
@@ -225,8 +225,8 @@ fn pending_views_share_staging_and_retention_copies_only_the_reachable_graph() {
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
-        .start_owned(
-            vm,
+        .start(
+            &mut vm,
             unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().yield_host_calls(),
@@ -342,8 +342,8 @@ fn denied_construction_can_fall_back_without_allocating_or_spending_the_denied_d
         let mask = capture.mask();
         let unit = vm.install(Arc::clone(target.program())).unwrap();
         let mut run = target
-            .start_owned(
-                vm,
+            .start(
+                &mut vm,
                 unit,
                 vec![Value::Agg(input)],
                 InvocationOptions::default()
@@ -667,14 +667,14 @@ fn guest_created_values_between_host_results_keep_their_identity_during_replay()
 }
 
 #[test]
-fn retiring_an_owned_invocation_moves_rich_payloads_into_its_snapshot() {
+fn retiring_a_vm_moves_rich_payloads_into_its_snapshot() {
     let target = program();
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
-        .start_owned(
-            vm,
+        .start(
+            &mut vm,
             unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().yield_host_calls(),
@@ -690,7 +690,9 @@ fn retiring_an_owned_invocation_moves_rich_payloads_into_its_snapshot() {
         .unwrap();
     request.complete(&mut [Value::Agg(root)], Ok(0)).unwrap();
     run.resume(u64::MAX).unwrap();
-    let snapshot = run.into_snapshot().unwrap().unwrap();
+    let outputs = run.take_outputs().unwrap();
+    drop(run);
+    let snapshot = vm.into_snapshot(outputs).unwrap();
     let Value::Agg(root) = snapshot.values()[0] else {
         panic!("snapshot root")
     };
@@ -700,7 +702,7 @@ fn retiring_an_owned_invocation_moves_rich_payloads_into_its_snapshot() {
     assert_eq!(
         bytes.as_ptr(),
         pointer,
-        "retiring the owned VM does not clone its payload"
+        "retiring the VM does not clone its payload"
     );
     assert_eq!(
         snapshot.aggregates().len_u32(),
@@ -738,8 +740,8 @@ fn nominal_result_code_owners_survive_dropped_lookup_handles_and_vm_retirement()
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
-        .start_owned(
-            vm,
+        .start(
+            &mut vm,
             unit,
             vec![Value::Agg(input)],
             InvocationOptions::default(),
@@ -750,6 +752,8 @@ fn nominal_result_code_owners_survive_dropped_lookup_handles_and_vm_retirement()
     let owner = Arc::clone(run.program());
     assert!(Arc::ptr_eq(&owner, &expected.upgrade().unwrap()));
     let snapshot = run.into_snapshot().unwrap().unwrap();
+    // The VM installed the code; retire it so only the retained result can keep the code.
+    drop(vm);
     let values = execution_graph::TapeValue::from_snapshot(snapshot, Some(owner)).unwrap();
     assert!(matches!(
         values[0].domain(),

@@ -105,33 +105,28 @@ fn stepping(c: &mut Criterion) {
     }
     group.finish();
 
-    // Both sides create a fresh VM and own their inputs/code. This isolates transferring
-    // the VM into the invocation from the established choice to reuse a borrowed VM above.
+    // Both sides create a fresh VM and own their inputs/code. `saved` also saves the
+    // computation after its first instruction and resumes it, which isolates that round trip.
     let callable = Callable::function(Arc::new(p.clone()), entry).unwrap();
-    let mut group = c.benchmark_group("invocation_ownership");
-    for owned in [false, true] {
-        group.bench_function(if owned { "owned_vm" } else { "borrowed_vm" }, |b| {
+    let mut group = c.benchmark_group("saving");
+    for saved in [false, true] {
+        group.bench_function(if saved { "saved_once" } else { "unsaved" }, |b| {
             b.iter(|| {
                 let mut fresh = Vm::new(NoHost, Limits::default());
-                let mut invocation = if owned {
-                    let mut fresh = fresh;
-                    let unit = fresh.install(Arc::clone(callable.program())).unwrap();
-                    callable.start_owned(
-                        fresh,
-                        unit,
-                        black_box(args.to_vec()),
-                        InvocationOptions::default(),
-                    )
-                } else {
-                    let unit = fresh.install(Arc::clone(callable.program())).unwrap();
-                    callable.start(
+                let unit = fresh.install(Arc::clone(callable.program())).unwrap();
+                let mut invocation = callable
+                    .start(
                         &mut fresh,
                         unit,
                         black_box(args.to_vec()),
                         InvocationOptions::default(),
                     )
+                    .unwrap();
+                if saved {
+                    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+                    let id = invocation.save().unwrap();
+                    invocation = fresh.resume(id, InvocationOptions::default()).unwrap();
                 }
-                .unwrap();
                 assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
                 black_box(invocation.result().unwrap().unwrap());
             });

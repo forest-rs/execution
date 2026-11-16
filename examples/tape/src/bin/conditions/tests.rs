@@ -10,11 +10,11 @@ use execution_tape::{
     vm::Trap,
 };
 
-fn runtime(name: &str, limits: Limits) -> Runtime {
+fn runtime<'vm>(vm: &'vm mut Vm<NoHost>, name: &str) -> Runtime<'vm> {
     let fixture = program::scenario(name).unwrap();
-    Runtime::new(fixture.program, fixture.entry, limits).unwrap()
+    Runtime::new(vm, fixture.program, fixture.entry).unwrap()
 }
-fn drive(runtime: &mut Runtime, quantum: u64) {
+fn drive(runtime: &mut Runtime<'_>, quantum: u64) {
     for _ in 0..100_000 {
         match runtime.poll(quantum).unwrap() {
             Status::Running => {}
@@ -37,7 +37,7 @@ fn drive(runtime: &mut Runtime, quantum: u64) {
     }
     panic!("finite condition example did not finish");
 }
-fn assert_replay(runtime: Runtime, expected: &[Value]) -> Recording {
+fn assert_replay(runtime: Runtime<'_>, expected: &[Value]) -> Recording {
     assert_eq!(runtime.outputs().unwrap(), expected, "live typed results");
     assert!(
         runtime.active.is_empty(),
@@ -75,7 +75,7 @@ fn assert_replay(runtime: Runtime, expected: &[Value]) -> Recording {
     );
     record
 }
-fn native(runtime: &Runtime) -> Vec<i64> {
+fn native(runtime: &Runtime<'_>) -> Vec<i64> {
     runtime
         .events
         .iter()
@@ -92,7 +92,7 @@ fn exits(record: &Recording) -> usize {
         .filter(|call| matches!(call.outcome, HostOutcome::Threw { .. }))
         .count()
 }
-fn until_wait(runtime: &mut Runtime) {
+fn until_wait(runtime: &mut Runtime<'_>) {
     for _ in 0..10000 {
         match runtime.poll(8).unwrap() {
             Status::Running => {}
@@ -102,7 +102,7 @@ fn until_wait(runtime: &mut Runtime) {
     }
     panic!("wait not reached");
 }
-fn until_unhandled(runtime: &mut Runtime) -> Condition {
+fn until_unhandled(runtime: &mut Runtime<'_>) -> Condition {
     for _ in 0..10000 {
         match runtime.poll(8).unwrap() {
             Status::Running => {}
@@ -137,7 +137,8 @@ fn language_protocol_composes_all_examples_with_single_step_and_batched_scheduli
     ];
     for quantum in [1, 128] {
         for (name, value, flag) in expected {
-            let mut runtime = runtime(name, Limits::default());
+            let mut runtime_vm = Runtime::vm(Limits::default());
+            let mut runtime = runtime(&mut runtime_vm, name);
             drive(&mut runtime, quantum);
             assert_eq!(
                 runtime.outputs().unwrap(),
@@ -152,7 +153,8 @@ fn language_protocol_composes_all_examples_with_single_step_and_batched_scheduli
 #[test]
 fn handler_normal_return_policy_and_explicit_decline_preserve_multiple_values() {
     for case in ["cl-decline", "decline"] {
-        let mut runtime = runtime(case, Limits::default());
+        let mut runtime_vm = Runtime::vm(Limits::default());
+        let mut runtime = runtime(&mut runtime_vm, case);
         drive(&mut runtime, 100);
         assert_eq!(native(&runtime), [11, 12]);
         assert_eq!(
@@ -169,7 +171,8 @@ fn handler_normal_return_policy_and_explicit_decline_preserve_multiple_values() 
 
 #[test]
 fn nested_signals_mask_existing_inner_handlers_but_allow_new_bindings() {
-    let mut nested = runtime("nested", Limits::default());
+    let mut nested_vm = Runtime::vm(Limits::default());
+    let mut nested = runtime(&mut nested_vm, "nested");
     drive(&mut nested, 100);
     assert_eq!(native(&nested), [11, 12]);
     let handlers: Vec<_> = nested
@@ -182,7 +185,8 @@ fn nested_signals_mask_existing_inner_handlers_but_allow_new_bindings() {
         .collect();
     assert_eq!(handlers, [(1, Class::DivisionByZero), (0, Class::Warning)]);
     assert_replay(nested, &[Value::I64(107), Value::Bool(true)]);
-    let mut rebound = runtime("nested-bind", Limits::default());
+    let mut rebound_vm = Runtime::vm(Limits::default());
+    let mut rebound = runtime(&mut rebound_vm, "nested-bind");
     drive(&mut rebound, 100);
     assert_eq!(native(&rebound), [13]);
     assert_replay(rebound, &[Value::I64(123), Value::Bool(true)]);
@@ -190,7 +194,8 @@ fn nested_signals_mask_existing_inner_handlers_but_allow_new_bindings() {
 
 #[test]
 fn restart_functions_are_repeatable_and_do_not_imply_an_exit() {
-    let mut runtime = runtime("functions", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "functions");
     drive(&mut runtime, 100);
     assert_eq!(native(&runtime), [30, 30]);
     assert_eq!(
@@ -224,7 +229,8 @@ fn normally_returning_restart_does_not_turn_a_common_lisp_handler_into_recovery(
         )
         .handle(Class::Condition, Policy::Dylan, Expr::value(55));
     let fixture = program::compile(expression, 40).unwrap();
-    let mut runtime = Runtime::new(fixture.program, fixture.entry, Limits::default()).unwrap();
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = Runtime::new(&mut runtime_vm, fixture.program, fixture.entry).unwrap();
     drive(&mut runtime, 100);
     assert!(
         runtime
@@ -238,7 +244,8 @@ fn normally_returning_restart_does_not_turn_a_common_lisp_handler_into_recovery(
 #[test]
 fn protected_cleanup_is_lifo_exactly_once_on_normal_and_nonlocal_completion() {
     for (case, value) in [("normal-cleanup", 7), ("cleanup", 42)] {
-        let mut runtime = runtime(case, Limits::default());
+        let mut runtime_vm = Runtime::vm(Limits::default());
+        let mut runtime = runtime(&mut runtime_vm, case);
         drive(&mut runtime, 100);
         assert_eq!(native(&runtime), [20, 10], "case {case}");
         let record = assert_replay(runtime, &[Value::I64(value), Value::Bool(true)]);
@@ -249,8 +256,9 @@ fn protected_cleanup_is_lifo_exactly_once_on_normal_and_nonlocal_completion() {
 #[test]
 fn cleanup_runs_after_the_exit_unwinds_the_signaling_frames() {
     let fixture = program::scenario("cleanup").unwrap();
+    let mut runtime_vm = Runtime::vm(Limits::default());
     let mut runtime =
-        Runtime::new(fixture.program.clone(), fixture.entry, Limits::default()).unwrap();
+        Runtime::new(&mut runtime_vm, fixture.program.clone(), fixture.entry).unwrap();
     until_wait(&mut runtime);
     assert_eq!(native(&runtime), [20]);
     assert_eq!(
@@ -304,7 +312,8 @@ fn cleanup_runs_after_the_exit_unwinds_the_signaling_frames() {
 
 #[test]
 fn cleanup_can_replace_an_exit_without_rerunning_itself() {
-    let mut runtime = runtime("cleanup-replaces", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "cleanup-replaces");
     drive(&mut runtime, 100);
     assert_eq!(
         native(&runtime),
@@ -321,7 +330,8 @@ fn cleanup_can_replace_an_exit_without_rerunning_itself() {
 
 #[test]
 fn local_exit_inside_cleanup_preserves_the_original_pending_transfer() {
-    let mut runtime = runtime("cleanup-local-exit", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "cleanup-local-exit");
     drive(&mut runtime, 100);
     assert_eq!(native(&runtime), [20, 21]);
     let record = assert_replay(runtime, &[Value::I64(42), Value::Bool(true)]);
@@ -330,7 +340,8 @@ fn local_exit_inside_cleanup_preserves_the_original_pending_transfer() {
 
 #[test]
 fn cleanup_restores_outer_handler_masks_before_signaling_again() {
-    let mut runtime = runtime("cleanup-signals", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "cleanup-signals");
     drive(&mut runtime, 100);
     assert_eq!(native(&runtime), [11, 20, 30]);
     let handlers: Vec<_> = runtime
@@ -352,7 +363,8 @@ fn cleanup_restores_outer_handler_masks_before_signaling_again() {
 #[test]
 fn restart_tokens_expire_and_name_rebinding_cannot_revive_old_tokens() {
     for case in ["expired", "rebind"] {
-        let mut runtime = runtime(case, Limits::default());
+        let mut runtime_vm = Runtime::vm(Limits::default());
+        let mut runtime = runtime(&mut runtime_vm, case);
         drive(&mut runtime, 100);
         let token = runtime.saved_restart.unwrap();
         assert!(matches!(runtime.restart(token), Err(Error::ExpiredRestart)));
@@ -366,8 +378,10 @@ fn restart_tokens_expire_and_name_rebinding_cannot_revive_old_tokens() {
 
 #[test]
 fn foreign_debugger_restart_tokens_are_recoverable_denials_before_guest_work() {
-    let mut first = runtime("unhandled", Limits::default());
-    let mut second = runtime("unhandled", Limits::default());
+    let mut first_vm = Runtime::vm(Limits::default());
+    let mut first = runtime(&mut first_vm, "unhandled");
+    let mut second_vm = Runtime::vm(Limits::default());
+    let mut second = runtime(&mut second_vm, "unhandled");
     let condition = until_unhandled(&mut first);
     let other_condition = until_unhandled(&mut second);
     let foreign = first.available(condition)[0].token;
@@ -387,7 +401,8 @@ fn foreign_debugger_restart_tokens_are_recoverable_denials_before_guest_work() {
 
 #[test]
 fn debugger_can_call_a_restart_function_repeatedly_before_resolving_the_signal() {
-    let mut runtime = runtime("normal-debugger", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "normal-debugger");
     let condition = until_unhandled(&mut runtime);
     let token = runtime.available(condition)[0].token;
     for argument in [1, 2] {
@@ -415,7 +430,8 @@ fn debugger_can_call_a_restart_function_repeatedly_before_resolving_the_signal()
 
 #[test]
 fn cancellation_during_cleanup_does_not_finish_cleanup_or_run_outer_cleanup_on_drop() {
-    let mut runtime = runtime("cleanup", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "cleanup");
     until_wait(&mut runtime);
     assert_eq!(native(&runtime), [20]);
     let record = runtime.into_session().recording;
@@ -428,16 +444,15 @@ fn cancellation_during_cleanup_does_not_finish_cleanup_or_run_outer_cleanup_on_d
 
 #[test]
 fn cleanup_execution_and_prior_work_share_the_original_hard_fuel_budget() {
-    let mut baseline = runtime("cleanup", Limits::default());
+    let mut baseline_vm = Runtime::vm(Limits::default());
+    let mut baseline = runtime(&mut baseline_vm, "cleanup");
     until_wait(&mut baseline);
     let spent = Limits::default().fuel - baseline.run.remaining_fuel();
-    let mut limited = runtime(
-        "cleanup",
-        Limits {
-            fuel: spent,
-            ..Limits::default()
-        },
-    );
+    let mut limited_vm = Runtime::vm(Limits {
+        fuel: spent,
+        ..Limits::default()
+    });
+    let mut limited = runtime(&mut limited_vm, "cleanup");
     until_wait(&mut limited);
     assert_eq!(limited.run.remaining_fuel(), 0);
     limited.complete_native(vec![]).unwrap();
@@ -458,7 +473,8 @@ fn cleanup_execution_and_prior_work_share_the_original_hard_fuel_budget() {
 
 #[test]
 fn native_completion_cannot_bypass_an_unhandled_language_condition() {
-    let mut runtime = runtime("unhandled", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "unhandled");
     let condition = until_unhandled(&mut runtime);
     let fuel = runtime.run.remaining_fuel();
     let work = runtime.run.data_work();
@@ -477,7 +493,8 @@ fn native_completion_cannot_bypass_an_unhandled_language_condition() {
 
 #[test]
 fn malformed_native_reply_traps_and_retires_borrowed_language_state() {
-    let mut runtime = runtime("cleanup", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "cleanup");
     until_wait(&mut runtime);
     assert!(matches!(runtime.complete_native(vec![Value::I64(1)]),
         Err(Error::Vm(trap))
@@ -510,7 +527,8 @@ fn malformed_native_reply_traps_and_retires_borrowed_language_state() {
 
 #[test]
 fn owned_policy_evidence_records_each_selected_exit() {
-    let mut runtime = runtime("cleanup-replaces", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "cleanup-replaces");
     drive(&mut runtime, 100);
     let session = runtime.into_session();
     assert_eq!(session.policy_end, PolicyEnd::Returned);
@@ -535,8 +553,9 @@ fn owned_policy_evidence_records_each_selected_exit() {
 fn authored_source_covers_policy_and_actual_vm_boundaries_without_invented_locations() {
     for name in program::CASES {
         let fixture = program::scenario(name).unwrap();
+        let mut runtime_vm = Runtime::vm(Limits::default());
         let mut runtime =
-            Runtime::new(fixture.program.clone(), fixture.entry, Limits::default()).unwrap();
+            Runtime::new(&mut runtime_vm, fixture.program.clone(), fixture.entry).unwrap();
         drive(&mut runtime, 100);
         let session = runtime.into_session();
         let sources = fixture
@@ -573,7 +592,8 @@ fn authored_source_covers_policy_and_actual_vm_boundaries_without_invented_locat
 
 #[test]
 fn restart_lookup_checks_applicability_before_invocation() {
-    let mut runtime = runtime("applicability", Limits::default());
+    let mut runtime_vm = Runtime::vm(Limits::default());
+    let mut runtime = runtime(&mut runtime_vm, "applicability");
     let condition = until_unhandled(&mut runtime);
     assert_eq!(condition.class, Class::InvalidRestart);
     assert!(runtime.available(condition).is_empty());

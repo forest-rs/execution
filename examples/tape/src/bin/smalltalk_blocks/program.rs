@@ -516,7 +516,8 @@ mod tests {
                     expected,
                     "retain exact authored bytes"
                 );
-                let mut runtime = Runtime::new(&fixture, Default::default()).unwrap();
+                let mut runtime_vm = Runtime::vm(Default::default());
+                let mut runtime = Runtime::new(&mut runtime_vm, &fixture).unwrap();
                 loop {
                     match runtime.poll(64).unwrap() {
                         Status::Running => {}

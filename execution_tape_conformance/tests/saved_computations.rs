@@ -790,7 +790,7 @@ fn a_computation_running_a_callback_resumes_only_unobserved() {
 }
 
 #[test]
-fn only_waiting_invocations_on_a_borrowed_vm_are_saved() {
+fn a_finished_invocation_is_not_saved() {
     let (program, entry) = asks();
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
@@ -804,25 +804,6 @@ fn only_waiting_invocations_on_a_borrowed_vm_are_saved() {
     let invocation = invocation.save().unwrap_err();
     assert!(invocation.result().unwrap().is_ok());
     drop(invocation);
-
-    // Owned: saving would drop the VM with it.
-    let (program, function) = asks();
-    let callable = execution_tape::callable::Callable::function(program, function).unwrap();
-    let mut owned = Vm::new(Answers, Limits::default());
-    let unit = owned.install(Arc::clone(callable.program())).unwrap();
-    let mut invocation = callable
-        .start_owned(
-            owned,
-            unit,
-            vec![Value::Str("text".into())],
-            InvocationOptions::default().yield_host_calls(),
-        )
-        .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    drop(invocation.save().unwrap_err());
 }
 
 /// `entry()` asks the host to `make` a tuple and returns it; `spin()` returns 4, for the host

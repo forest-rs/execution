@@ -42,7 +42,8 @@ fn main() -> program::Result<()> {
         return Ok(());
     }
     let sources = fixture.sources.bind(fixture.program.program())?;
-    let mut runtime = Runtime::new(&fixture, Default::default())?;
+    let mut runtime_vm = Runtime::vm(Default::default());
+    let mut runtime = Runtime::new(&mut runtime_vm, &fixture)?;
     loop {
         match runtime.poll(64)? {
             Status::Running => {}

@@ -175,7 +175,7 @@ pub(super) struct Available {
     pub(super) token: Obj,
 }
 
-struct NoHost;
+pub(super) struct NoHost;
 impl Host for NoHost {
     fn call(
         &mut self,
@@ -265,8 +265,8 @@ pub(super) struct Session {
     pub(super) policy_end: PolicyEnd,
 }
 
-pub(super) struct Runtime {
-    run: Invocation<'static, NoHost>,
+pub(super) struct Runtime<'vm> {
+    run: Invocation<'vm, NoHost>,
     recorder: Rc<RefCell<Recorder>>,
     exit: TagId,
     scopes: Vec<Binding>,
@@ -281,11 +281,16 @@ pub(super) struct Runtime {
     saved_restart: Option<Obj>,
     native_wait: Option<Key>,
 }
-impl Runtime {
+impl<'vm> Runtime<'vm> {
+    /// A VM for a runtime under `limits`; the runtime borrows it for its whole run.
+    pub(super) fn vm(limits: Limits) -> Vm<NoHost> {
+        Vm::new(NoHost, limits)
+    }
+
     pub(super) fn new(
+        vm: &'vm mut Vm<NoHost>,
         program: Arc<VerifiedProgram>,
         entry: FuncId,
-        limits: Limits,
     ) -> Result<Self, Error> {
         let code = program.program();
         let exit = (0..code.tags.len())
@@ -298,10 +303,9 @@ impl Runtime {
         ));
         let callable =
             Callable::function(program, entry).map_err(|_| Error::Abi("missing entry"))?;
-        let mut owned_vm = Vm::new(NoHost, limits);
-        let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
-        let run = callable.start_owned(
-            owned_vm,
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
+        let run = callable.start(
+            vm,
             unit,
             vec![],
             InvocationOptions::default()
