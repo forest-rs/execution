@@ -76,7 +76,10 @@ impl ContractScratch {
     }
     pub(crate) fn clear_proofs(&mut self) {
         self.frames.clear();
-        self.proven.clear();
+        // Most runs prove nothing; clearing an empty set still rebuilds and drops it.
+        if !self.proven.is_empty() {
+            self.proven.clear();
+        }
     }
     fn charge(&mut self, limit: u64) -> Result<(), CheckError> {
         if self.work >= limit {

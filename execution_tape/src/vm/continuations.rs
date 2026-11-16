@@ -98,6 +98,9 @@ pub(super) struct Continuations {
     free: Vec<u32>,
     /// Frames held by live continuations; [`Budget::frames`] counts them too.
     frames: usize,
+    /// Whether a slot was handed out since the last [`Self::clear`], which has nothing to
+    /// release otherwise. Runs that create no continuation then pay nothing to reset.
+    used: bool,
 }
 
 macro_rules! for_each_bank {
@@ -114,6 +117,10 @@ impl Continuations {
     ///
     /// Continuation references never outlive their invocation, so generations restart.
     pub(super) fn clear(&mut self) {
+        if !self.used {
+            return;
+        }
+        self.used = false;
         self.free.clear();
         for (index, slot) in self.slots.iter_mut().enumerate() {
             slot.live = false;
@@ -272,6 +279,7 @@ impl Continuations {
 
     /// A slot ready to receive a segment.
     fn vacant(&mut self) -> u32 {
+        self.used = true;
         if let Some(slot) = self.free.pop() {
             return slot;
         }
