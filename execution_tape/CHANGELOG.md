@@ -628,6 +628,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `ComputationId`, `StackId` and `RequestId` name their VM by a number no other VM in the
+  process gets, instead of an allocation's address, so a VM created after another was dropped
+  refuses the old VM's IDs rather than possibly matching them.
+
 - A task owns its VM instead of moving it into an invocation. `Callable::start_owned` and the
   owned mode of `Invocation` are removed: every invocation borrows its VM, and a task that
   outlives one poll keeps the VM and the `ComputationId` its waiting invocation saved, resuming

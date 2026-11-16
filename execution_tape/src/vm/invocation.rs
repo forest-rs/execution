@@ -801,7 +801,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         let program = Arc::clone(&self.continuation.stack.program);
         let work = self.work();
         let invocation = self.continuation.stack.invocations;
-        let stack = StackId::new(&self.vm.identity, &self.continuation.stack.control);
+        let stack = StackId::new(self.vm.number, &self.continuation.stack.control);
         let aggregates = self.vm.memory.aggs();
         self.continuation
             .trace
@@ -939,7 +939,7 @@ impl<H: Host> Vm<H> {
         let program = Arc::clone(&stack.program);
         let invocations = stack.invocations;
         let vm = &*invocation.vm;
-        let stack = StackId::new(&vm.identity, &stack.control);
+        let stack = StackId::new(vm.number, &stack.control);
         continuation
             .trace
             .values(program.program(), || ValueEvent::Resumed {

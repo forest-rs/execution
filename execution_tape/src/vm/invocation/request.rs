@@ -12,10 +12,11 @@ use super::*;
 /// answers later can find the request again with [`Invocation::host_request`] or
 /// [`Invocation::suspension`] and be refused if the computation has moved on. Each admission is
 /// a new request, even of the same instruction; a host request that a guest callback returned
-/// to keeps its ID.
+/// to keeps its ID. It names its computation's VM by a number no other VM in the process has,
+/// so no other VM accepts it, including one created after its VM was dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RequestId {
-    vm: usize,
+    vm: u64,
     stack: u64,
     admission: u64,
     kind: RequestKind,
@@ -30,7 +31,7 @@ enum RequestKind {
 impl RequestId {
     fn new<H: Host>(running: &Running<'_, '_, H>, admission: u64, kind: RequestKind) -> Self {
         Self {
-            vm: Arc::as_ptr(&running.vm.identity).addr(),
+            vm: running.vm.number,
             stack: running.continuation.stack.control.owner(),
             admission,
             kind,

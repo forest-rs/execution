@@ -17,13 +17,12 @@ use continuation::Stack;
 /// Names one computation a VM saved, until it is resumed.
 ///
 /// IDs are generation-checked: once the computation is resumed, its ID names nothing, even after
-/// the VM reuses its storage for another. An ID also names its VM, and another VM refuses it
-/// with [`ResumeError::ForeignVm`]. That identity is the address of an allocation the VM keeps
-/// for its lifetime, including across [`Vm::replace_host`](super::Vm::replace_host), so an ID
-/// that outlives its VM could match a later VM that reuses the address.
+/// the VM reuses its storage for another. An ID also names its VM, by a number no other VM in
+/// the process has, kept across [`Vm::replace_host`](super::Vm::replace_host): every other VM
+/// refuses it with [`ResumeError::ForeignVm`], including one created after its VM was dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ComputationId {
-    vm: usize,
+    vm: u64,
     slot: u32,
     generation: u32,
 }
@@ -81,7 +80,7 @@ struct Slot {
 /// The computations a VM keeps between leases.
 pub(super) struct Store {
     /// The identity its IDs carry.
-    vm: usize,
+    vm: u64,
     slots: Vec<Slot>,
     free: Vec<u32>,
     len: usize,
@@ -162,7 +161,7 @@ impl<H: Host> Vm<H> {
 
 impl Store {
     /// An empty store whose IDs carry `vm`.
-    pub(super) fn new(vm: usize) -> Self {
+    pub(super) fn new(vm: u64) -> Self {
         Self {
             vm,
             slots: Vec::new(),
