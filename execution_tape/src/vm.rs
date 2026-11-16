@@ -61,6 +61,8 @@ mod observations;
 mod ownership;
 mod roots;
 pub use roots::{RootError, RootedValues};
+mod saved;
+pub use saved::{ComputationId, ResumeError};
 mod units;
 mod work;
 pub use invocation::{
@@ -715,6 +717,9 @@ pub struct Vm<H: Host> {
     /// Value groups the embedding registered as collection roots.
     roots: roots::RootTable,
 
+    /// Computations saved between leases.
+    saved: saved::Store,
+
     /// Execution state between runs; `None` while a run or invocation has it on loan.
     exec: Option<Box<Exec>>,
     /// The run or invocation that has the execution state, if any.
@@ -1287,16 +1292,18 @@ impl<H: Host> Vm<H> {
     /// Creates a new VM with `host` and `limits`.
     #[must_use]
     pub fn new(host: H, limits: Limits) -> Self {
+        let identity = Arc::new(());
         Self {
             host,
             limits,
             units: UnitTable::default(),
             memory: ProgramMemory::new(),
             roots: roots::RootTable::default(),
+            saved: saved::Store::new(Arc::as_ptr(&identity).addr()),
             exec: None,
             lease: None,
             stacks: 0,
-            identity: Arc::new(()),
+            identity,
         }
     }
 
@@ -1771,7 +1778,7 @@ impl<H: Host> Vm<H> {
                         pc: Pc(pc),
                     };
                     let cont = ctx.read_cont(base, *cont);
-                    self.resume::<P, YIELD>(
+                    self.resume_continuation::<P, YIELD>(
                         ctx,
                         budget,
                         trace,
@@ -1803,7 +1810,7 @@ impl<H: Host> Vm<H> {
                         pc: Pc(pc),
                     };
                     let cont = ctx.read_cont(base, *cont);
-                    self.resume::<P, YIELD>(
+                    self.resume_continuation::<P, YIELD>(
                         ctx, budget, trace, control, location, *call_sig, cont, None, *rets,
                     )
                     .map_err(|trap| TrapInfo {
@@ -5155,8 +5162,9 @@ impl<H: Host> Vm<H> {
     /// host can only be replaced while no invocation is in progress. Object handles are the
     /// hosts' own: [`Value::Obj`] values that outlive a run, in retained aggregates or in values
     /// the embedding kept, carry the same bits under the new host. When handles only mean
-    /// something for one call, do not keep them past it, or clear retained aggregates with
-    /// [`AggHeap::clear`] before the next host sees them. Recordings capture handles as opaque
+    /// something for one call, do not keep them past it, or reclaim retained aggregates before
+    /// the next host sees them: with [`AggHeap::clear`] when no computations are saved, or with
+    /// [`Self::collect`] after releasing their groups. Recordings capture handles as opaque
     /// tokens and replay without a host, so they are unaffected.
     #[must_use]
     pub fn replace_host<H2: Host>(self, host: H2) -> (Vm<H2>, H) {
@@ -5166,6 +5174,7 @@ impl<H: Host> Vm<H> {
             units,
             memory,
             roots,
+            saved,
             exec,
             lease,
             stacks,
@@ -5178,6 +5187,7 @@ impl<H: Host> Vm<H> {
                 units,
                 memory,
                 roots,
+                saved,
                 exec,
                 lease,
                 stacks,
@@ -5201,7 +5211,9 @@ impl<H: Host> Vm<H> {
     /// Releasing nodes this way bypasses registered groups ([`Self::root`]): their handles are
     /// left dangling, and [`Self::collect`] then refuses with
     /// [`CollectError::DanglingHandle`]. Reclaim through [`Self::collect`] instead when groups are
-    /// registered.
+    /// registered. While computations are saved ([`Invocation::save`]), clearing or taking the
+    /// heap's nodes panics, and replacing the heap is caught by the next resume or collection,
+    /// which panics: their handles would name other aggregates.
     pub fn aggregates_mut(&mut self) -> &mut AggHeap {
         self.settle();
         self.memory.aggs_mut()

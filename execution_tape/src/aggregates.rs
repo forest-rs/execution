@@ -189,6 +189,9 @@ pub struct AggHeap {
     /// Handle of `nodes[0]`.
     base: u32,
     shapes: Arc<ShapeTable>,
+    /// Whether computations its VM saved hold handles into this heap, which clearing it or
+    /// taking its nodes would make name other aggregates.
+    pinned: bool,
 }
 
 /// Collections move survivors to a window ending no higher than this, keeping room to grow.
@@ -772,12 +775,31 @@ impl AggHeap {
         Self::default()
     }
 
+    /// Marks whether computations its VM saved hold handles into this heap.
+    pub(crate) fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
+    /// Whether computations its VM saved hold handles into this heap.
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+
+    fn check_unpinned(&self) {
+        assert!(
+            !self.pinned,
+            "the VM holds saved computations whose aggregates this would discard; \
+             collect with `Vm::collect` or resume them first"
+        );
+    }
+
     /// An empty heap sharing this heap's interned shapes.
     fn empty_with_shapes(&self) -> Self {
         Self {
             nodes: Vec::new(),
             base: 0,
             shapes: Arc::clone(&self.shapes),
+            pinned: false,
         }
     }
 
@@ -831,12 +853,18 @@ impl AggHeap {
     ///
     /// Shape IDs and handles in the returned heap match this heap's, so its values keep their
     /// meaning. This heap's handle window returns to zero, as for a new heap.
+    ///
+    /// # Panics
+    ///
+    /// If the heap belongs to a VM holding saved computations, as for [`Self::clear`].
     #[must_use]
     pub fn take_nodes(&mut self) -> Self {
+        self.check_unpinned();
         Self {
             nodes: core::mem::take(&mut self.nodes),
             base: core::mem::take(&mut self.base),
             shapes: Arc::clone(&self.shapes),
+            pinned: false,
         }
     }
 
@@ -955,7 +983,13 @@ impl AggHeap {
     /// Removes all aggregate nodes while preserving allocated capacity.
     ///
     /// The handle window returns to zero, as for a new heap.
+    ///
+    /// # Panics
+    ///
+    /// If the heap belongs to a VM holding saved computations: their handles would name the
+    /// next aggregates allocated. Collect with [`crate::vm::Vm::collect`] instead.
     pub fn clear(&mut self) {
+        self.check_unpinned();
         self.nodes.clear();
         self.base = 0;
     }
@@ -1323,6 +1357,7 @@ fn copy_roots_into<'a>(
             nodes,
             base: 0,
             shapes: Arc::clone(&target.shapes),
+            pinned: false,
         },
     };
     let remap = delta.merge_into(target, roots)?;
@@ -2047,6 +2082,7 @@ mod tests {
             base_len,
             staged: AggHeap {
                 base: 0,
+                pinned: false,
                 shapes: Arc::default(),
                 nodes: vec![AggNode::Tuple {
                     values: vec![Value::Agg(AggHandle(base_len + 99))],
@@ -2074,6 +2110,7 @@ mod tests {
             base_len,
             staged: AggHeap {
                 base: 0,
+                pinned: false,
                 shapes: Arc::default(),
                 nodes: vec![
                     AggNode::Tuple {

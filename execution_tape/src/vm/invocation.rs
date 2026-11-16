@@ -144,6 +144,9 @@ impl<'a> InvocationOptions<'a> {
 /// Dropping an active invocation cancels it, discards its new aggregates, and closes trace scopes
 /// with [`TraceOutcome::Cancelled`]. External host effects are not rolled back.
 ///
+/// A waiting invocation can instead be kept in its VM with [`Self::save`] and continued later
+/// with [`Vm::resume`].
+///
 /// Completed invocations cannot execute again. Their result remains available through
 /// [`Self::result`] until dropped, and owned outputs can be taken with [`Self::take_outputs`].
 pub struct Invocation<'a, H: Host> {
@@ -542,9 +545,9 @@ impl<H: Host> Invocation<'_, H> {
     /// Reclaims every aggregate this invocation and the VM's registered groups do not reach,
     /// while the invocation waits between quanta, at a host request or at a suspension.
     ///
-    /// This is [`Vm::collect`] with the invocation's state as further roots: its arguments, the
-    /// reference registers of its active frames and of the frames its unresumed continuations
-    /// hold, the payloads of exceptions those registers hold, pending callback results and,
+    /// This is [`Vm::collect`], saved computations included, with the invocation's state as
+    /// further roots: its arguments, the reference registers of its active frames and of the
+    /// frames its unresumed continuations hold, the payloads of exceptions those registers hold, pending callback results and,
     /// once it has returned, its outputs. A register is a root only where verification
     /// establishes that it holds a value: a register not yet written retains nothing, while a
     /// written one keeps its value alive until overwritten, even if never read again. The
@@ -575,8 +578,12 @@ impl<H: Host> Invocation<'_, H> {
             vm.memory.aggs(),
             &mut handles,
         )?;
-        let plan = vm.plan_collection(&mut handles, stack_plan.roots())?;
+        let saved = vm.plan_saved(&mut handles)?;
+        let roots =
+            stack_plan.roots() + saved.iter().map(collection::StackPlan::roots).sum::<u64>();
+        let plan = vm.plan_collection(&mut handles, roots)?;
         running.stack.check_host_handles(&plan)?;
+        vm.check_saved(&plan)?;
         // Planning succeeded: nothing below can fail.
         let mut report = vm.apply_collection(&plan, Some(self.checkpoint));
         let compaction = plan.compaction();
@@ -586,6 +593,7 @@ impl<H: Host> Invocation<'_, H> {
             .stack
             .relocate(&mut running.args, &stack_plan, compaction);
         stack_plan.report(&mut report);
+        vm.relocate_saved(&saved, compaction, &mut report);
         // Contract proofs are keyed by handles that may now name other aggregates.
         self.budget.contract_scratch.clear_proofs();
         if running.stack.outcome.is_none() {
@@ -736,12 +744,143 @@ impl<H: Host> Running<'_, '_, H> {
 
 impl<H: Host> Drop for Invocation<'_, H> {
     fn drop(&mut self) {
+        // A saved invocation already returned the execution state and kept its stack.
+        let Some(mut exec) = self.exec.take() else {
+            return;
+        };
         self.running().cancel();
-        if let Some(mut exec) = self.exec.take() {
-            self.continuation.give_back(&mut exec);
-            exec.budget = core::mem::take(&mut self.budget);
-            self.vm.restore(exec);
+        self.continuation.give_back(&mut exec);
+        exec.budget = core::mem::take(&mut self.budget);
+        self.vm.restore(exec);
+    }
+}
+
+impl<'a, H: Host> Invocation<'a, H> {
+    /// Keeps this waiting invocation's computation in its VM and ends the invocation without
+    /// cancelling it.
+    ///
+    /// The computation stays exactly where it stopped, between quanta, at a host request with
+    /// its callbacks, or at a yielded suspension, and keeps every aggregate it allocated.
+    /// [`Vm::resume`] continues it later in a new invocation; until then the VM can run, start,
+    /// collect and save other computations, and [`Vm::collect`] keeps what it reaches. Borrowed
+    /// arguments are copied into the VM, payloads included, outside guest budgets. Saving ends
+    /// this invocation's work allowance: the resuming invocation starts a fresh one.
+    ///
+    /// A computation saved at a host request whose host built aggregates and then called back
+    /// pins them: only the host holds their handles, so the VM keeps them and refuses every
+    /// collection that would move aggregates ([`CollectError::SavedHostHandles`]) until the
+    /// computation is resumed and its request completes. While computations are saved,
+    /// [`AggHeap::clear`] and [`AggHeap::take_nodes`] panic: the saved handles would name other
+    /// aggregates.
+    ///
+    /// Returns the invocation unchanged, and saves nothing, when it has finished (take its
+    /// result instead), owns its VM (saving would drop the VM with it), has a trace or access
+    /// observer (observers belong to one invocation, and resumed ones cannot be observed yet),
+    /// waits at a host request whose host has aggregates in staging (only the host's handles
+    /// reach them, and they would alias aggregates later runs allocate: complete the request
+    /// first, or call back to promote them), or holds an interrupted delivery (resume it to
+    /// see its trap).
+    #[expect(
+        clippy::result_large_err,
+        reason = "a refused save hands back the invocation it was given, which is moved in anyway"
+    )]
+    pub fn save(mut self) -> Result<ComputationId, Self> {
+        let observed = self.continuation.trace.sink.is_some() || self.continuation.access.is_some();
+        let stack = &self.continuation.stack;
+        let staging = stack
+            .host_results
+            .as_ref()
+            .is_some_and(crate::host::HostResults::is_staging);
+        let abandoned = stack
+            .control
+            .pending_host
+            .is_some_and(|host| host.abandoned)
+            || stack
+                .control
+                .pending_suspension
+                .is_some_and(|suspension| suspension.abandoned);
+        if stack.outcome.is_some()
+            || matches!(self.vm, BorrowedOrOwned::Owned(_))
+            || observed
+            || staging
+            || abandoned
+        {
+            return Err(self);
         }
+        let mut stack = self.continuation.stack.take();
+        // Host results not in staging carry only this invocation's work usage; the resuming
+        // invocation starts its own.
+        stack.host_results = None;
+        let args = Cow::Owned(core::mem::take(&mut self.continuation.args).into_owned());
+        let mut exec = self
+            .exec
+            .take()
+            .expect("a live invocation holds the execution state");
+        exec.budget = core::mem::take(&mut self.budget);
+        // The saved stack keeps everything it allocated: nothing is left to discard.
+        self.vm.close_lease();
+        self.vm.restore(exec);
+        let id = self.vm.saved.insert(saved::Saved { stack, args });
+        self.vm.memory.aggs_mut().set_pinned(true);
+        Ok(id)
+    }
+}
+
+impl<H: Host> Vm<H> {
+    /// Continues a saved computation in a new invocation, with a fresh work allowance.
+    ///
+    /// The invocation picks up exactly where [`Invocation::save`] left it: [`Invocation::resume`]
+    /// runs it on, and a request or suspension it was waiting at is still pending. `options`
+    /// sets how this invocation handles host calls and suspensions it reaches. Fuel, host calls
+    /// and aggregate, payload and contract work restart from [`Self::limits`]; frames the
+    /// computation holds still count against [`Limits::max_call_depth`].
+    ///
+    /// The ID names nothing afterwards: save the invocation again to keep it, or drop it to
+    /// cancel the computation, which discards what this invocation allocated. Refuses, leaving
+    /// the computation saved, an ID this VM holds no computation for, another VM's ID, and
+    /// options with an observer.
+    ///
+    /// # Panics
+    ///
+    /// If the aggregate heap was replaced through [`Self::aggregates_mut`] while computations
+    /// were saved: their handles would name other aggregates.
+    pub fn resume<'a>(
+        &'a mut self,
+        id: ComputationId,
+        options: InvocationOptions<'a>,
+    ) -> Result<Invocation<'a, H>, ResumeError> {
+        self.saved.check(id)?;
+        if options.trace.is_some() || options.access.is_some() {
+            return Err(ResumeError::Observed);
+        }
+        self.check_pinned();
+        self.settle();
+        let saved = self.saved.take(id).expect("checked above");
+        let pinned = self.saved.len() != 0;
+        self.memory.aggs_mut().set_pinned(pinned);
+        let saved::Saved { mut stack, args } = *saved;
+        stack
+            .control
+            .set_yields(options.yield_host_calls, options.yield_suspensions);
+        let checkpoint = self.memory.checkpoint();
+        let mut exec = self.lend(checkpoint);
+        let mut budget = core::mem::take(&mut exec.budget);
+        budget.reset(&self.limits);
+        budget.frames = stack.ctx.held_frames();
+        let continuation = continuation::Continuation {
+            stack,
+            args,
+            trace: TraceCtx::with_observer(TraceMask::NONE, None),
+            access: None,
+            register_state: observations::RegisterState::default(),
+        };
+        Ok(Invocation {
+            vm: BorrowedOrOwned::Borrowed(self),
+            continuation,
+            checkpoint,
+            budget,
+            exec: Some(exec),
+        })
     }
 }
 
