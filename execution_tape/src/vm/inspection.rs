@@ -532,6 +532,11 @@ impl<H: Host> Vm<H> {
     /// its frames, initialized registers and object roots, with the activation IDs it keeps when
     /// resumed. A computation saved at a host request or suspension shows the waiting frame as
     /// that request's views do. Refuses an ID this VM holds no computation for, or another VM's.
+    ///
+    /// Its registers are the computation's own, but
+    /// [`visit_objects`](InvocationInspection::visit_objects) also lists every aggregate field in
+    /// the VM's heap, which is shared: other saved computations' aggregates, and, through
+    /// `inspect_saved` while an invocation runs, that invocation's uncommitted temporaries.
     pub fn inspect(&self, id: ComputationId) -> Result<InvocationInspection<'_>, ResumeError> {
         let saved = self.saved.get(id)?;
         Ok(inspection(self, &saved.stack, &saved.args))
