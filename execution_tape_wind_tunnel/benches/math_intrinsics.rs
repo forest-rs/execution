@@ -21,7 +21,7 @@ use execution_tape::{
     },
     trace::TraceMask,
     value::{FuncRef, Value},
-    vm::{ExecutionContext, Limits, Vm},
+    vm::{Limits, Vm},
 };
 
 const CHAIN: usize = 128;
@@ -193,14 +193,12 @@ fn chain(c: &mut Criterion) {
                 .unwrap();
             let program = builder.build_verified().unwrap();
             let mut vm = Vm::new(MathHost, Limits::default());
-            let mut context = ExecutionContext::new();
             let mut outputs = Vec::new();
             let unit = vm.install(program).unwrap();
             let args = [start.clone()];
             let mut run = |outputs: &mut Vec<Value>| {
                 outputs.clear();
-                vm.run_with_ctx(
-                    &mut context,
+                vm.run_into(
                     FuncRef::new(unit, entry),
                     black_box(&args),
                     outputs,

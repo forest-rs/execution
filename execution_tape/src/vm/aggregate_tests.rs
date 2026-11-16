@@ -67,12 +67,10 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
                 },
             );
             let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
-            let mut ctx = ExecutionContext::new();
             let mut outputs = vec![Value::Bool(true)];
             let unit = vm.install(program.clone()).unwrap();
             let error = vm
-                .run_with_ctx(
-                    &mut ctx,
+                .run_into(
                     FuncRef::new(unit, FuncId(0)),
                     &[Value::I64(7)],
                     &mut outputs,
@@ -85,7 +83,7 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
                 matches!(error.trap, Trap::AggregateWorkExceeded { limit, used, requested }
                 if limit == 2 * cost - 1 && used == cost && requested == cost)
             );
-            assert_eq!(ctx.budget.aggregate_work, cost);
+            assert_eq!(vm.exec_budget().aggregate_work, cost);
             assert_eq!(outputs, [Value::Bool(true)]);
             assert_eq!(vm.aggregates().len_u32(), 1);
             assert_eq!(
@@ -97,8 +95,7 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
             vm.limits.max_aggregate_work = 2 * cost;
             for _ in 0..2 {
                 outputs.clear();
-                vm.run_with_ctx(
-                    &mut ctx,
+                vm.run_into(
                     FuncRef::new(unit, FuncId(0)),
                     &[Value::I64(7)],
                     &mut outputs,
@@ -107,14 +104,9 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
                     None,
                 )
                 .unwrap();
-                assert_eq!(ctx.budget.aggregate_work, 2 * cost);
-                assert_eq!(ctx.budget.payload_work, 0);
+                assert_eq!(vm.exec_budget().aggregate_work, 2 * cost);
+                assert_eq!(vm.exec_budget().payload_work, 0);
             }
-            ctx.clear();
-            assert_eq!(
-                (ctx.budget.aggregate_work, ctx.budget.aggregate_limit),
-                (0, 0)
-            );
         }
     }
 }
@@ -178,27 +170,27 @@ fn aggregate_budget_is_shared_by_guest_calls_and_checked_replay() {
 
 #[test]
 fn aggregate_work_arithmetic_rejects_overflow_without_charging() {
-    let mut ctx = ExecutionContext::new();
-    ctx.budget.aggregate_limit = u64::MAX;
+    let mut budget = Budget::default();
+    budget.aggregate_limit = u64::MAX;
     // Exercise the accounting boundary without allocating an enormous guest value.
     if usize::BITS == 64 {
         assert!(matches!(
-            ctx.budget.charge_aggregate(usize::MAX),
+            budget.charge_aggregate(usize::MAX),
             Err(Trap::AggregateSizeOverflow)
         ));
-        assert_eq!(ctx.budget.aggregate_work, 0);
+        assert_eq!(budget.aggregate_work, 0);
     }
-    ctx.budget.aggregate_work = u64::MAX - 1;
-    ctx.budget.charge_aggregate(0).unwrap();
+    budget.aggregate_work = u64::MAX - 1;
+    budget.charge_aggregate(0).unwrap();
     assert!(matches!(
-        ctx.budget.charge_aggregate(0),
+        budget.charge_aggregate(0),
         Err(Trap::AggregateWorkExceeded {
             limit: u64::MAX,
             used: u64::MAX,
             requested: 1
         })
     ));
-    assert_eq!(ctx.budget.aggregate_work, u64::MAX);
+    assert_eq!(budget.aggregate_work, u64::MAX);
 }
 
 #[test]

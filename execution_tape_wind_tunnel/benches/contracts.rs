@@ -15,7 +15,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::Value;
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 
 #[derive(Debug)]
 struct NoHost;
@@ -70,10 +70,8 @@ fn bench_contracts(c: &mut Criterion) {
             }
             let args = [value];
             let mut outputs = Vec::new();
-            let mut context = ExecutionContext::new();
             let unit = vm.install(program.clone()).unwrap();
-            vm.run_with_ctx(
-                &mut context,
+            vm.run_into(
                 FuncRef::new(unit, entry),
                 &args,
                 &mut outputs,
@@ -99,8 +97,7 @@ fn bench_contracts(c: &mut Criterion) {
                 |b, _| {
                     b.iter(|| {
                         outputs.clear();
-                        vm.run_with_ctx(
-                            &mut context,
+                        vm.run_into(
                             FuncRef::new(unit, entry),
                             black_box(&args),
                             &mut outputs,

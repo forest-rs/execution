@@ -15,12 +15,14 @@ use core::hash::{Hash, Hasher};
 
 /// An activation identity valid only in its originating invocation.
 ///
-/// Cloning retains the opaque identity domain, preventing address reuse from making an old ID
-/// refer to a later invocation. Inspection rejects IDs from other invocations, even when their
-/// local ordinals match. IDs are process-local handles, not persistent archive identities.
+/// It names its VM, which cloning retains so address reuse cannot make an old ID refer to
+/// another VM, and the invocation within that VM. Inspection rejects IDs from other
+/// invocations, even when their local ordinals match. IDs are process-local handles, not
+/// persistent archive identities.
 #[derive(Clone)]
 pub struct ActivationId {
-    owner: Arc<()>,
+    vm: Arc<()>,
+    stack: u64,
     ordinal: u64,
 }
 impl ActivationId {
@@ -32,20 +34,24 @@ impl ActivationId {
 }
 impl PartialEq for ActivationId {
     fn eq(&self, other: &Self) -> bool {
-        self.ordinal == other.ordinal && Arc::ptr_eq(&self.owner, &other.owner)
+        self.ordinal == other.ordinal
+            && self.stack == other.stack
+            && Arc::ptr_eq(&self.vm, &other.vm)
     }
 }
 impl Eq for ActivationId {}
 impl Hash for ActivationId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.owner).hash(state);
+        Arc::as_ptr(&self.vm).hash(state);
+        self.stack.hash(state);
         self.ordinal.hash(state);
     }
 }
 impl fmt::Debug for ActivationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActivationId")
-            .field("invocation", &Arc::as_ptr(&self.owner))
+            .field("vm", &Arc::as_ptr(&self.vm))
+            .field("invocation", &self.stack)
             .field("ordinal", &self.ordinal)
             .finish()
     }
@@ -66,30 +72,49 @@ pub(super) struct ExecutionControl {
     pub(super) pending_host: Option<host_call::PendingHost>,
     pub(super) pending_suspension: Option<invocation::PendingSuspend>,
     pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
-    owner: Option<Arc<()>>,
+    /// The VM-assigned identity of the stack this control drives; zero for synchronous runs,
+    /// which hand out no activation identities and hold no proofs across stacks.
+    owner: u64,
     frames: Vec<Activation>,
     last: u64,
 }
 impl ExecutionControl {
-    pub(super) fn owner(&self) -> &Arc<()> {
-        self.owner.as_ref().expect("resumable control identity")
+    /// Bytes of activation capacity held.
+    pub(super) fn retained_bytes(&self) -> usize {
+        capacity_bytes(&self.frames)
     }
 
-    pub(super) fn start(yield_host_calls: bool, yield_suspensions: bool) -> Self {
-        Self {
-            remaining: 0,
-            yield_host_calls,
-            yield_suspensions,
-            pending_host: None,
-            pending_suspension: None,
-            callbacks: None,
-            owner: Some(Arc::new(())),
-            frames: vec![Activation {
-                ordinal: 0,
-                caller: None,
-            }],
-            last: 0,
-        }
+    pub(super) fn owner(&self) -> u64 {
+        debug_assert_ne!(self.owner, 0, "resumable control identity");
+        self.owner
+    }
+
+    /// Resets this control, keeping its buffers, to start a stack identified by `owner`.
+    pub(super) fn start(&mut self, owner: u64, yield_host_calls: bool, yield_suspensions: bool) {
+        self.restart(owner);
+        self.yield_host_calls = yield_host_calls;
+        self.yield_suspensions = yield_suspensions;
+        self.frames.push(Activation {
+            ordinal: 0,
+            caller: None,
+        });
+    }
+
+    /// Resets this control, keeping its buffers, for a synchronous run.
+    pub(super) fn start_run(&mut self) {
+        self.restart(0);
+    }
+
+    fn restart(&mut self, owner: u64) {
+        self.remaining = 0;
+        self.yield_host_calls = false;
+        self.yield_suspensions = false;
+        self.pending_host = None;
+        self.pending_suspension = None;
+        self.callbacks = None;
+        self.owner = owner;
+        self.frames.clear();
+        self.last = 0;
     }
     pub(super) fn paused_location(&self, ctx: &Registers, index: usize) -> TraceLocation {
         if index + 1 < ctx.frames.len() {
@@ -401,6 +426,7 @@ impl<'a> LiveRegisters<'a> {
 /// invocations expose no live frames, but retained heaps and outputs can still contribute object
 /// roots. Source connections use each frame's exact `location`.
 pub struct InvocationInspection<'a> {
+    vm: &'a Arc<()>,
     units: &'a UnitTable,
     ctx: &'a Registers,
     args: &'a [Value],
@@ -424,7 +450,7 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows paused state. Register indexes are built only for queried functions.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(&self.continuation, &self.vm.units, self.vm.memory.aggs())
+        inspection(&self.continuation, &self.vm)
     }
 
     /// Mutates host state between quanta. Preserve the validity of referenced object handles.
@@ -437,16 +463,17 @@ impl<H: Host> Invocation<'_, H> {
 
 impl<H: Host> invocation::Running<'_, '_, H> {
     pub(super) fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(self.continuation, &self.vm.units, self.vm.memory.aggs())
+        inspection(self.continuation, self.vm)
     }
 }
 
-fn inspection<'a>(
+fn inspection<'a, H: Host>(
     continuation: &'a continuation::Continuation<'_>,
-    units: &'a UnitTable,
-    aggregates: &'a AggHeap,
+    vm: &'a Vm<H>,
 ) -> InvocationInspection<'a> {
+    let units = &vm.units;
     InvocationInspection {
+        vm: &vm.identity,
         units,
         ctx: &continuation.ctx,
         args: &continuation.args,
@@ -455,7 +482,7 @@ fn inspection<'a>(
             .as_ref()
             .and_then(|outcome| outcome.as_ref().ok())
             .map_or(&[][..], |()| continuation.outputs.as_slice()),
-        aggregates,
+        aggregates: vm.memory.aggs(),
         control: &continuation.control,
         active: continuation.outcome.is_none(),
         facts: FrameFacts::new(units),
@@ -496,18 +523,13 @@ impl<'a> InvocationInspection<'a> {
     }
     fn activation_id(&self, activation: Activation) -> ActivationId {
         ActivationId {
-            owner: Arc::clone(self.control.owner.as_ref().expect("invocation identity")),
+            vm: Arc::clone(self.vm),
+            stack: self.control.owner(),
             ordinal: activation.ordinal,
         }
     }
     fn index(&self, id: &ActivationId) -> Option<usize> {
-        if !self.active
-            || !self
-                .control
-                .owner
-                .as_ref()
-                .is_some_and(|owner| Arc::ptr_eq(owner, &id.owner))
-        {
+        if !self.active || self.control.owner != id.stack || !Arc::ptr_eq(self.vm, &id.vm) {
             return None;
         }
         self.control

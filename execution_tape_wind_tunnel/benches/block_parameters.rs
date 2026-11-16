@@ -12,7 +12,7 @@ use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 use std::hint::black_box;
 
 fn benchmarks(c: &mut Criterion) {
@@ -32,11 +32,9 @@ fn benchmarks(c: &mut Criterion) {
                 stats.prepared_capacity_bytes
             );
             let mut vm = Vm::new(workload::NoHost, Limits::default());
-            let mut ctx = ExecutionContext::new();
             let mut outputs = Vec::new();
             let unit = vm.install(verified.clone()).unwrap();
-            vm.run_with_ctx(
-                &mut ctx,
+            vm.run_into(
                 FuncRef::new(unit, FuncId(0)),
                 &[],
                 &mut outputs,
@@ -66,8 +64,7 @@ fn benchmarks(c: &mut Criterion) {
             c.bench_function(&format!("block_execute/{mode}/{width}"), |b| {
                 b.iter(|| {
                     outputs.clear();
-                    vm.run_with_ctx(
-                        &mut ctx,
+                    vm.run_into(
                         FuncRef::new(unit, FuncId(0)),
                         &[],
                         &mut outputs,

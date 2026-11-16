@@ -12,7 +12,7 @@ use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::value::{Closure, Value};
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 use std::{hint::black_box, time::Duration};
 
 struct NoHost;
@@ -157,10 +157,8 @@ fn callables(c: &mut Criterion) {
                 };
                 let args = [callee, value.clone()];
                 let mut output = Vec::new();
-                let mut ctx = ExecutionContext::new();
                 let unit = vm.install(p.clone()).unwrap();
-                vm.run_with_ctx(
-                    &mut ctx,
+                vm.run_into(
                     FuncRef::new(unit, entry),
                     &args,
                     &mut output,
@@ -178,8 +176,7 @@ fn callables(c: &mut Criterion) {
                     |b| {
                         b.iter(|| {
                             output.clear();
-                            vm.run_with_ctx(
-                                &mut ctx,
+                            vm.run_into(
                                 FuncRef::new(unit, entry),
                                 black_box(&args),
                                 &mut output,

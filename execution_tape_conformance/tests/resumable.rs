@@ -531,3 +531,126 @@ fn resource_observer_is_retained_across_quanta() {
     }
     assert_eq!(reads.0, [1, 2]);
 }
+
+#[test]
+fn a_forgotten_invocation_is_cancelled_before_its_vm_is_used_again() {
+    let (p, entry) = fixture();
+    let args = [Value::Str("value".into())];
+    let mut vm = Vm::new(Echo::default(), Limits::default());
+    let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+    let unit = vm.install(p).unwrap();
+    let entry = FuncRef::new(unit, entry);
+    let mut invocation = vm
+        .start(entry, &args, InvocationOptions::default())
+        .unwrap();
+    // Through the first child's tuple.
+    assert_eq!(invocation.resume(4).unwrap(), RunStatus::Suspended);
+    core::mem::forget(invocation);
+    assert_eq!(vm.aggregates().len_u32(), 2);
+
+    // The next run first discards what the forgotten invocation allocated.
+    let outputs = vm.run(entry, &args, TraceMask::NONE, None).unwrap();
+    assert_eq!(vm.aggregates().len_u32(), 4);
+    assert!(matches!(outputs.as_slice(), [Value::Agg(_)]));
+    assert_eq!(
+        vm.aggregates().tuple_get(retained, 0).unwrap(),
+        Value::I64(1)
+    );
+}
+
+#[test]
+// Panic-abort targets, including default WASI, cannot catch a host panic or run its cleanup.
+#[cfg(panic = "unwind")]
+fn a_host_panic_mid_run_discards_the_runs_aggregates_before_the_vm_is_used_again() {
+    /// Echoes, except that its second call panics.
+    struct PanicsOnce(usize);
+    impl Host for PanicsOnce {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            args: &[ValueRef<'_>],
+            rets: &mut [Value],
+            _: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            self.0 += 1;
+            assert_ne!(self.0, 2, "injected host panic");
+            rets[0] = args[0].to_value();
+            Ok(0)
+        }
+    }
+    let (p, entry) = fixture();
+    let args = [Value::Str("value".into())];
+    let mut vm = Vm::new(PanicsOnce(0), Limits::default());
+    let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+    let unit = vm.install(p).unwrap();
+    let entry = FuncRef::new(unit, entry);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        vm.run(entry, &args, TraceMask::NONE, None)
+    }));
+    assert!(result.is_err());
+    // The first child's tuple outlives the panic until the VM is next used.
+    assert_eq!(vm.aggregates().len_u32(), 2);
+
+    let outputs = vm.run(entry, &args, TraceMask::NONE, None).unwrap();
+    assert_eq!(vm.aggregates().len_u32(), 4);
+    assert!(matches!(outputs.as_slice(), [Value::Agg(_)]));
+    assert_eq!(
+        vm.aggregates().tuple_get(retained, 0).unwrap(),
+        Value::I64(1)
+    );
+}
+
+#[test]
+fn a_forgotten_finished_invocation_keeps_its_outputs_as_dropping_it_would() {
+    let (p, entry) = fixture();
+    let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(p).unwrap();
+    let entry = FuncRef::new(unit, entry);
+    let first = [Value::Str("first".into())];
+    let mut invocation = vm
+        .start(entry, &first, InvocationOptions::default())
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    let outputs = invocation.take_outputs().unwrap();
+    core::mem::forget(invocation);
+    let root = vm.root(outputs).unwrap();
+
+    vm.run(entry, &[Value::Str("second".into())], TraceMask::NONE, None)
+        .unwrap();
+    vm.collect().unwrap();
+    let [Value::Agg(outer)] = vm.resolve(&root).unwrap() else {
+        panic!("one tuple");
+    };
+    let Value::Agg(inner) = vm.aggregates().tuple_get(*outer, 0).unwrap() else {
+        panic!("a nested tuple");
+    };
+    assert_eq!(
+        vm.aggregates().tuple_get(inner, 0).unwrap(),
+        Value::Str("first".into())
+    );
+}
+
+#[test]
+fn registering_a_group_first_discards_what_a_forgotten_invocation_allocated() {
+    let (p, entry) = fixture();
+    let args = [Value::Str("value".into())];
+    let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(p).unwrap();
+    let mut invocation = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
+        .unwrap();
+    // Through the first child's tuple.
+    assert_eq!(invocation.resume(4).unwrap(), RunStatus::Suspended);
+    core::mem::forget(invocation);
+    let end = vm.aggregates().handle_end();
+    let tuple = execution_tape::value::AggHandle(end - 1);
+    assert!(matches!(
+        vm.root(vec![Value::Agg(tuple)]),
+        Err(execution_tape::vm::RootError::DanglingHandle { .. })
+    ));
+}

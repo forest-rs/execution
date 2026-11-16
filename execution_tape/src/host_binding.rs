@@ -873,7 +873,7 @@ mod tests {
     use crate::trace::TraceMask;
     use crate::value::FuncId;
     use crate::value::FuncRef;
-    use crate::vm::{ExecutionContext, Limits, Trap, Vm};
+    use crate::vm::{Limits, Trap, Vm};
     use alloc::vec;
 
     fn signature() -> HostSig {
@@ -1255,12 +1255,10 @@ mod tests {
         );
         assert_eq!(*a.host().state(), 1);
         *a.host_mut().state_mut() = 10;
-        let mut ctx = ExecutionContext::new();
         let mut outputs = Vec::new();
         let mut reads = Reads::default();
         let unit = a.install(Arc::clone(&p)).unwrap();
-        a.run_with_ctx(
-            &mut ctx,
+        a.run_into(
             FuncRef::new(unit, FuncId(0)),
             &[Value::I64(40)],
             &mut outputs,

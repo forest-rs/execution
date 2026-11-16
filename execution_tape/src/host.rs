@@ -83,7 +83,7 @@ use crate::value::Value;
 /// use execution_tape::program::ValueType;
 /// use execution_tape::trace::TraceMask;
 /// use execution_tape::value::{FuncId, FuncRef, Value};
-/// use execution_tape::vm::{ExecutionContext, Limits, Vm};
+/// use execution_tape::vm::{Limits, Vm};
 ///
 /// #[derive(Debug, Default)]
 /// struct RecordingAccessSink {
@@ -204,21 +204,19 @@ use crate::value::Value;
 /// };
 ///
 /// let mut vm = Vm::new(host, Limits::default());
-/// let mut ctx = ExecutionContext::new();
 /// let mut access = RecordingAccessSink::default();
 ///
 /// let unit = vm.install(program).unwrap();
 /// let mut out = Vec::new();
-/// vm.run_with_ctx(
-///         &mut ctx,
-///         FuncRef::new(unit, FuncId(0)),
-///         &[],
-///         &mut out,
-///         TraceMask::NONE,
-///         None,
-///         Some(&mut access),
-///     )
-///     .unwrap();
+/// vm.run_into(
+///     FuncRef::new(unit, FuncId(0)),
+///     &[],
+///     &mut out,
+///     TraceMask::NONE,
+///     None,
+///     Some(&mut access),
+/// )
+/// .unwrap();
 ///
 /// assert_eq!(out, vec![Value::I64(8)]);
 /// assert_eq!(access.reads.len(), 1);

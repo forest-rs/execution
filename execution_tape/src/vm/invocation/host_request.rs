@@ -652,6 +652,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         // Install the terminal state before invoking observers, as in normal finish.
         // Unwinding from cancellation must not expose the fallthrough continuation.
         self.continuation.outcome = Some(Err(error.clone()));
+        self.vm.close_lease();
         self.continuation
             .trace
             .cancel(self.continuation.program.program(), location, span);

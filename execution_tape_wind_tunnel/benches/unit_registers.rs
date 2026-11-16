@@ -14,7 +14,7 @@ use execution_tape::{
     trace::TraceMask,
     value::{FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{ExecutionContext, Limits, Vm},
+    vm::{Limits, Vm},
 };
 
 struct UnitHost;
@@ -97,11 +97,9 @@ fn units(c: &mut Criterion) {
         let program = std::sync::Arc::new(program);
         let mut vm = Vm::new(UnitHost, Limits::default());
         let args = [Value::Unit, Value::Unit, Value::Bool(true)];
-        let mut context = ExecutionContext::new();
         let mut output = Vec::new();
         let unit = vm.install(std::sync::Arc::clone(&program)).unwrap();
-        vm.run_with_ctx(
-            &mut context,
+        vm.run_into(
             FuncRef::new(unit, entry),
             &args,
             &mut output,
@@ -112,9 +110,8 @@ fn units(c: &mut Criterion) {
         .unwrap();
         assert_eq!(output, [Value::Unit, Value::Unit]);
         println!(
-            "width={width} frame_bytes={} context_bytes={}",
+            "width={width} frame_bytes={}",
             program.function(entry).unwrap().stats().register_bytes,
-            size_of::<ExecutionContext>()
         );
         group.bench_function(BenchmarkId::new("fresh_vm", width), |b| {
             b.iter(|| {
@@ -137,8 +134,7 @@ fn units(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("reused_context", width), |b| {
             b.iter(|| {
                 output.clear();
-                vm.run_with_ctx(
-                    &mut context,
+                vm.run_into(
                     FuncRef::new(unit, entry),
                     black_box(&args),
                     &mut output,

@@ -18,7 +18,7 @@ use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncId, FuncRef, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 
 /// Per-call state that only the caller owns.
 struct Context {
@@ -123,13 +123,11 @@ fn borrowed_host(c: &mut Criterion) {
             Limits::default(),
         );
         let unit = vm.install(Arc::clone(&program)).unwrap();
-        let mut scratch = ExecutionContext::new();
         let mut out = Vec::with_capacity(1);
         group.bench_function(BenchmarkId::new("reused", name), |b| {
             b.iter(|| {
                 out.clear();
-                vm.run_with_ctx(
-                    &mut scratch,
+                vm.run_into(
                     FuncRef::new(unit, entry),
                     black_box(&args),
                     &mut out,
@@ -168,14 +166,12 @@ fn borrowed_host(c: &mut Criterion) {
             .unwrap()
             .install(Arc::clone(&program))
             .unwrap();
-        let mut scratch = ExecutionContext::new();
         let mut out = Vec::with_capacity(1);
         group.bench_function(BenchmarkId::new("replace_host", name), |b| {
             b.iter(|| {
                 let (mut vm, idle) = parked.take().unwrap().replace_host(Borrowed(&mut cx));
                 out.clear();
-                vm.run_with_ctx(
-                    &mut scratch,
+                vm.run_into(
                     FuncRef::new(unit, entry),
                     black_box(&args),
                     &mut out,

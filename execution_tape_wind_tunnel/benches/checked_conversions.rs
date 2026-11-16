@@ -25,7 +25,7 @@ use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncId, FuncRef, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -223,7 +223,6 @@ fn checked_conversions(c: &mut Criterion) {
     let mut vm = Vm::new(NoHost, limits);
     let unit = vm.install(program()).unwrap();
     let mut group = c.benchmark_group("checked_conversions");
-    let mut ctx = ExecutionContext::new();
     let mut out = Vec::new();
     let args = [Value::U64(ITERS)];
     for (index, (name, _, _)) in CASES.iter().enumerate() {
@@ -231,8 +230,7 @@ fn checked_conversions(c: &mut Criterion) {
         group.bench_function(*name, |b| {
             b.iter(|| {
                 out.clear();
-                vm.run_with_ctx(
-                    &mut ctx,
+                vm.run_into(
                     entry,
                     black_box(&args),
                     &mut out,

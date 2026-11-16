@@ -115,15 +115,13 @@ impl Group {
 /// The registered groups of one VM.
 #[derive(Default)]
 pub(super) struct RootTable {
-    /// The VM's identity, created with its first group.
-    owner: Option<Arc<()>>,
     groups: Vec<Option<Group>>,
     free: Vec<u32>,
 }
 
 impl RootTable {
-    fn insert(&mut self, values: Vec<Value>) -> RootedValues {
-        let owner = self.owner.get_or_insert_with(|| Arc::new(()));
+    /// Registers `values` for the VM whose identity is `owner`.
+    fn insert(&mut self, owner: &Arc<()>, values: Vec<Value>) -> RootedValues {
         let token = Arc::new(Token {
             owner: Arc::downgrade(owner),
         });
@@ -142,12 +140,9 @@ impl RootTable {
         RootedValues { token, slot }
     }
 
-    fn group(&self, root: &RootedValues) -> Result<&Group, RootError> {
-        if !self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| core::ptr::eq(root.token.owner.as_ptr(), Arc::as_ptr(owner)))
-        {
+    /// The group `root` names, if it belongs to the VM whose identity is `owner`.
+    fn group(&self, owner: &Arc<()>, root: &RootedValues) -> Result<&Group, RootError> {
+        if !core::ptr::eq(root.token.owner.as_ptr(), Arc::as_ptr(owner)) {
             return Err(RootError::ForeignVm);
         }
         // A handle of this VM always names its own live group: the handle keeps the token
@@ -219,6 +214,8 @@ impl<H: Host> Vm<H> {
     /// Register values between runs, for example a run's outputs, which are valid until the
     /// next collection. Read them back with [`Self::resolve`].
     pub fn root(&mut self, values: Vec<Value>) -> Result<RootedValues, RootError> {
+        // A forgotten invocation's aggregates go first, so no group can keep them.
+        self.settle();
         for (index, value) in values.iter().enumerate() {
             if let Some(handle) = crate::aggregates::aggregate_handle(value)
                 && self.memory.aggs().agg_type(handle).is_err()
@@ -240,16 +237,17 @@ impl<H: Host> Vm<H> {
                 return Err(RootError::UnknownFunction { index, function });
             }
         }
-        Ok(self.roots.insert(values))
+        Ok(self.roots.insert(&self.identity, values))
     }
 
     /// Borrows the current values of a registered group.
     ///
     /// Aggregate handles in them are valid until the next collection, which may move them;
     /// resolve again afterwards rather than keeping copies. The borrow does not depend on the
-    /// handle, only on the VM.
+    /// handle, only on the VM. A group never reaches what a forgotten invocation allocated:
+    /// registering one discards those aggregates first.
     pub fn resolve(&self, root: &RootedValues) -> Result<&[Value], RootError> {
-        Ok(&self.roots.group(root)?.values)
+        Ok(&self.roots.group(&self.identity, root)?.values)
     }
 
     /// Unregisters a group and returns its current values.
@@ -257,7 +255,8 @@ impl<H: Host> Vm<H> {
     /// The returned handles stay valid until the next collection, which reclaims what only the
     /// group kept alive unless the values are registered again.
     pub fn release(&mut self, root: RootedValues) -> Result<Vec<Value>, RootError> {
-        self.roots.group(&root)?;
+        self.settle();
+        self.roots.group(&self.identity, &root)?;
         Ok(self.roots.remove(root.slot))
     }
 }

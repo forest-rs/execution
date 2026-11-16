@@ -12,7 +12,7 @@ use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, VerifyError, verify_program_owned};
-use execution_tape::vm::{ExecutionContext, Limits, Trap, Vm};
+use execution_tape::vm::{Limits, Trap, Vm};
 
 struct TestHost(Value);
 impl Host for TestHost {
@@ -223,12 +223,10 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
         .tuple_new(vec![Value::Agg(bad_inner)])
         .unwrap();
     vm.host_mut().0 = Value::Agg(bad_outer);
-    let mut ctx = ExecutionContext::new();
     let mut outputs = vec![Value::I64(99)];
     let unit = vm.install(prepared.clone()).unwrap();
     let error = vm
-        .run_with_ctx(
-            &mut ctx,
+        .run_into(
             FuncRef::new(unit, entry),
             &[],
             &mut outputs,
@@ -262,8 +260,7 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
         .unwrap();
     vm.host_mut().0 = Value::Agg(good_outer);
     assert!(
-        vm.run_with_ctx(
-            &mut ctx,
+        vm.run_into(
             FuncRef::new(unit, entry),
             &[],
             &mut outputs,
@@ -489,12 +486,10 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
         .unwrap();
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
-    let mut ctx = ExecutionContext::new();
     let mut outputs = vec![];
     let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
     let unit = vm.install(program.clone()).unwrap();
-    vm.run_with_ctx(
-        &mut ctx,
+    vm.run_into(
         FuncRef::new(unit, entry),
         &[Value::Agg(good)],
         &mut outputs,
@@ -510,8 +505,7 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
         .unwrap();
     assert_eq!(good, bad);
     let error = vm
-        .run_with_ctx(
-            &mut ctx,
+        .run_into(
             FuncRef::new(unit, entry),
             &[Value::Agg(bad)],
             &mut outputs,

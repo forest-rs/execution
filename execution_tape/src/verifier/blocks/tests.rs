@@ -7,7 +7,7 @@ use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::opcode::Opcode;
 use crate::trace::{TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use crate::value::{Decimal, FuncRef, UnitId, Value};
-use crate::vm::{ExecutionContext, Limits, Trap, Vm};
+use crate::vm::{Limits, Trap, Vm};
 
 struct NoHost;
 impl Host for NoHost {
@@ -657,11 +657,9 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
             },
         );
         let mut events = Events::default();
-        let mut ctx = ExecutionContext::new();
         let mut outputs = vec![Value::I64(99)];
         let unit = vm.install(p.clone()).unwrap();
-        let result = vm.run_with_ctx(
-            &mut ctx,
+        let result = vm.run_into(
             FuncRef::new(unit, FuncId(0)),
             &[Value::I64(7), Value::I64(9)],
             &mut outputs,

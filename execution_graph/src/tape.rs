@@ -24,7 +24,7 @@ use execution_tape::program::SpanId;
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, FuncRef, UnitId, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, InstallError, Limits, TrapInfo, Vm};
+use execution_tape::vm::{InstallError, Limits, TrapInfo, Vm};
 
 use crate::access::{HostOpId, NodeId, ResourceKey};
 use crate::executor::Executor;
@@ -224,7 +224,6 @@ pub struct TapeExecutor<H: Host, O: TapeObserver = NoTapeObserver> {
     vm: Vm<H>,
     /// Units installed for node programs, keyed by the retained program's address.
     units: BTreeMap<usize, (Arc<VerifiedProgram>, UnitId)>,
-    ctx: ExecutionContext,
     strict_deps: bool,
     early_cutoff: bool,
     args: Vec<Value>,
@@ -250,7 +249,6 @@ impl<H: Host> TapeExecutor<H> {
         Self {
             vm: Vm::new(host, limits),
             units: BTreeMap::new(),
-            ctx: ExecutionContext::new(),
             strict_deps: false,
             early_cutoff: false,
             args: Vec::new(),
@@ -269,7 +267,6 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
         TapeExecutor {
             vm: self.vm,
             units: self.units,
-            ctx: self.ctx,
             strict_deps: self.strict_deps,
             early_cutoff: self.early_cutoff,
             args: self.args,
@@ -348,7 +345,6 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
     }
 
     fn clear_workspace(&mut self) {
-        self.ctx.clear();
         self.args.clear();
         self.results.clear();
         self.importer.clear();
@@ -463,8 +459,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             } else {
                 Some(&mut combined as &mut dyn TraceSink)
             };
-            self.vm.run_with_ctx(
-                &mut self.ctx,
+            self.vm.run_into(
                 FuncRef::new(unit, node.entry),
                 &self.args,
                 &mut self.results,

@@ -13,7 +13,7 @@ use execution_tape::{
     program::{StructTypeDef, ValueType},
     trace::TraceMask,
     value::Value,
-    vm::{ExecutionContext, Limits, Vm},
+    vm::{Limits, Vm},
 };
 
 struct NoHost;
@@ -68,12 +68,10 @@ fn construction(c: &mut Criterion) {
             builder.define_function(entry, body).unwrap();
             let program = builder.build_verified().unwrap();
             let mut vm = Vm::new(NoHost, Limits::default());
-            let mut context = ExecutionContext::new();
             let args = [Value::I64(7)];
             let mut outputs = Vec::new();
             let unit = vm.install(program.clone()).unwrap();
-            vm.run_with_ctx(
-                &mut context,
+            vm.run_into(
                 FuncRef::new(unit, entry),
                 &args,
                 &mut outputs,
@@ -87,8 +85,7 @@ fn construction(c: &mut Criterion) {
             group.bench_function(BenchmarkId::new(kind, width), |b| {
                 b.iter(|| {
                     outputs.clear();
-                    vm.run_with_ctx(
-                        &mut context,
+                    vm.run_into(
                         FuncRef::new(unit, entry),
                         black_box(&args),
                         &mut outputs,

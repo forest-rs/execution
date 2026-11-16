@@ -7,7 +7,9 @@
 //! function of three `f32` inputs that executes 14 instructions (13 arithmetic and constant
 //! instructions, then `ret`) and returns three `f32`s, on a VM kept between runs with reused
 //! argument and result buffers. `ret_only` runs a function that only returns its inputs, which
-//! isolates per-run overhead from per-instruction cost. `native` is the same arithmetic in Rust.
+//! isolates per-run overhead from per-instruction cost. `parked` reuses the argument and result
+//! buffers through `Vm::run_into`; `run` calls `Vm::run`, which returns a fresh result vector.
+//! `native` is the same arithmetic in Rust.
 //! Program construction and installation are outside timing.
 
 use std::hint::black_box;
@@ -20,7 +22,7 @@ use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncId, FuncRef, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 
 struct NoHost;
 impl Host for NoHost {
@@ -113,23 +115,14 @@ fn bench(c: &mut Criterion) {
         ("ret_only", ret_only(), 1, false),
     ] {
         let (mut vm, entry) = parked(program, fuel);
-        let mut ctx = ExecutionContext::new();
         let mut args = Vec::with_capacity(3);
         let mut results = Vec::with_capacity(3);
         let mut run = |vm: &mut Vm<NoHost>, x: [f32; 3]| {
             args.clear();
             args.extend(x.map(Value::F32));
             results.clear();
-            vm.run_with_ctx(
-                &mut ctx,
-                entry,
-                &args,
-                &mut results,
-                TraceMask::NONE,
-                None,
-                None,
-            )
-            .unwrap();
+            vm.run_into(entry, &args, &mut results, TraceMask::NONE, None, None)
+                .unwrap();
             match results.as_slice() {
                 [Value::F32(a), Value::F32(b), Value::F32(c)] => [*a, *b, *c],
                 other => panic!("unexpected results {other:?}"),
@@ -140,6 +133,13 @@ fn bench(c: &mut Criterion) {
         }
         group.bench_function(format!("{name}/parked"), |b| {
             b.iter(|| run(&mut vm, black_box(inputs)));
+        });
+        // `Vm::run`: the same parked VM, but a fresh result vector per run.
+        group.bench_function(format!("{name}/run"), |b| {
+            b.iter(|| {
+                let args = black_box(inputs).map(Value::F32);
+                vm.run(entry, &args, TraceMask::NONE, None).unwrap()
+            });
         });
     }
     group.bench_function("pure14/native", |b| {

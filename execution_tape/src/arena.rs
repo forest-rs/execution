@@ -121,6 +121,12 @@ pub(crate) struct ValueArena {
 }
 
 impl ValueArena {
+    /// Bytes of descriptor capacity held, excluding payloads.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.bytes.capacity() * size_of::<Stored<Vec<u8>>>()
+            + self.strs.capacity() * size_of::<Stored<String>>()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.bytes.clear();
         self.strs.clear();
