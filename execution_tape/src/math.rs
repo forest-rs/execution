@@ -218,8 +218,9 @@ pub fn max_f32(a: f32, b: f32) -> f32 {
 #[inline]
 #[must_use]
 pub fn min_num_f32(a: f32, b: f32) -> f32 {
-    // Widening and narrowing are exact here: no NaN reaches the comparison, and both NaN cases
-    // return what `min_num_f64` would after narrowing.
+    // Bit-identical to widening both inputs, taking `min_num_f64` and narrowing the result:
+    // widening is exact for the numbers compared here, and both NaN cases give the canonical
+    // NaN that narrowing `f64::NAN` gives.
     match (a.is_nan(), b.is_nan()) {
         (true, true) => f32::NAN,
         (true, false) => b,
@@ -955,7 +956,15 @@ mod tests {
             f64::NAN,
             -f64::NAN,
             f64::from_bits(0x7FF0_0000_0000_0001),
+            // A negative signalling NaN with a payload.
+            f64::from_bits(0xFFF0_0000_0000_1234),
             f64::from_bits(1),
+            // The negative subnormals nearest zero and nearest the normals.
+            -f64::from_bits(1),
+            -f64::from_bits(0x000F_FFFF_FFFF_FFFF),
+            // One bit apart.
+            f64::from_bits(1.0_f64.to_bits() + 1),
+            f64::from_bits((-1.0_f64).to_bits() + 1),
         ];
         let bits = |x: f64| if x.is_nan() { u64::MAX } else { x.to_bits() };
         for &a in &f64s {
@@ -972,6 +981,7 @@ mod tests {
                 );
                 if a.is_nan() && b.is_nan() {
                     assert_eq!(min_num_f64(a, b).to_bits(), f64::NAN.to_bits());
+                    assert_eq!(max_num_f64(a, b).to_bits(), f64::NAN.to_bits());
                 }
             }
         }
@@ -990,7 +1000,15 @@ mod tests {
             -f32::NAN,
             f32::from_bits(0x7F80_0001),
             f32::from_bits(0xFFC0_1234),
+            // A negative signalling NaN with a payload.
+            f32::from_bits(0xFF80_1234),
             f32::from_bits(1),
+            // The negative subnormals nearest zero and nearest the normals.
+            -f32::from_bits(1),
+            -f32::from_bits(0x007F_FFFF),
+            // One bit apart.
+            f32::from_bits(1.0_f32.to_bits() + 1),
+            f32::from_bits((-1.0_f32).to_bits() + 1),
         ];
         for &a in &f32s {
             for &b in &f32s {
