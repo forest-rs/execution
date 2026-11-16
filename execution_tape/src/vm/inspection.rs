@@ -84,6 +84,11 @@ impl ExecutionControl {
         capacity_bytes(&self.frames)
     }
 
+    /// The caller location of the activation at `index`; `None` for a root.
+    pub(super) fn caller(&self, index: usize) -> Option<TraceLocation> {
+        self.frames.get(index).and_then(|frame| frame.caller)
+    }
+
     pub(super) fn owner(&self) -> u64 {
         debug_assert_ne!(self.owner, 0, "resumable control identity");
         self.owner

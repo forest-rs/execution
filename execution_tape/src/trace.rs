@@ -163,6 +163,78 @@ pub enum ScopeKind {
     },
 }
 
+/// A scope already open when an observer attaches, as [`TraceSink::scope_enter`] would have
+/// reported it.
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+pub struct OpenScope<'a> {
+    /// Program of the scope's unit.
+    pub program: &'a Program,
+    /// The scope.
+    pub kind: ScopeKind,
+    /// Stack depth the scope was entered at; the root frame is at depth one.
+    pub depth: usize,
+    /// Where the scope was entered, as [`TraceSink::scope_enter`] reported it: a call frame's
+    /// first instruction, or the host call instruction. A frame's current instruction is in
+    /// [`crate::vm::PausedFrame::location`] instead.
+    pub location: TraceLocation,
+    /// Span of `location`, as [`TraceSink::scope_enter`] reported it.
+    pub span_id: Option<SpanId>,
+}
+
+impl<'a> OpenScope<'a> {
+    /// An open scope, for sinks to test their [`TraceSink::attach`] handling.
+    #[must_use]
+    pub fn new(
+        program: &'a Program,
+        kind: ScopeKind,
+        depth: usize,
+        location: TraceLocation,
+        span_id: Option<SpanId>,
+    ) -> Self {
+        Self {
+            program,
+            kind,
+            depth,
+            location,
+            span_id,
+        }
+    }
+}
+
+/// What an observer finds when it joins a computation that is already running.
+///
+/// Lists exactly what the observer's subscription would have opened by now, so that every
+/// later [`TraceSink::scope_exit`] and [`TraceSink::instr_end`] closes something listed here
+/// or entered afterwards.
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+pub struct Attachment<'a> {
+    /// The computation's entry function.
+    pub entry: FuncRef,
+    /// Open scopes, outermost first.
+    pub scopes: &'a [OpenScope<'a>],
+    /// The instruction attempt still outstanding, a host instruction waiting for completion,
+    /// which [`TraceSink::instr_end`] completes.
+    pub attempt: Option<TraceLocation>,
+}
+
+impl<'a> Attachment<'a> {
+    /// An attachment, for sinks to test their [`TraceSink::attach`] handling.
+    #[must_use]
+    pub fn new(
+        entry: FuncRef,
+        scopes: &'a [OpenScope<'a>],
+        attempt: Option<TraceLocation>,
+    ) -> Self {
+        Self {
+            entry,
+            scopes,
+            attempt,
+        }
+    }
+}
+
 /// Outcome of a run, instruction attempt, or scope.
 #[derive(Copy, Clone, Debug)]
 #[non_exhaustive]
@@ -826,6 +898,28 @@ pub trait TraceSink {
     /// - `program`: program being executed (unverified container data)
     /// - `outcome`: whether the run ended successfully or trapped
     fn run_end(&mut self, _program: &Program, _outcome: TraceOutcome<'_>) {}
+
+    /// Called instead of [`Self::run_start`] when the observer joins a computation that is
+    /// already running: one resumed with [`crate::vm::Vm::resume`].
+    ///
+    /// Follows [`Self::run_mask`] and precedes every other event, under any mask but
+    /// [`TraceMask::NONE`]. `attachment` lists what is already open; a sink that pairs scope or
+    /// instruction events must adopt it, because later exits close those scopes too, and the
+    /// default, which does nothing, leaves it seeing exits without matching enters. No start
+    /// events are invented for activations that began before the observer joined.
+    ///
+    /// - `program`: the entry unit's program
+    fn attach(&mut self, _program: &Program, _attachment: Attachment<'_>) {}
+
+    /// Called instead of [`Self::run_end`] when the observer stops observing a computation that
+    /// keeps running: one saved with [`crate::vm::Invocation::save`].
+    ///
+    /// The last event, under any mask but [`TraceMask::NONE`]. Every scope and instruction
+    /// attempt the observer saw open is still open in the computation, and no exit follows for
+    /// it: close any physical intervals without treating them as returns.
+    ///
+    /// - `program`: the entry unit's program
+    fn release(&mut self, _program: &Program) {}
 }
 
 // Shared ownership keeps observations available after an owned invocation is dropped.
@@ -901,5 +995,11 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     }
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         self.as_ref().borrow_mut().run_end(program, outcome);
+    }
+    fn attach(&mut self, program: &Program, attachment: Attachment<'_>) {
+        self.as_ref().borrow_mut().attach(program, attachment);
+    }
+    fn release(&mut self, program: &Program) {
+        self.as_ref().borrow_mut().release(program);
     }
 }

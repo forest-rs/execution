@@ -259,6 +259,10 @@ pub enum CaptureFault {
     /// a moving collection does not preserve. Collect between recorded runs instead, with
     /// [`crate::vm::Vm::collect`]: each recording captures the aggregates it observes at entry.
     Relocated,
+    /// The recorded invocation was saved, or the recorder joined a resumed one.
+    ///
+    /// A recording covers one invocation from entry to its outcome.
+    Saved,
 }
 
 impl core::fmt::Display for CaptureFault {

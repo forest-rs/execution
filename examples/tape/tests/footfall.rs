@@ -248,6 +248,51 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
             }
         }
     }
+    // Saving releases the sink with its scopes still open in the computation; resuming hands
+    // them to the sink again without inventing their starts.
+    for mask in [all, sink.mask(), TraceMask::CALL | TraceMask::HOST] {
+        let start = runtime.snapshot().next_cursor();
+        let unit = vm.install(program.clone()).unwrap();
+        let mut invocation = vm
+            .start(
+                FuncRef::new(unit, ENTRY),
+                &arguments,
+                InvocationOptions::default().trace(mask, &mut sink),
+            )
+            .unwrap();
+        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+        let saved = invocation.save().unwrap();
+        let released = runtime.snapshot_since(start);
+        balanced(&released);
+        assert_eq!(count(&released, "execution_tape.release"), 1);
+        assert_eq!(count(&released, "execution_tape.run_end"), 0);
+        assert_eq!(count(&released, "execution_tape.scope_end"), 0);
+
+        let start = runtime.snapshot().next_cursor();
+        let mut invocation = vm
+            .resume(saved, InvocationOptions::default().trace(mask, &mut sink))
+            .unwrap();
+        assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        drop(invocation);
+        let resumed = runtime.snapshot_since(start);
+        balanced(&resumed);
+        assert_eq!(
+            count(&resumed, "execution_tape.run"),
+            usize::from(mask.contains(TraceMask::RUN)),
+            "attached with a run scope only when its end is delivered"
+        );
+        assert_eq!(
+            count(&resumed, "execution_tape.run_end"),
+            usize::from(mask.contains(TraceMask::RUN))
+        );
+        assert_eq!(
+            count(&resumed, "execution_tape.scope_end"),
+            2 * usize::from(mask.contains(TraceMask::CALL))
+                + usize::from(mask.contains(TraceMask::HOST)),
+            "the attached frames exit once each, after the host call"
+        );
+    }
     for mask in [
         TraceMask::CALL | TraceMask::HOST,
         TraceMask::HOST,

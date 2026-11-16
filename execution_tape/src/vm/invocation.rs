@@ -773,19 +773,20 @@ impl<'a, H: Host> Invocation<'a, H> {
     /// [`AggHeap::clear`] and [`AggHeap::take_nodes`] panic: the saved handles would name other
     /// aggregates.
     ///
+    /// Observers belong to this invocation, not to the computation: a trace observer receives
+    /// [`TraceSink::release`] and no further events, with
+    /// everything it saw open left open, and both observers are dropped.
+    ///
     /// Returns the invocation unchanged, and saves nothing, when it has finished (take its
-    /// result instead), owns its VM (saving would drop the VM with it), has a trace or access
-    /// observer (observers belong to one invocation, and resumed ones cannot be observed yet),
-    /// waits at a host request whose host has aggregates in staging (only the host's handles
-    /// reach them, and they would alias aggregates later runs allocate: complete the request
-    /// first, or call back to promote them), or holds an interrupted delivery (resume it to
-    /// see its trap).
+    /// result instead), owns its VM (saving would drop the VM with it), waits at a host request
+    /// whose host has aggregates in staging (only the host's handles reach them, and they would
+    /// alias aggregates later runs allocate: complete the request first, or call back to promote
+    /// them), or holds an interrupted delivery (resume it to see its trap).
     #[expect(
         clippy::result_large_err,
         reason = "a refused save hands back the invocation it was given, which is moved in anyway"
     )]
     pub fn save(mut self) -> Result<ComputationId, Self> {
-        let observed = self.continuation.trace.sink.is_some() || self.continuation.access.is_some();
         let stack = &self.continuation.stack;
         let staging = stack
             .host_results
@@ -801,12 +802,13 @@ impl<'a, H: Host> Invocation<'a, H> {
                 .is_some_and(|suspension| suspension.abandoned);
         if stack.outcome.is_some()
             || matches!(self.vm, BorrowedOrOwned::Owned(_))
-            || observed
             || staging
             || abandoned
         {
             return Err(self);
         }
+        let program = Arc::clone(&self.continuation.stack.program);
+        self.continuation.trace.release(program.program());
         let mut stack = self.continuation.stack.take();
         // Host results not in staging carry only this invocation's work usage; the resuming
         // invocation starts its own.
@@ -831,14 +833,22 @@ impl<H: Host> Vm<H> {
     ///
     /// The invocation picks up exactly where [`Invocation::save`] left it: [`Invocation::resume`]
     /// runs it on, and a request or suspension it was waiting at is still pending. `options`
-    /// sets how this invocation handles host calls and suspensions it reaches. Fuel, host calls
+    /// sets how this invocation handles host calls and suspensions it reaches, and its
+    /// observers: a trace observer receives
+    /// [`TraceSink::attach`] with what is already open, in
+    /// place of a run start, and then the computation's events as usual. Fuel, host calls
     /// and aggregate, payload and contract work restart from [`Self::limits`]; frames the
     /// computation holds still count against [`Limits::max_call_depth`].
     ///
     /// The ID names nothing afterwards: save the invocation again to keep it, or drop it to
     /// cancel the computation, which discards what this invocation allocated. Refuses, leaving
     /// the computation saved, an ID this VM holds no computation for, another VM's ID, and
-    /// options with an observer.
+    /// options with a trace observer while a guest callback runs on top of a waiting host
+    /// request.
+    ///
+    /// The computation leaves the VM's saved computations before the trace observer's
+    /// [`TraceSink::attach`] runs, and the ID names nothing from then on: if the observer
+    /// panics, dropping the invocation cancels the computation.
     ///
     /// # Panics
     ///
@@ -849,8 +859,15 @@ impl<H: Host> Vm<H> {
         id: ComputationId,
         options: InvocationOptions<'a>,
     ) -> Result<Invocation<'a, H>, ResumeError> {
-        self.saved.check(id)?;
-        if options.trace.is_some() || options.access.is_some() {
+        let saved = self.saved.get(id)?;
+        let calling_back = saved
+            .stack
+            .control
+            .callbacks
+            .as_ref()
+            .is_some_and(|callbacks| callbacks.running());
+        // Access observers pair no events, so only a trace observer needs the handoff.
+        if calling_back && options.trace.is_some() {
             return Err(ResumeError::Observed);
         }
         self.check_pinned();
@@ -870,17 +887,28 @@ impl<H: Host> Vm<H> {
         let continuation = continuation::Continuation {
             stack,
             args,
-            trace: TraceCtx::with_observer(TraceMask::NONE, None),
-            access: None,
+            trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
+            access: options.access,
             register_state: observations::RegisterState::default(),
         };
-        Ok(Invocation {
+        let mut invocation = Invocation {
             vm: BorrowedOrOwned::Borrowed(self),
             continuation,
             checkpoint,
             budget,
             exec: Some(exec),
-        })
+        };
+        // The invocation is complete before its observer runs: if the observer panics, dropping
+        // it cancels the computation like any other.
+        let continuation = &mut invocation.continuation;
+        let stack = &continuation.stack;
+        continuation.trace.attach(
+            &invocation.vm.units,
+            FuncRef::new(stack.unit, stack.entry),
+            &stack.ctx,
+            &stack.control,
+        );
+        Ok(invocation)
     }
 }
 

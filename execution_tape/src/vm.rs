@@ -1010,6 +1010,98 @@ impl<'a> TraceCtx<'a> {
         self.unwind(program, location, span_id, TraceOutcome::Cancelled);
     }
 
+    /// Stops observing a computation that keeps running, leaving what is open open.
+    ///
+    /// The sink leaves first, so that `release` is its last event even if it panics and the
+    /// computation is cancelled instead.
+    fn release(&mut self, program: &Program) {
+        let sink = self.sink.take();
+        self.scopes.clear();
+        self.pending = None;
+        if self.mask != TraceMask::NONE
+            && let Some(mut sink) = sink
+        {
+            sink.release(program);
+        }
+    }
+
+    /// Joins a computation that is already running, as if this observer had watched it from
+    /// its entry: adopts what its subscription would have open now and reports it.
+    ///
+    /// Frames' call scopes are open unless the computation waits at a yielded suspension, which
+    /// closed them; a waiting host request adds its host scope and its outstanding instruction
+    /// attempt. Guest callbacks waiting below the request are not supported here: the caller
+    /// refuses to attach observers to them.
+    fn attach(
+        &mut self,
+        units: &UnitTable,
+        entry: FuncRef,
+        ctx: &Registers,
+        control: &ExecutionControl,
+    ) {
+        if self.mask == TraceMask::NONE || self.sink.is_none() {
+            return;
+        }
+        let mut open = Vec::new();
+        if control.pending_suspension.is_none() && self.enabled(TraceMask::CALL) {
+            for (index, frame) in ctx.frames.iter().enumerate() {
+                // Where the frame's scope was entered: its function's first instruction.
+                let body = units
+                    .unit(frame.unit)
+                    .program
+                    .verified(frame.func)
+                    .expect("active verified function");
+                open.push(crate::trace::OpenScope {
+                    program: units.unit(frame.unit).program.program(),
+                    kind: ScopeKind::CallFrame {
+                        func: FuncRef::new(frame.unit, frame.func),
+                        caller: control.caller(index),
+                    },
+                    depth: index + 1,
+                    location: TraceLocation {
+                        unit: frame.unit,
+                        func: frame.func,
+                        pc: Pc(body.pc_at_ix(0).unwrap_or(0)),
+                    },
+                    span_id: body.span_at_ix(0),
+                });
+            }
+        }
+        let waiting = control.pending_host;
+        if let Some(pending) = waiting
+            && self.enabled(TraceMask::HOST)
+        {
+            open.push(crate::trace::OpenScope {
+                program: units.unit(pending.location.unit).program.program(),
+                kind: ScopeKind::HostCall {
+                    host_sig: pending.import,
+                    symbol: pending.symbol,
+                    sig_hash: pending.signature,
+                },
+                depth: pending.depth,
+                location: pending.location,
+                span_id: span_id_at_boundary(pending.span),
+            });
+        }
+        let attempt = waiting
+            .filter(|_| self.enabled(TraceMask::INSTR))
+            .map(|pending| pending.location);
+        self.scopes = open.iter().map(|scope| (scope.kind, scope.depth)).collect();
+        self.pending = attempt;
+        let program = units.unit(entry.unit).program.program();
+        let mask = self.mask;
+        let sink = self.sink.as_mut().expect("checked above");
+        sink.run_mask(program, mask);
+        sink.attach(
+            program,
+            crate::trace::Attachment {
+                entry,
+                scopes: &open,
+                attempt,
+            },
+        );
+    }
+
     fn finish(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         if let TraceOutcome::Trap(error) = outcome {
             self.unwind(

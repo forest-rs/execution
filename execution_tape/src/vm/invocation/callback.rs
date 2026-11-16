@@ -23,6 +23,11 @@ struct WaitingHost {
 }
 
 impl Callbacks {
+    /// Whether a guest callback is running on top of a waiting host request.
+    pub(in crate::vm) fn running(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+
     pub(in crate::vm) fn count_exited(&self, first: usize) -> usize {
         self.waiting
             .iter()

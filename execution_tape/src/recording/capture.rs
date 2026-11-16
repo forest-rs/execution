@@ -935,6 +935,14 @@ impl TraceSink for Recorder {
         self.top = frame.parent;
     }
 
+    fn attach(&mut self, _program: &Program, _attachment: crate::trace::Attachment<'_>) {
+        self.fail(CaptureFault::Saved);
+    }
+
+    fn release(&mut self, _program: &Program) {
+        self.fail(CaptureFault::Saved);
+    }
+
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         if let Some(history) = &mut self.history {
             history.finished = true;

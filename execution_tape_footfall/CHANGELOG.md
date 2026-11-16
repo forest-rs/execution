@@ -15,6 +15,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Follow a computation across invocations. When its invocation is saved, the sink emits an
+  `execution_tape.release` message and closes its scopes without an outcome; when a sink is
+  attached to the resumed computation, it opens a scope for each one already open, which the
+  computation's later exits close, and a run scope (with `resumed` set) when the mask delivers
+  the run's end.
 - Report cancelled resumable invocations distinctly and close logical scopes across quanta.
   Elapsed scope time includes suspension; already performed host effects remain. ([#205][] by [@waywardmonkeys][])
 

@@ -15,6 +15,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Follow a computation across invocations: saving its invocation ends the sink's open spans,
+  and attaching the sink to the resumed computation opens a span for each scope already open,
+  which the computation's later exits close.
 - Close profiling scopes when a resumable invocation is cancelled. Logical scopes span scheduling
   quanta, so elapsed time includes suspension. ([#205][] by [@waywardmonkeys][])
 
