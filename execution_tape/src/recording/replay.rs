@@ -1502,6 +1502,8 @@ impl Recording {
             state: Rc::clone(&state),
         };
         let mut vm = Vm::new(NoReplayEffects, entry.limits.clone());
+        // Frames the recorded VM's other computations held count against its frame limit.
+        vm.reserve_frames(entry.resident_frames);
         // Rebuild the units and tags that existed at entry, in their original order.
         for (index, record) in self.store.iter().enumerate() {
             let mut state = state.borrow_mut();
@@ -1713,6 +1715,7 @@ impl Recording {
                 }
             }
             vm.set_limits(resumption.limits.clone());
+            vm.reserve_frames(resumption.resident_frames);
             saved = Some(id);
             next = resumptions.next();
         };
@@ -1843,6 +1846,20 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         | (Trap::IndexOutOfBounds, Trap::IndexOutOfBounds)
         | (Trap::StrNotCharBoundary, Trap::StrNotCharBoundary)
         | (Trap::InvalidUtf8, Trap::InvalidUtf8) => true,
+        (
+            Trap::FrameLimitExceeded {
+                limit: al,
+                resident: ar,
+            },
+            Trap::FrameLimitExceeded {
+                limit: bl,
+                resident: br,
+            },
+        ) => al == bl && ar == br,
+        (
+            Trap::SavedComputationLimitExceeded { limit: al },
+            Trap::SavedComputationLimitExceeded { limit: bl },
+        ) => al == bl,
         (
             Trap::TypeMismatch {
                 expected: ae,

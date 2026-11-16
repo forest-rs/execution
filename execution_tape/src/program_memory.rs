@@ -101,6 +101,7 @@ impl ProgramMemory {
             scratch_bytes: 0,
             saved_computations: 0,
             saved_bytes: 0,
+            saved_frames: 0,
         }
     }
 

@@ -16,6 +16,27 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Create and end saved computations without running them, and bound what saved computations
+  hold. `Vm::spawn(entry, args) -> Result<ComputationId, TrapInfo>` saves a new computation
+  before its first instruction, checking its entry as `Vm::start` does, and `Vm::discard(id)`
+  ends a saved one without running it. `Limits::max_frames` (65,536 by default) bounds the
+  frames the running computation and every saved one hold together, trapping a call beyond it
+  with `Trap::FrameLimitExceeded`; `Limits::max_call_depth` still bounds one computation.
+  `Limits::max_saved_computations` (4,096 by default) bounds how many the VM keeps: `save`
+  beyond it hands the invocation back and `spawn` traps with
+  `Trap::SavedComputationLimitExceeded`. `HeapStats::saved_frames` reports the frames saved
+  computations hold. A spawned computation enters on its first resume, under that
+  invocation's observers, so it can be recorded and replayed. A recording notes the frames
+  other computations held at each entry and resume (`resident_frames` on `ValueEvent::Entry`
+  and `ValueEvent::Resumed`), and replay reserves them, so a frame refused because of them is
+  refused again. Invocations refuse aggregate arguments the heap does not hold
+  (`Trap::AggError(AggError::BadHandle)`), and a collection that finds a saved computation
+  reaching a missing aggregate names it (`CollectError::SavedDanglingHandle`). Migration: a
+  `Limits` literal without `..Limits::default()` names the two new fields, and a
+  `max_call_depth` above 65,536 is now also capped by the default `max_frames`, which a VM
+  needing deeper single computations raises with it. Code matching every field of
+  `ValueEvent::Entry` names `resident_frames`.
+
 - Keep a waiting computation in the VM and continue it later, so a VM can hold many long-lived
   computations that share its units and heap. `Invocation::save(self) -> Result<ComputationId,
   Invocation>` keeps the computation exactly where it waits, between quanta, at a host request

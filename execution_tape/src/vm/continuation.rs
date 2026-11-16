@@ -27,6 +27,9 @@ pub(super) struct Stack {
     pub(super) outcome: Option<Result<(), TrapInfo>>,
     /// Invocations that ran this computation before the current one.
     pub(super) invocations: u64,
+    /// Created by [`Vm::spawn`] and not yet resumed: its entry was checked, but no observer
+    /// saw it enter, so the first resume enters it again under that invocation's observers.
+    pub(super) spawned: bool,
 }
 
 impl Stack {
@@ -42,6 +45,7 @@ impl Stack {
             outputs: Vec::new(),
             outcome: None,
             invocations: self.invocations,
+            spawned: self.spawned,
         };
         core::mem::replace(self, empty)
     }
@@ -83,6 +87,7 @@ impl<'a> Continuation<'a> {
                 outputs: Vec::new(),
                 outcome: None,
                 invocations: 0,
+                spawned: false,
             },
             args,
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
@@ -116,12 +121,28 @@ impl<'a> Continuation<'a> {
                 args: &self.args,
                 aggregates: vm.memory.aggs(),
                 limits: &vm.limits,
+                resident_frames: vm.saved.resident_frames(),
                 work,
                 units: vm.units(),
             });
         budget
             .charge_import(work)
             .map_err(|trap| self.stack.ctx.trap(self.stack.entry, 0, None, trap))?;
+        // A computation keeps its arguments for as long as it lives, possibly saved: each must
+        // name an aggregate the heap holds, or later collections could not keep it.
+        if self
+            .args
+            .iter()
+            .filter_map(crate::aggregates::aggregate_handle)
+            .any(|handle| vm.memory.aggs().agg_type(handle).is_err())
+        {
+            return Err(self.stack.ctx.trap(
+                self.stack.entry,
+                0,
+                None,
+                Trap::AggError(AggError::BadHandle),
+            ));
+        }
         if self.trace.active() {
             vm.initialize_run::<WithTracePolicy>(
                 &mut self.stack.ctx,

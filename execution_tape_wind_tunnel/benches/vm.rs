@@ -1097,6 +1097,8 @@ fn wide_open_limits() -> Limits {
     Limits {
         fuel: u64::MAX,
         max_call_depth: 1024,
+        max_frames: usize::MAX,
+        max_saved_computations: usize::MAX,
         max_host_calls: u64::MAX,
         max_contract_work: u64::MAX,
         max_aggregate_work: u64::MAX,

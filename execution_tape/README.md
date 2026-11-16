@@ -344,8 +344,10 @@ use the unbounded dispatch specialization without scheduling checks.
 
 A stored task instead owns its VM and keeps its computation there between polls: save the
 waiting invocation with [`vm::Invocation::save`] and continue it with [`vm::Vm::resume`],
-each invocation borrowing the VM only while it runs. Observers can be owned, including shared
-collectors that follow the computation across invocations:
+each invocation borrowing the VM only while it runs. [`vm::Vm::spawn`] saves a computation
+before it runs and [`vm::Vm::discard`] ends one; [`vm::Limits`] bounds the frames and
+computations they keep. Observers can be owned, including shared collectors that follow
+the computation across invocations:
 
 ```rust
 use std::{cell::RefCell, rc::Rc};

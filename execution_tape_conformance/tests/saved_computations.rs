@@ -5,14 +5,14 @@
 //! allowance.
 
 use execution_tape::{
-    aggregates::{AggHeap, AggShape},
+    aggregates::{AggError, AggHeap, AggShape},
     asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::LinkId,
     program::{Pc, Program, SpanId, StructTypeDef, ValueType},
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     trace::{Attachment, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink},
-    value::{AggType, FuncId, FuncRef, Value},
+    value::{AggHandle, AggType, FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::{
         CollectError, ComputationId, InvocationOptions, Limits, ResumeError, RunStatus, Trap, Vm,
@@ -1125,7 +1125,7 @@ fn interleaved_computations_allocate_across_leases_and_collections() {
     let Value::Agg(b) = answer_once(&mut vm, b, 4).unwrap() else {
         panic!("a tuple");
     };
-    let read = |vm: &Vm<Answers>, outer: execution_tape::value::AggHandle| {
+    let read = |vm: &Vm<Answers>, outer: AggHandle| {
         let heap = vm.aggregates();
         let Value::Agg(second) = heap.tuple_get(outer, 0).unwrap() else {
             panic!("second");
@@ -2087,4 +2087,232 @@ fn shapes_interned_while_saved_replay_the_same_structs() {
         struct_of(replayed.aggregates(), &replayed.values()[0]),
         live
     );
+}
+
+#[test]
+fn a_spawned_computation_waits_before_its_first_instruction_until_resumed() {
+    let (program, entry) = counts();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let id = vm.spawn(entry, vec![]).unwrap();
+    assert_eq!(vm.heap_stats().saved_computations, 1);
+    assert_eq!(vm.heap_stats().saved_frames, 1, "its entry frame");
+    let mut invocation = vm.resume(id, InvocationOptions::default()).unwrap();
+    assert_eq!(invocation.work().fuel, 0, "nothing ran before");
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(20)]);
+    drop(invocation);
+    let error = vm.spawn(entry, vec![Value::I64(1)]).unwrap_err();
+    assert!(matches!(error.trap, Trap::ArityMismatch), "{error:?}");
+    assert_eq!(vm.heap_stats().saved_computations, 0);
+}
+
+#[test]
+fn discarding_a_saved_computation_releases_its_frames_and_aggregates() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let kept = save_asking(&mut vm, entry, "kept");
+    let discarded = save_asking(&mut vm, entry, "discarded");
+    assert_eq!(vm.aggregates().len_u32(), 2);
+    vm.discard(discarded).unwrap();
+    assert!(matches!(vm.discard(discarded), Err(ResumeError::Unknown)));
+    assert!(matches!(
+        vm.resume(discarded, InvocationOptions::default()),
+        Err(ResumeError::Unknown)
+    ));
+    assert_eq!(vm.heap_stats().saved_computations, 1);
+    assert_eq!(vm.heap_stats().saved_frames, 1);
+    assert_eq!(
+        vm.collect().unwrap().aggregates.live,
+        1,
+        "only the kept box"
+    );
+    assert_eq!(finish_asking(&mut vm, kept, 1), ("kept".into(), 1));
+}
+
+#[test]
+fn the_vm_keeps_at_most_its_limit_of_saved_computations() {
+    let (program, entry) = asks();
+    let limits = Limits {
+        max_saved_computations: 2,
+        ..Limits::default()
+    };
+    let mut vm = Vm::new(Answers, limits);
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let first = save_asking(&mut vm, entry, "first");
+    save_asking(&mut vm, entry, "second");
+    let args = [Value::Str("third".into())];
+    let mut invocation = vm
+        .start(
+            entry,
+            &args,
+            InvocationOptions::default().yield_host_calls(),
+        )
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let invocation = invocation.save().unwrap_err();
+    drop(invocation);
+    let error = vm.spawn(entry, args.to_vec()).unwrap_err();
+    assert!(
+        matches!(error.trap, Trap::SavedComputationLimitExceeded { limit: 2 }),
+        "{error:?}"
+    );
+    vm.discard(first).unwrap();
+    save_asking(&mut vm, entry, "third");
+}
+
+#[test]
+fn saved_frames_count_against_the_vms_frame_limit() {
+    let (program, entry) = nested();
+    let limits = Limits {
+        max_frames: 3,
+        ..Limits::default()
+    };
+    let mut vm = Vm::new(Answers, limits);
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let mut invocation = vm
+        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let saved = invocation.save().unwrap();
+    assert_eq!(vm.heap_stats().saved_frames, 2);
+    // Its entry frame fits beside the two saved ones; the call into `mid` does not.
+    let error = vm.run(entry, &[], TraceMask::NONE, None).unwrap_err();
+    assert!(
+        matches!(
+            error.trap,
+            Trap::FrameLimitExceeded {
+                limit: 3,
+                resident: 3
+            }
+        ),
+        "{error:?}"
+    );
+    vm.discard(saved).unwrap();
+    assert_eq!(
+        vm.run(entry, &[], TraceMask::NONE, None).unwrap(),
+        [Value::I64(1)],
+        "discarding released the frames"
+    );
+}
+
+#[test]
+fn a_frame_refused_for_another_computations_frames_replays_the_refusal() {
+    let (program, entry) = nested();
+    let limits = Limits {
+        max_frames: 3,
+        ..Limits::default()
+    };
+    let mut vm = Vm::new(Answers, limits);
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut waiting = vm
+        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .unwrap();
+    assert_eq!(waiting.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    waiting.save().ok().unwrap();
+
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut invocation = vm
+        .start(
+            entry,
+            &[],
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    let error = invocation.resume(u64::MAX).unwrap_err();
+    assert!(
+        matches!(
+            error.trap,
+            Trap::FrameLimitExceeded {
+                limit: 3,
+                resident: 3
+            }
+        ),
+        "{error:?}"
+    );
+    drop(invocation);
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()));
+    let outcome = recording.replay();
+    let Ok(ReplayOutcome::Trapped(replayed)) = outcome else {
+        panic!("replay traps as the original did: {outcome:?}");
+    };
+    assert!(
+        matches!(
+            replayed.trap,
+            Trap::FrameLimitExceeded {
+                limit: 3,
+                resident: 3
+            }
+        ),
+        "{replayed:?}"
+    );
+}
+
+#[test]
+fn a_spawned_computation_is_recorded_from_its_first_resume_and_replays() {
+    let (program, entry) = counts();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut id = vm.spawn(entry, vec![]).unwrap();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let result = loop {
+        let mut invocation = vm
+            .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+            .unwrap();
+        match invocation.resume(7).unwrap() {
+            RunStatus::Suspended => id = invocation.save().ok().unwrap(),
+            RunStatus::Complete => break invocation.result().unwrap().unwrap().to_vec(),
+            status => panic!("unexpected {status:?}"),
+        }
+    };
+    assert_eq!(result, [Value::I64(20)]);
+    assert_eq!(replayed(recorder), 20);
+}
+
+#[test]
+fn an_argument_naming_no_aggregate_is_refused_at_entry() {
+    let (program, entry) = asks();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(program).unwrap();
+    // `asks` takes a string; a closure-taking entry would do as well: any aggregate handle.
+    let mut b = ProgramBuilder::new();
+    let keeps = b
+        .declare_function(sig(&[ValueType::Agg], &[ValueType::Agg]))
+        .unwrap();
+    let mut a = b.function_asm(keeps).unwrap();
+    a.ret(Reg::EFFECT, &[Reg(1)]);
+    b.define_function(keeps, a).unwrap();
+    let keeps = FuncRef::new(
+        vm.install(Arc::new(b.build_verified().unwrap())).unwrap(),
+        keeps,
+    );
+    let dangling = [Value::Agg(AggHandle(999))];
+    let error = vm.spawn(keeps, dangling.to_vec()).unwrap_err();
+    assert!(
+        matches!(error.trap, Trap::AggError(AggError::BadHandle)),
+        "{error:?}"
+    );
+    let error = vm
+        .start(keeps, &dangling, InvocationOptions::default())
+        .err()
+        .unwrap();
+    assert!(
+        matches!(error.trap, Trap::AggError(AggError::BadHandle)),
+        "{error:?}"
+    );
+    assert_eq!(vm.heap_stats().saved_computations, 0);
+    vm.collect().unwrap();
+    save_asking(&mut vm, FuncRef::new(unit, entry), "still saves");
 }

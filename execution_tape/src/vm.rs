@@ -81,8 +81,20 @@ mod payload_tests;
 pub struct Limits {
     /// Instruction budget. Each instruction costs 1 by default; host calls may charge extra.
     pub fuel: u64,
-    /// Maximum call depth (frames).
+    /// Maximum call depth (frames) of one computation, counting the frames its unresumed
+    /// continuations hold.
     pub max_call_depth: usize,
+    /// Maximum frames the VM's computations hold together: the running one's and every saved
+    /// computation's (65,536 by default).
+    ///
+    /// Saved computations keep their frames resident; a call that would pass this traps with
+    /// [`Trap::FrameLimitExceeded`], whichever computation makes it.
+    pub max_frames: usize,
+    /// Maximum computations the VM keeps saved at once (4,096 by default).
+    ///
+    /// [`Invocation::save`] beyond it hands the invocation back, and [`Vm::spawn`] traps with
+    /// [`Trap::SavedComputationLimitExceeded`].
+    pub max_saved_computations: usize,
     /// Maximum host calls.
     pub max_host_calls: u64,
     /// Maximum aggregate contract work per run: visited value/contract pairs and child edges.
@@ -160,6 +172,8 @@ impl Default for Limits {
         Self {
             fuel: 1_000_000,
             max_call_depth: 256,
+            max_frames: 65_536,
+            max_saved_computations: 4_096,
             max_host_calls: 1_000_000,
             max_contract_work: 1_000_000,
             max_aggregate_work: 1_000_000,
@@ -176,6 +190,19 @@ pub enum Trap {
     FuelExceeded,
     /// Call depth limit exceeded.
     CallDepthExceeded,
+    /// A call would make the VM's computations hold more than [`Limits::max_frames`] frames
+    /// together.
+    FrameLimitExceeded {
+        /// The configured limit.
+        limit: usize,
+        /// Frames held when the call was refused: this computation's and saved ones'.
+        resident: usize,
+    },
+    /// The VM already keeps [`Limits::max_saved_computations`] computations saved.
+    SavedComputationLimitExceeded {
+        /// The configured limit.
+        limit: usize,
+    },
     /// Host call count limit exceeded.
     HostCallLimitExceeded,
     /// Guest aggregate construction would exceed the run's node-and-field work budget.
@@ -353,6 +380,14 @@ impl fmt::Display for Trap {
         match self {
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
+            Self::FrameLimitExceeded { limit, resident } => write!(
+                f,
+                "frame limit exceeded: {resident} frames held of {limit} (Limits::max_frames)"
+            ),
+            Self::SavedComputationLimitExceeded { limit } => write!(
+                f,
+                "{limit} computations already saved (Limits::max_saved_computations)"
+            ),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
             Self::AggregateWorkExceeded {
                 limit,
@@ -1465,6 +1500,7 @@ impl<H: Host> Vm<H> {
             budget,
         } = &mut *exec;
         budget.reset(&self.limits);
+        budget.limit_frames(self.saved.resident_frames());
         control.start_run();
         let original_len = outputs.len();
         let program_ref = program.program();
@@ -1481,6 +1517,7 @@ impl<H: Host> Vm<H> {
                 args,
                 aggregates: self.memory.aggs(),
                 limits: &self.limits,
+                resident_frames: self.saved.resident_frames(),
                 work: DataWork::default(),
                 units: self.units(),
             });
@@ -1583,7 +1620,6 @@ impl<H: Host> Vm<H> {
         trace: &mut TraceCtx<'_>,
     ) -> Result<(), TrapInfo> {
         let program_ref = program.program();
-        let max_call_depth = self.limits.max_call_depth;
         ctx.clear();
         ctx.unit = unit;
 
@@ -1591,14 +1627,9 @@ impl<H: Host> Vm<H> {
             .verified(entry)
             .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
         validate_entry_args(entry_vf, args).map_err(|t| ctx.trap(entry, 0, None, t))?;
-        if budget.frames >= max_call_depth {
-            return Err(ctx.trap(
-                entry,
-                0,
-                entry_vf.span_at_ix(0).map(|id| id.get()),
-                Trap::CallDepthExceeded,
-            ));
-        }
+        budget
+            .admit_frame()
+            .map_err(|trap| ctx.trap(entry, 0, entry_vf.span_at_ix(0).map(|id| id.get()), trap))?;
         let entry_base = ctx.alloc_frame(entry_vf);
         ctx.init_args(entry_base, entry_vf, args)
             .map_err(|t| ctx.trap(entry, 0, None, t))?;
@@ -1645,7 +1676,6 @@ impl<H: Host> Vm<H> {
     ) -> Result<Progress, TrapInfo> {
         let root_args = args;
         let output_start = outputs.len();
-        let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
         // The program of the unit the top frame runs. Frames of different units interleave on
         // one stack; the program is reloaded only when control crosses into another unit.
@@ -3669,9 +3699,9 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if budget.frames >= max_call_depth {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
-                    }
+                    budget
+                        .admit_frame()
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
 
                     let callee_fn = program_ref
                         .functions
@@ -4087,9 +4117,9 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if budget.frames >= max_call_depth {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
-                    }
+                    budget
+                        .admit_frame()
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
 
                     // The target may belong to any installed unit; it runs that unit's code.
                     let target = ctx.read_func(base, *callee);
@@ -4171,9 +4201,9 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if budget.frames >= max_call_depth {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
-                    }
+                    budget
+                        .admit_frame()
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
 
                     let callee = ctx.read_closure(base, *callee);
                     let target = callee.func;
@@ -4294,9 +4324,9 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if budget.frames >= max_call_depth {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
-                    }
+                    budget
+                        .admit_frame()
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
 
                     // The calling unit's link names the target now. Relinking admitted only
                     // installed functions with the link's exact signature, so the target needs

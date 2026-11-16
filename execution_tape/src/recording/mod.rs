@@ -356,6 +356,8 @@ struct Resumption {
     stored: usize,
     /// Limits the resuming invocation's allowance came from.
     limits: Limits,
+    /// Frames the recorded VM's other computations held when it resumed.
+    resident_frames: usize,
 }
 
 /// One install, tag definition or relink of the recorded VM, in the order it happened.
@@ -535,6 +537,8 @@ struct Entry {
     func: FuncRef,
     args: Range<usize>,
     limits: Limits,
+    /// Frames the recorded VM's other computations held at entry.
+    resident_frames: usize,
     work: crate::vm::DataWork,
 }
 #[derive(Debug)]

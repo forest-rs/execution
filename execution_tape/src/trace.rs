@@ -404,6 +404,9 @@ pub enum ValueEvent<'a> {
         aggregates: &'a AggHeap,
         /// Limits governing this invocation.
         limits: &'a Limits,
+        /// Frames the VM's other computations hold, which count against
+        /// [`Limits::max_frames`] with this invocation's own.
+        resident_frames: usize,
         /// Input preparation already debited against these limits.
         work: DataWork,
         /// The VM's units and tags when the invocation starts. Installs while it is suspended
@@ -481,6 +484,9 @@ pub enum ValueEvent<'a> {
         invocation: u64,
         /// Limits this invocation's fresh work allowance comes from.
         limits: &'a Limits,
+        /// Frames the VM's other computations hold, which count against
+        /// [`Limits::max_frames`] with this computation's own.
+        resident_frames: usize,
         /// Storage when resumed.
         aggregates: &'a AggHeap,
         /// The VM's units, tags and links when resumed, including any installed, defined or
@@ -666,6 +672,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 stack,
                 invocation,
                 limits,
+                resident_frames,
                 aggregates,
                 units,
             } => f
@@ -673,6 +680,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("stack", stack)
                 .field("invocation", invocation)
                 .field("limits", limits)
+                .field("resident_frames", resident_frames)
                 .field("aggregate_count", &aggregates.len_u32())
                 .field("units", units)
                 .finish(),
@@ -698,6 +706,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 args,
                 aggregates,
                 limits,
+                resident_frames,
                 work,
                 units: _,
             } => f
@@ -706,6 +715,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("args", args)
                 .field("aggregate_count", &aggregates.len_u32())
                 .field("limits", limits)
+                .field("resident_frames", resident_frames)
                 .field("work", work)
                 .finish(),
             Self::HostCall {

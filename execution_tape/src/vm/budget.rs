@@ -11,6 +11,14 @@ pub(super) struct Budget {
     pub(super) fuel: u64,
     /// Frames retained by all stacks in this execution, including suspended parents.
     pub(super) frames: usize,
+    /// How many frames this execution may hold: the smaller of its call-depth limit and what
+    /// the VM's frame limit leaves after saved computations.
+    frame_limit: usize,
+    /// The call-depth limit, which decides which trap refuses a frame.
+    call_depth: usize,
+    /// The VM's frame limit and the frames saved computations hold.
+    max_frames: usize,
+    resident_elsewhere: usize,
     /// Number of host calls performed so far in the current run.
     pub(super) host_calls: u64,
     /// Successfully charged logical byte/string work and the current run's limit.
@@ -48,8 +56,35 @@ impl Budget {
     pub(super) fn reset(&mut self, limits: &Limits) {
         self.clear();
         self.fuel = limits.fuel;
+        self.call_depth = limits.max_call_depth;
+        self.max_frames = limits.max_frames;
+        self.limit_frames(0);
         self.payload_limit = limits.max_payload_work;
         self.aggregate_limit = limits.max_aggregate_work;
+    }
+
+    /// Accounts for `resident` frames saved computations hold under the VM's frame limit.
+    pub(super) fn limit_frames(&mut self, resident: usize) {
+        self.resident_elsewhere = resident;
+        self.frame_limit = self
+            .call_depth
+            .min(self.max_frames.saturating_sub(resident));
+    }
+
+    /// Admits one more frame, or names the limit that refuses it.
+    #[inline]
+    pub(super) fn admit_frame(&self) -> Result<(), Trap> {
+        if self.frames < self.frame_limit {
+            return Ok(());
+        }
+        Err(if self.frames >= self.call_depth {
+            Trap::CallDepthExceeded
+        } else {
+            Trap::FrameLimitExceeded {
+                limit: self.max_frames,
+                resident: self.frames + self.resident_elsewhere,
+            }
+        })
     }
 
     pub(super) fn select(&mut self, control: &ExecutionControl) {
