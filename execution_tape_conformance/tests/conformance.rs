@@ -75,8 +75,6 @@ fn verify_owned(program: Program) -> execution_tape::verifier::VerifiedProgram {
 
 #[test]
 fn entry_arity_errors_allow_context_reuse() {
-    use execution_tape::vm::ExecutionContext;
-
     let mut asm = Asm::new();
     asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     asm.ret(Reg::EFFECT, &[Reg(1)]);
@@ -92,14 +90,12 @@ fn entry_arity_errors_allow_context_reuse() {
         .unwrap();
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
-    let mut ctx = ExecutionContext::new();
     let mut outputs = Vec::new();
     let too_many = [Value::I64(1), Value::I64(2)];
     for args in [&[][..], &too_many[..]] {
         let unit = vm.install(program.clone()).unwrap();
         let error = vm
-            .run_with_ctx(
-                &mut ctx,
+            .run_into(
                 FuncRef::new(unit, entry),
                 args,
                 &mut outputs,
@@ -112,8 +108,7 @@ fn entry_arity_errors_allow_context_reuse() {
         assert!(matches!(error.trap, Trap::ArityMismatch));
     }
     let unit = vm.install(program.clone()).unwrap();
-    vm.run_with_ctx(
-        &mut ctx,
+    vm.run_into(
         FuncRef::new(unit, entry),
         &[Value::I64(42)],
         &mut outputs,

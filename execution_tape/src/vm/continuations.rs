@@ -163,6 +163,21 @@ impl Continuations {
         }
     }
 
+    /// Bytes of buffer capacity the table and its segments hold.
+    pub(super) fn retained_bytes(&self) -> usize {
+        let mut bytes =
+            self.slots.capacity() * size_of::<Slot>() + self.free.capacity() * size_of::<u32>();
+        for slot in &self.slots {
+            let segment = &slot.segment;
+            bytes += capacity_bytes(&segment.frames) + capacity_bytes(&segment.activations);
+            macro_rules! add {
+                ($($bank:ident),*) => {$( bytes += capacity_bytes(&segment.$bank); )*};
+            }
+            for_each_bank!(add);
+        }
+        bytes
+    }
+
     /// Frames held by live continuations.
     pub(super) fn frames(&self) -> usize {
         self.frames

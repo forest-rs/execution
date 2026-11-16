@@ -151,6 +151,9 @@ pub struct Invocation<'a, H: Host> {
     pub(super) continuation: continuation::Continuation<'a>,
     checkpoint: Checkpoint,
     budget: Budget,
+    /// The VM's execution state while this invocation has it on loan. Its register file,
+    /// control and budget are moved out into the fields above, and back before it is returned.
+    exec: Option<Box<Exec>>,
 }
 
 /// Temporary authority to operate one control stack in its execution transaction.
@@ -224,6 +227,7 @@ impl<H: Host> Vm<H> {
         options: InvocationOptions<'a>,
         work: DataWork,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
+        self.settle();
         let checkpoint = self.memory.checkpoint();
         self.start_with_inputs(entry, Cow::Borrowed(args), options, checkpoint, work)
     }
@@ -256,13 +260,20 @@ impl<'a, H: Host> Invocation<'a, H> {
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
+        let mut vm = vm;
         let program = Arc::clone(vm.entry_program(entry.unit)?);
-        let budget = Budget::new(&vm.limits);
+        let mut exec = vm.lend(checkpoint);
+        let mut budget = core::mem::take(&mut exec.budget);
+        budget.reset(&vm.limits);
+        let stack = vm.next_stack();
+        let continuation =
+            continuation::Continuation::new(&mut exec, stack, program, entry, args, options);
         let mut invocation = Invocation {
             vm,
             budget,
             checkpoint,
-            continuation: continuation::Continuation::new(program, entry, args, options),
+            continuation,
+            exec: Some(exec),
         };
         if let Err(error) =
             invocation
@@ -562,6 +573,7 @@ impl<H: Host> Invocation<'_, H> {
         let mut report = vm.apply_collection(&plan, Some(self.checkpoint));
         let compaction = plan.compaction();
         self.checkpoint = self.checkpoint.relocated(compaction);
+        vm.relocate_lease(self.checkpoint);
         stack.relocate(&stack_plan, compaction);
         stack_plan.report(&mut report);
         // Contract proofs are keyed by handles that may now name other aggregates.
@@ -620,6 +632,9 @@ impl<H: Host> Running<'_, '_, H> {
                 TraceOutcome::Trap(error)
             }
         };
+        // The outcome is final: dropping this invocation now rolls nothing back, so neither may
+        // settling it if it is forgotten. Close the lease before observers run.
+        self.vm.close_lease();
         self.continuation
             .trace
             .finish(self.continuation.program.program(), outcome);
@@ -687,6 +702,7 @@ impl<H: Host> Running<'_, '_, H> {
             location.pc.0,
         );
         self.vm.memory.rollback(self.checkpoint);
+        self.vm.close_lease();
         self.budget.frames -= self.continuation.ctx.held_frames();
         self.continuation.ctx.clear();
         self.continuation
@@ -707,6 +723,11 @@ impl<H: Host> Running<'_, '_, H> {
 impl<H: Host> Drop for Invocation<'_, H> {
     fn drop(&mut self) {
         self.running().cancel();
+        if let Some(mut exec) = self.exec.take() {
+            self.continuation.give_back(&mut exec);
+            exec.budget = core::mem::take(&mut self.budget);
+            self.vm.restore(exec);
+        }
     }
 }
 
@@ -781,6 +802,7 @@ impl Callable {
         mut args: Vec<Value>,
     ) -> Result<(Checkpoint, Vec<Value>, DataWork), TrapInfo> {
         let entry = self.function_id();
+        vm.settle();
         if !Arc::ptr_eq(vm.entry_program(unit)?, self.program()) {
             return Err(TrapInfo {
                 unit,

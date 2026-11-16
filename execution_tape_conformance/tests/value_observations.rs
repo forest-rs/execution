@@ -14,7 +14,7 @@ use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::value::{AggHandle, FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, Trap, TrapInfo, Vm};
+use execution_tape::vm::{Limits, Trap, TrapInfo, Vm};
 
 type RetainedValues = Result<ValueSnapshot, AggError>;
 
@@ -559,8 +559,7 @@ fn return_candidates_preserve_pre_compaction_identity_and_exclude_output_prefix(
     let mut sink = Observe::default();
     let mut outputs = vec![Value::I64(99)];
     let unit = vm.install(program.clone()).unwrap();
-    vm.run_with_ctx(
-        &mut ExecutionContext::new(),
+    vm.run_into(
         FuncRef::new(unit, FuncId(0)),
         &[],
         &mut outputs,
@@ -611,8 +610,7 @@ fn dangling_host_values_remain_observable_before_their_admission_trap() {
     let mut outputs = vec![Value::I64(99)];
     let unit = vm.install(program.clone()).unwrap();
     let error = vm
-        .run_with_ctx(
-            &mut ExecutionContext::new(),
+        .run_into(
             FuncRef::new(unit, FuncId(0)),
             &[],
             &mut outputs,

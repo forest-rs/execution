@@ -16,6 +16,7 @@ pub(super) struct Continuation<'a> {
     pub(super) unit: UnitId,
     pub(super) entry: FuncId,
     pub(super) args: Cow<'a, [Value]>,
+    /// The register file and control this stack runs on, lent by its VM.
     pub(super) ctx: Registers,
     pub(super) control: ExecutionControl,
     pub(super) trace: TraceCtx<'a>,
@@ -27,19 +28,28 @@ pub(super) struct Continuation<'a> {
 }
 
 impl<'a> Continuation<'a> {
+    /// A stack identified by `stack` that runs on the VM's lent register file and control.
     pub(super) fn new(
+        exec: &mut Exec,
+        stack: u64,
         program: Arc<VerifiedProgram>,
         entry: FuncRef,
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
     ) -> Self {
+        let mut control = core::mem::take(&mut exec.control);
+        control.start(stack, options.yield_host_calls, options.yield_suspensions);
+        // A trap before the entry frame exists, such as a refused capture import, releases what
+        // the stack holds; that must be nothing from an earlier lease.
+        let mut ctx = core::mem::take(&mut exec.ctx);
+        ctx.clear();
         Self {
             program,
             unit: entry.unit,
             entry: entry.func,
             args,
-            ctx: Registers::default(),
-            control: ExecutionControl::start(options.yield_host_calls, options.yield_suspensions),
+            ctx,
+            control,
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
             access: options.access,
             host_results: None,
@@ -47,6 +57,13 @@ impl<'a> Continuation<'a> {
             outputs: Vec::new(),
             outcome: None,
         }
+    }
+
+    /// Returns the register file and control to the execution state they were taken from.
+    pub(super) fn give_back(&mut self, exec: &mut Exec) {
+        self.ctx.release_payloads();
+        exec.ctx = core::mem::take(&mut self.ctx);
+        exec.control = core::mem::take(&mut self.control);
     }
 
     pub(super) fn initialize<H: Host>(
@@ -197,6 +214,8 @@ mod tests {
     ) -> Continuation<'static> {
         let (program, entry) = install(vm, program);
         let mut continuation = Continuation::new(
+            &mut Exec::default(),
+            vm.next_stack(),
             program,
             entry,
             Cow::Owned(vec![]),
@@ -424,6 +443,8 @@ mod tests {
         ));
         let (second_program, second_entry) = install(&mut vm, program("second"));
         let mut second = Continuation::new(
+            &mut Exec::default(),
+            vm.next_stack(),
             second_program,
             second_entry,
             Cow::Owned(vec![]),
@@ -472,6 +493,8 @@ mod tests {
             let mut first = {
                 let (program, entry) = install(&mut vm, checked_identity(ValueType::I64));
                 Continuation::new(
+                    &mut Exec::default(),
+                    vm.next_stack(),
                     program,
                     entry,
                     Cow::Owned(vec![Value::Agg(tuple)]),
@@ -487,6 +510,8 @@ mod tests {
             let mut second = {
                 let (program, entry) = install(&mut vm, checked_identity(ValueType::Bool));
                 Continuation::new(
+                    &mut Exec::default(),
+                    vm.next_stack(),
                     program,
                     entry,
                     Cow::Owned(vec![Value::Agg(tuple)]),

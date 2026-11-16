@@ -555,6 +555,25 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- The VM owns its execution state. `Vm::run_with_ctx` and `ExecutionContext` are replaced by
+  `Vm::run_into(entry, args, outputs, trace_mask, trace, access)`, which takes the same
+  arguments without the context: the VM keeps its register file, control and work budget
+  between runs and lends them to each run or invocation, so repeated runs reuse their buffers
+  without the embedding keeping scratch storage. A run releases the string and byte payloads and
+  the exceptions it computed when it ends, including those of continuations it abandoned. The
+  reused buffers keep the capacity the largest run needed: `HeapStats::scratch_bytes` reports
+  it and `Vm::shrink_scratch` releases it. `Vm::run` no longer builds a context per call, which halves the fixed
+  cost of a short run through it (about 159 ns to 78 ns on the `short_runs` bench).
+  Migration: drop the context argument, the `ExecutionContext` value and any
+  `ExecutionContext::clear` call; an idle VM already holds no run payloads.
+- A forgotten `Invocation` (`mem::forget`) or a host that panics mid-run no longer leaves its
+  aggregates in the heap for good: the next run, invocation, collection, `Vm::root`,
+  `Vm::release` or `Vm::aggregates_mut` discards them first, as cancelling would have. A
+  forgotten invocation that had already finished keeps its outputs, as dropping it would.
+- `ActivationId` names its VM and an invocation number instead of an allocated identity per
+  invocation, so starting an invocation allocates nothing for it. Activation IDs and registered
+  groups share one identity per VM.
+
 - Entering a function from the embedding costs less. Entry checks read the argument kinds and
   guest-only signature kinds resolved at verification instead of walking the signature through
   the contract table, a run resets only the continuation table and contract proofs it used,

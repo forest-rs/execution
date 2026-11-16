@@ -16,7 +16,7 @@ use execution_tape::program::{LinkId, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncId, FuncRef, UnitId, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -142,7 +142,6 @@ fn linked_calls(c: &mut Criterion) {
         ("indirect/other_unit", caller, Call::Indirect, other),
     ];
     let mut group = c.benchmark_group("linked_calls");
-    let mut ctx = ExecutionContext::new();
     let mut out = Vec::new();
     for (name, unit, call, callee) in cases {
         let args = [Value::U64(ITERS), Value::Func(FuncRef::new(callee, STEP))];
@@ -150,8 +149,7 @@ fn linked_calls(c: &mut Criterion) {
         group.bench_function(name, |b| {
             b.iter(|| {
                 out.clear();
-                vm.run_with_ctx(
-                    &mut ctx,
+                vm.run_into(
                     entry,
                     black_box(&args),
                     &mut out,

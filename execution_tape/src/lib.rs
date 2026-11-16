@@ -76,10 +76,11 @@
 //! install creates a new unit, and the VM retains every installed unit until it is dropped.
 //! [`Vm::units`](vm::Vm::units) reports what is installed.
 //!
-//! For repeated execution, keep an [`ExecutionContext`](vm::ExecutionContext) and a result `Vec`.
-//! Clear the result buffer between runs and call [`Vm::run_with_ctx`](vm::Vm::run_with_ctx)
-//! to reuse both allocations. Results append in return-signature order; a trap preserves the
-//! buffer's original contents. Aggregate results belong to the VM heap and survive context resets.
+//! For repeated execution, keep a result `Vec`, clear it between runs and call
+//! [`Vm::run_into`](vm::Vm::run_into), which appends to it. The VM keeps its own execution state
+//! between runs, so nothing else needs to be kept to reuse allocations. Results append in
+//! return-signature order; a trap preserves the buffer's original contents. Aggregate results
+//! belong to the VM heap and stay valid until an explicit collection.
 //!
 //! ## Hosts that borrow per-call state
 //!
@@ -98,7 +99,7 @@
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::trace::TraceMask;
 //! use execution_tape::value::{FuncRef, Value};
-//! use execution_tape::vm::{ExecutionContext, Limits, TrapInfo, Vm};
+//! use execution_tape::vm::{Limits, TrapInfo, Vm};
 //!
 //! /// State the embedding owns and lends for one call.
 //! struct Request {
@@ -145,7 +146,6 @@
 //! struct Module {
 //!     vm: Option<Vm<Parked>>,
 //!     entry: FuncRef,
-//!     scratch: ExecutionContext,
 //!     out: Vec<Value>,
 //! }
 //!
@@ -155,8 +155,7 @@
 //!         let parked = self.vm.take().expect("the module is not running");
 //!         let (mut vm, idle) = parked.replace_host(Lent(request));
 //!         self.out.clear();
-//!         let result = vm.run_with_ctx(
-//!             &mut self.scratch,
+//!         let result = vm.run_into(
 //!             self.entry,
 //!             args,
 //!             &mut self.out,
@@ -185,7 +184,6 @@
 //! let mut module = Module {
 //!     vm: Some(vm),
 //!     entry: FuncRef::new(unit, entry),
-//!     scratch: ExecutionContext::new(),
 //!     out: Vec::new(),
 //! };
 //! for event in [3, 5] {
@@ -355,7 +353,7 @@
 //! Dropping an unfinished invocation cancels it and rolls back its new aggregates. Host effects
 //! remain performed. Trace scopes close with `TraceOutcome::Cancelled`; a cancelled recording is
 //! incomplete and cannot be replayed as a finished invocation. Logical profiling scopes include
-//! suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
+//! suspension time. Ordinary `run` and `run_into` remain run-to-completion conveniences and
 //! use the unbounded dispatch specialization without scheduling checks.
 //!
 //! A stored task can instead transfer its VM into [`callable::Callable::start_owned`].

@@ -14,7 +14,7 @@ use execution_tape::program::Program;
 use execution_tape::program::{Const, SpanId, ValueType};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::{FuncId, Value};
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 
 fn bench_vm(c: &mut Criterion) {
     bench_run_memory(c);
@@ -95,18 +95,12 @@ fn bench_run_memory(c: &mut Criterion) {
                         let mut vm = Vm::new(NopHost, wide_open_limits());
                         let unit = vm.install(Arc::clone(&program)).unwrap();
                         let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
-                        (
-                            (vm, unit),
-                            ExecutionContext::new(),
-                            vec![Value::Agg(root)],
-                            Vec::with_capacity(1),
-                        )
+                        ((vm, unit), vec![Value::Agg(root)], Vec::with_capacity(1))
                     },
-                    |((mut vm, unit), mut ctx, args, mut outputs)| {
+                    |((mut vm, unit), args, mut outputs)| {
                         for _ in 0..100 {
                             outputs.clear();
-                            let result = vm.run_with_ctx(
-                                &mut ctx,
+                            let result = vm.run_into(
                                 FuncRef::new(unit, entry),
                                 &args,
                                 &mut outputs,
@@ -119,11 +113,11 @@ fn bench_run_memory(c: &mut Criterion) {
                         black_box(vm.aggregates().len_u32());
                         if complete {
                             // Include reclamation and final retained-state destruction in this window.
-                            drop((vm, ctx, args, outputs));
+                            drop((vm, args, outputs));
                             None
                         } else {
                             // Keep the execution-only window comparable with existing measurements.
-                            Some((vm, ctx, args, outputs))
+                            Some((vm, args, outputs))
                         }
                     },
                     criterion::BatchSize::SmallInput,
@@ -215,7 +209,6 @@ fn bench_payloads(c: &mut Criterion) {
                     let p = pb.build_verified().unwrap();
                     let mut vm = Vm::new(PayloadHost { size, text }, wide_open_limits());
                     let unit = vm.install(p.clone()).unwrap();
-                    let mut ctx = ExecutionContext::new();
                     let mut outputs = Vec::with_capacity(1);
                     let operation = if length_only { "len" } else { "return" };
                     group.bench_function(
@@ -223,8 +216,7 @@ fn bench_payloads(c: &mut Criterion) {
                         |b| {
                             b.iter(|| {
                                 outputs.clear();
-                                vm.run_with_ctx(
-                                    &mut ctx,
+                                vm.run_into(
                                     FuncRef::new(unit, entry),
                                     &inputs,
                                     &mut outputs,
@@ -300,12 +292,10 @@ fn bench_run_results(c: &mut Criterion) {
                 );
             })
         });
-        let mut ctx = ExecutionContext::new();
         group.bench_function(BenchmarkId::new("context", count), |b| {
             b.iter(|| {
                 let mut outputs = Vec::new();
-                vm.run_with_ctx(
-                    &mut ctx,
+                vm.run_into(
                     FuncRef::new(unit, FuncId(0)),
                     &[],
                     &mut outputs,
@@ -321,8 +311,7 @@ fn bench_run_results(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("context_and_results", count), |b| {
             b.iter(|| {
                 outputs.clear();
-                vm.run_with_ctx(
-                    &mut ctx,
+                vm.run_into(
                     FuncRef::new(unit, FuncId(0)),
                     &[],
                     &mut outputs,

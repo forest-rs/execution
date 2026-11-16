@@ -24,8 +24,9 @@ cargo bench -p execution_tape_wind_tunnel --bench borrowed_host
 `short_runs` measures the fixed cost of one short pure run on a parked VM, shaped like an
 embedder evaluating small scalar expressions: a function of three `f32` inputs that executes 14
 instructions and returns three `f32`s, with reused argument and result buffers. `ret_only`
-returns its inputs in one instruction, which isolates per-run overhead; `native` is the same
-arithmetic in Rust.
+returns its inputs in one instruction, which isolates per-run overhead. `parked` reuses its
+buffers through `Vm::run_into`; `run` calls `Vm::run`, which allocates a result vector. `native`
+is the same arithmetic in Rust.
 
 ```sh
 cargo bench -p execution_tape_wind_tunnel --bench short_runs
@@ -335,7 +336,7 @@ Criterion uses 40 samples, 0.3 s warmup and 1 s measurement. Point estimates:
 | 1,024 integer additions (control) | 4.874 µs | 4.802 µs |
 
 The integer-add control detects no statistically significant change. The Unit workloads
-are targeted microbenchmarks, not a claim about application speedups. `ExecutionContext`
+are targeted microbenchmarks, not a claim about application speedups. The execution context
 shrinks from 464 to 440 bytes on this target. Reported frame register elements drop from
 37 / 262,145 bytes to one byte in both fixtures (the Boolean condition). This removes the
 Unit bank and its allocation, not payload-bearing registers, result buffers, or frame vectors.

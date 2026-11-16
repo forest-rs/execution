@@ -4,7 +4,6 @@
 //! One execution's resource authority, independent of any suspended register stack.
 
 use super::*;
-use alloc::sync::Arc;
 
 #[derive(Debug, Default)]
 pub(super) struct Budget {
@@ -22,10 +21,12 @@ pub(super) struct Budget {
     pub(super) aggregate_limit: u64,
 
     pub(super) contract_scratch: ContractScratch,
-    proof_owner: Option<Arc<()>>,
+    /// The stack whose contract proofs `contract_scratch` holds.
+    proof_owner: Option<u64>,
 }
 
 impl Budget {
+    #[cfg(test)]
     pub(super) fn new(limits: &Limits) -> Self {
         let mut budget = Self::default();
         budget.reset(limits);
@@ -53,15 +54,11 @@ impl Budget {
 
     pub(super) fn select(&mut self, control: &ExecutionControl) {
         let owner = control.owner();
-        if !self
-            .proof_owner
-            .as_ref()
-            .is_some_and(|prior| Arc::ptr_eq(prior, owner))
-        {
+        if self.proof_owner != Some(owner) {
             // Contract IDs and aggregate projections are code-local proof keys. Work already
             // admitted survives a stack switch, but proofs cannot cross that identity boundary.
             self.contract_scratch.clear_proofs();
-            self.proof_owner = Some(Arc::clone(owner));
+            self.proof_owner = Some(owner);
         }
     }
 

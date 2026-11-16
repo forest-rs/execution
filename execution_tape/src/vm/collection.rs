@@ -193,6 +193,13 @@ pub struct HeapStats {
     pub collections: u64,
     /// Registered groups, including ones whose handle was dropped since the last collection.
     pub root_groups: usize,
+    /// Bytes of buffer capacity the VM keeps between runs for its execution state: register
+    /// banks, frames, held continuation segments and payload descriptors.
+    ///
+    /// Runs reuse these buffers rather than allocating them again, so they stay at the largest
+    /// size a run needed. This counts capacities, not allocator overhead, and is zero while an
+    /// invocation has the state on loan. [`Vm::shrink_scratch`] releases them.
+    pub scratch_bytes: usize,
 }
 
 /// Positions of the reference registers that hold values in one register file.
@@ -518,8 +525,11 @@ impl<H: Host> Vm<H> {
     /// embedding work outside every guest budget, proportional to the heap; it has no latency
     /// bound. To collect while an invocation waits, use [`Invocation::collect`].
     ///
-    /// A refused collection moves and reclaims nothing, not even dropped groups.
+    /// A refused collection moves and reclaims nothing, not even dropped groups. Separately, and
+    /// whether or not the collection then succeeds, it first discards what a forgotten
+    /// invocation or a run interrupted by a host panic allocated, as any run would.
     pub fn collect(&mut self) -> Result<CollectionReport, CollectError> {
+        self.settle();
         let mut handles = Vec::new();
         let plan = self.plan_collection(&mut handles, 0)?;
         Ok(self.apply_collection(&plan, None))
@@ -579,9 +589,16 @@ impl<H: Host> Vm<H> {
     }
 
     /// Reports the heap's size and collection history without walking it.
+    ///
+    /// Aggregates a forgotten invocation or a run interrupted by a host panic allocated are
+    /// counted until the VM next runs, starts, collects, registers or releases a group, or hands
+    /// out [`Self::aggregates_mut`], which discards them first.
     #[must_use]
     pub fn heap_stats(&self) -> HeapStats {
-        self.memory.stats(self.roots.len())
+        HeapStats {
+            scratch_bytes: self.exec.as_ref().map_or(0, |exec| exec.retained_bytes()),
+            ..self.memory.stats(self.roots.len())
+        }
     }
 }
 

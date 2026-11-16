@@ -1284,15 +1284,13 @@ fn abandoned_continuations_hold_their_frames_until_the_invocation_ends() {
     let result = run(&program, take_first, &[Value::I64(8)], limits.clone());
     assert!(matches!(result, Err(Trap::CallDepthExceeded)), "{result:?}");
 
-    // A reused context releases what an earlier run abandoned: a later run that traps, after
-    // entry or before it, gives back exactly its own frames, and every run has the full depth.
+    // A reused VM releases what an earlier run abandoned: a later run that traps, after entry
+    // or before it, gives back exactly its own frames, and every run has the full depth.
     let mut vm = Vm::new(NoHost, limits);
     let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), take_first);
-    let mut ctx = execution_tape::vm::ExecutionContext::new();
-    let mut run = |vm: &mut Vm<NoHost>, arg: Value| {
+    let run = |vm: &mut Vm<NoHost>, arg: Value| {
         let mut outputs = Vec::new();
-        vm.run_with_ctx(
-            &mut ctx,
+        vm.run_into(
             entry,
             &[arg],
             &mut outputs,

@@ -12,7 +12,7 @@ use execution_tape::{
     program::{HostTypeId, ValueType},
     trace::TraceMask,
     value::{FuncId, Obj, ObjHandle, Value},
-    vm::{ExecutionContext, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{InvocationOptions, Limits, RunStatus, Vm},
 };
 use std::{hint::black_box, sync::Arc, time::Duration};
 
@@ -68,13 +68,11 @@ fn stepping(c: &mut Criterion) {
             );
         })
     });
-    let mut ctx = ExecutionContext::new();
     let mut outputs = Vec::new();
     group.bench_function("ordinary_reused_context_1000", |b| {
         b.iter(|| {
             outputs.clear();
-            vm.run_with_ctx(
-                &mut ctx,
+            vm.run_into(
                 FuncRef::new(unit, entry),
                 black_box(&args),
                 &mut outputs,

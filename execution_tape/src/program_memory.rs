@@ -98,6 +98,7 @@ impl ProgramMemory {
             live_after_collection: self.survivors,
             collections: self.collections,
             root_groups,
+            scratch_bytes: 0,
         }
     }
 

@@ -47,7 +47,9 @@ use budget::Budget;
 pub(crate) use continuations::ContRef;
 mod exceptions;
 pub(crate) use exceptions::Exception;
+mod exec;
 pub use exceptions::UncaughtException;
+use exec::Exec;
 mod host_call;
 mod inspection;
 mod invocation;
@@ -585,17 +587,6 @@ struct ReturnTo {
     resumed: bool,
 }
 
-/// Per-run execution context for [`Vm`].
-///
-/// This holds all transient state required to execute a single entrypoint (register file, call
-/// stack, and arena-backed temporaries). Keeping it separate from [`Vm`] makes it possible to
-/// reuse allocations across runs and is a stepping stone towards re-entrant execution.
-#[derive(Debug, Default)]
-pub struct ExecutionContext {
-    registers: Registers,
-    budget: Budget,
-}
-
 #[derive(Debug, Default)]
 struct Registers {
     /// Arena backing bytes/strings and other out-of-line temporaries.
@@ -641,28 +632,39 @@ struct Registers {
     frames: Vec<Frame>,
 }
 
-impl ExecutionContext {
-    /// Creates an empty per-run execution context.
-    ///
-    /// Embedders may reuse an [`ExecutionContext`] across multiple [`Vm::run_with_ctx`] calls to
-    /// amortize allocations.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Drops transient run state and computed payloads while retaining reusable capacities.
-    ///
-    /// Returned values and retained VM aggregates are independent of this context. Call this
-    /// between runs when an idle embedding should release payloads from its last invocation;
-    /// the next run also clears the context automatically.
-    pub fn clear(&mut self) {
-        self.registers.clear();
-        self.budget.clear();
-    }
-}
-
 impl Registers {
+    /// Drops the payloads a finished run computed, so an idle VM holds none of them.
+    ///
+    /// That includes continuations it abandoned, whose segments may hold exceptions. Frames and
+    /// register banks keep their contents until the next run clears them; they hold only handles
+    /// and scalars. Every buffer keeps its capacity for the next run.
+    fn release_payloads(&mut self) {
+        self.arena.clear();
+        self.exns.clear();
+        self.continuations.clear();
+    }
+
+    /// Bytes of buffer capacity held, excluding payloads.
+    fn retained_bytes(&self) -> usize {
+        capacity_bytes(&self.bools)
+            + capacity_bytes(&self.i64s)
+            + capacity_bytes(&self.u64s)
+            + capacity_bytes(&self.f64s)
+            + capacity_bytes(&self.w32s)
+            + capacity_bytes(&self.decimals)
+            + capacity_bytes(&self.bytes)
+            + capacity_bytes(&self.strs)
+            + capacity_bytes(&self.objs)
+            + capacity_bytes(&self.aggs)
+            + capacity_bytes(&self.funcs)
+            + capacity_bytes(&self.closures)
+            + capacity_bytes(&self.exns)
+            + capacity_bytes(&self.conts)
+            + capacity_bytes(&self.frames)
+            + self.arena.retained_bytes()
+            + self.continuations.retained_bytes()
+    }
+
     fn clear(&mut self) {
         self.frames.clear();
         self.bools.clear();
@@ -712,6 +714,16 @@ pub struct Vm<H: Host> {
 
     /// Value groups the embedding registered as collection roots.
     roots: roots::RootTable,
+
+    /// Execution state between runs; `None` while a run or invocation has it on loan.
+    exec: Option<Box<Exec>>,
+    /// The run or invocation that has the execution state, if any.
+    lease: Option<exec::Lease>,
+    /// Identities handed to resumable stacks so far.
+    stacks: u64,
+    /// This VM's identity, which activation IDs and registered groups carry so another VM's
+    /// cannot be mistaken for its own.
+    identity: Arc<()>,
 }
 
 impl<H: Host> fmt::Debug for Vm<H> {
@@ -724,8 +736,8 @@ impl<H: Host> fmt::Debug for Vm<H> {
 
 /// Per-run trace state; scope storage allocates only when scope tracing is enabled.
 ///
-/// Keeping this out of [`ExecutionContext`] avoids storing borrowed trace state in the long-lived
-/// per-run context while still flattening VM hot-loop tracing code.
+/// Keeping this out of the VM's lent execution state avoids storing borrowed trace state in the
+/// long-lived register file while still flattening VM hot-loop tracing code.
 struct TraceCtx<'a> {
     mask: TraceMask,
     sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
@@ -1281,6 +1293,10 @@ impl<H: Host> Vm<H> {
             units: UnitTable::default(),
             memory: ProgramMemory::new(),
             roots: roots::RootTable::default(),
+            exec: None,
+            lease: None,
+            stacks: 0,
+            identity: Arc::new(()),
         }
     }
 
@@ -1313,21 +1329,22 @@ impl<H: Host> Vm<H> {
         trace_mask: TraceMask,
         trace: Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
-        let mut ctx = ExecutionContext::new();
         let mut outputs = Vec::new();
-        self.run_with_ctx(&mut ctx, entry, args, &mut outputs, trace_mask, trace, None)?;
+        self.run_into(entry, args, &mut outputs, trace_mask, trace, None)?;
         Ok(outputs)
     }
 
-    /// Executes an installed function using reusable scratch and appending returns to `outputs`.
+    /// Executes an installed function, appending its returns to `outputs`.
     ///
-    /// Clear `outputs` before calling to replace previous results while keeping its capacity.
-    /// A trap preserves its original contents. Successful calls append in signature order;
-    /// aggregate handles remain valid in this VM's heap until explicitly cleared.
-    /// [`Self::run`] delegates to this execution path. Entry validation follows its rules.
-    pub fn run_with_ctx(
+    /// This is [`Self::run`] for embeddings that run often: it allocates nothing of its own and
+    /// takes resource accesses too. Clear `outputs` before calling to replace previous results
+    /// while keeping its capacity. A trap preserves its original contents. Successful calls
+    /// append in signature order; aggregate handles remain valid in this VM's heap until an
+    /// explicit [`Self::collect`]. The VM keeps its register file and other execution state
+    /// between runs, so repeated runs reuse their buffers. Entry validation follows
+    /// [`Self::run`]'s rules.
+    pub fn run_into(
         &mut self,
-        scratch: &mut ExecutionContext,
         entry: FuncRef,
         args: &[Value],
         outputs: &mut Vec<Value>,
@@ -1335,17 +1352,21 @@ impl<H: Host> Vm<H> {
         trace: Option<&mut dyn TraceSink>,
         access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
-        let ExecutionContext {
-            registers: ctx,
-            budget,
-        } = scratch;
         let program = Arc::clone(self.entry_program(entry.unit)?);
         let program = &*program;
         let unit = entry.unit;
         let entry = entry.func;
-        budget.reset(&self.limits);
-        let original_len = outputs.len();
+        self.settle();
         let checkpoint = self.memory.checkpoint();
+        let mut exec = self.lend(checkpoint);
+        let Exec {
+            ctx,
+            control,
+            budget,
+        } = &mut *exec;
+        budget.reset(&self.limits);
+        control.start_run();
+        let original_len = outputs.len();
         let program_ref = program.program();
         let mut trace = TraceCtx::new(trace_mask, trace);
         trace.run_start(program_ref, FuncRef::new(unit, entry), args.len());
@@ -1364,11 +1385,13 @@ impl<H: Host> Vm<H> {
                 units: self.units(),
             });
             self.run_body::<WithTracePolicy>(
-                ctx, budget, program, unit, entry, args, outputs, checkpoint, &mut trace, access,
+                ctx, budget, control, program, unit, entry, args, outputs, checkpoint, &mut trace,
+                access,
             )
         } else {
             self.run_body::<NoTracePolicy>(
-                ctx, budget, program, unit, entry, args, outputs, checkpoint, &mut trace, access,
+                ctx, budget, control, program, unit, entry, args, outputs, checkpoint, &mut trace,
+                access,
             )
         };
 
@@ -1382,6 +1405,9 @@ impl<H: Host> Vm<H> {
             self.memory.rollback(checkpoint);
             outputs.truncate(original_len);
         }
+        // The run's outcome is settled; an observer that panics below cannot undo it.
+        ctx.release_payloads();
+        self.restore(exec);
         trace.finish(program_ref, outcome);
         trace.run_end(program_ref, outcome);
 
@@ -1407,6 +1433,7 @@ impl<H: Host> Vm<H> {
         &mut self,
         ctx: &mut Registers,
         budget: &mut Budget,
+        control: &mut ExecutionControl,
         program: &VerifiedProgram,
         unit: UnitId,
         entry: FuncId,
@@ -1428,7 +1455,7 @@ impl<H: Host> Vm<H> {
             trace,
             access,
             &mut register_state,
-            &mut ExecutionControl::default(),
+            control,
         )?;
         let Progress::Returned(site) = progress else {
             unreachable!("synchronous execution cannot suspend");
@@ -5074,7 +5101,7 @@ impl<H: Host> Vm<H> {
     /// Replaces the limits that later runs start from, keeping installed units, retained
     /// aggregates and the host.
     ///
-    /// Every limit is a per-run budget: [`Self::run`], [`Self::run_with_ctx`] and [`Self::start`]
+    /// Every limit is a per-run budget: [`Self::run`], [`Self::run_into`] and [`Self::start`]
     /// copy it into a fresh budget when the run begins, and nothing a run leaves behind is
     /// charged against the next one. So the new limits apply from the next run on, and lowering
     /// them below what an earlier run used, or below what the VM already holds, is fine:
@@ -5139,6 +5166,10 @@ impl<H: Host> Vm<H> {
             units,
             memory,
             roots,
+            exec,
+            lease,
+            stacks,
+            identity,
         } = self;
         (
             Vm {
@@ -5147,6 +5178,10 @@ impl<H: Host> Vm<H> {
                 units,
                 memory,
                 roots,
+                exec,
+                lease,
+                stacks,
+                identity,
             },
             previous,
         )
@@ -5168,6 +5203,7 @@ impl<H: Host> Vm<H> {
     /// [`CollectError::DanglingHandle`]. Reclaim through [`Self::collect`] instead when groups are
     /// registered.
     pub fn aggregates_mut(&mut self) -> &mut AggHeap {
+        self.settle();
         self.memory.aggs_mut()
     }
 }
@@ -5960,30 +5996,33 @@ fn float_to_int_trap(e: float::FloatToIntError) -> Trap {
     }
 }
 
+/// Bytes of capacity a vector holds.
+fn capacity_bytes<T>(items: &Vec<T>) -> usize {
+    items.capacity() * size_of::<T>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn clearing_context_releases_payloads_and_preserves_register_capacity() {
-        let mut ctx = ExecutionContext::new();
-        let bytes = ctx.registers.arena.alloc_bytes(vec![7; 8192]);
-        let text = ctx.registers.arena.alloc_str(String::from("computed"));
-        ctx.registers.i64s.extend([1, 2, 3]);
-        let capacity = ctx.registers.i64s.capacity();
+    fn ending_a_run_releases_payloads_and_preserves_register_capacity() {
+        let mut ctx = Registers::default();
+        let bytes = ctx.arena.alloc_bytes(vec![7; 8192]);
+        let text = ctx.arena.alloc_str(String::from("computed"));
+        ctx.i64s.extend([1, 2, 3]);
+        let capacity = ctx.i64s.capacity();
         let heap = AggHeap::new();
         let units = UnitTable::default();
         let sources = ValueSources::new(&units, &[], &heap);
-        assert_eq!(
-            ctx.registers.arena.bytes(bytes, sources).unwrap().len(),
-            8192
-        );
-        assert_eq!(ctx.registers.arena.str(text, sources), Some("computed"));
+        assert_eq!(ctx.arena.bytes(bytes, sources).unwrap().len(), 8192);
+        assert_eq!(ctx.arena.str(text, sources), Some("computed"));
+        ctx.release_payloads();
+        assert_eq!(ctx.arena.bytes(bytes, sources), None);
+        assert_eq!(ctx.arena.str(text, sources), None);
         ctx.clear();
-        assert_eq!(ctx.registers.arena.bytes(bytes, sources), None);
-        assert_eq!(ctx.registers.arena.str(text, sources), None);
-        assert!(ctx.registers.i64s.is_empty());
-        assert_eq!(ctx.registers.i64s.capacity(), capacity);
+        assert!(ctx.i64s.is_empty());
+        assert_eq!(ctx.i64s.capacity(), capacity);
     }
     use crate::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
     use crate::bytecode::Instr;
@@ -6076,13 +6115,11 @@ mod tests {
                 .tuple_new(vec![Value::Bool(true)])
                 .unwrap();
             let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
-            let mut ctx = ExecutionContext::new();
             let mut outputs = Vec::new();
             for handle in [wrong, AggHandle(u32::MAX)] {
                 let unit = vm.install(p.clone()).unwrap();
                 let e = vm
-                    .run_with_ctx(
-                        &mut ctx,
+                    .run_into(
                         FuncRef::new(unit, entry),
                         &[Value::Agg(handle)],
                         &mut outputs,
@@ -6098,8 +6135,7 @@ mod tests {
                 );
             }
             let unit = vm.install(p.clone()).unwrap();
-            vm.run_with_ctx(
-                &mut ctx,
+            vm.run_into(
                 FuncRef::new(unit, entry),
                 &[Value::Agg(good)],
                 &mut outputs,
@@ -6513,13 +6549,11 @@ mod tests {
             let program = pb.build_verified().unwrap();
             let mut vm = Vm::new(TestHost, Limits::default());
             let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
-            let mut ctx = ExecutionContext::new();
             let mut outputs = vec![Value::Unit];
             for _ in 0..100 {
                 outputs.truncate(1);
                 let unit = vm.install(program.clone()).unwrap();
-                let result = vm.run_with_ctx(
-                    &mut ctx,
+                let result = vm.run_into(
                     FuncRef::new(unit, entry),
                     &[Value::Agg(root)],
                     &mut outputs,
@@ -6707,12 +6741,10 @@ mod tests {
             };
             let mut vm = Vm::new(TestHost, Limits::default());
             let mut outputs = vec![Value::I64(12)];
-            let mut ctx = ExecutionContext::new();
             let mut ends = Ends::default();
             let unit = vm.install(program.clone()).unwrap();
             let error = vm
-                .run_with_ctx(
-                    &mut ctx,
+                .run_into(
                     FuncRef::new(unit, entry),
                     &[arg],
                     &mut outputs,
@@ -6738,8 +6770,7 @@ mod tests {
                     env,
                 })
             };
-            vm.run_with_ctx(
-                &mut ctx,
+            vm.run_into(
                 FuncRef::new(unit, entry),
                 core::slice::from_ref(&valid),
                 &mut outputs,
@@ -6879,10 +6910,8 @@ mod tests {
         let mut outputs = Vec::with_capacity(16);
         outputs.push(Value::Unit);
         let pointer = outputs.as_ptr();
-        let mut ctx = ExecutionContext::new();
         let unit = vm.install(p.clone()).unwrap();
-        vm.run_with_ctx(
-            &mut ctx,
+        vm.run_into(
             FuncRef::new(unit, entry),
             &args,
             &mut outputs,
@@ -6893,8 +6922,7 @@ mod tests {
         .unwrap();
         let first = outputs.clone();
         let error = vm
-            .run_with_ctx(
-                &mut ctx,
+            .run_into(
                 FuncRef::new(unit, failure),
                 &[],
                 &mut outputs,
@@ -6905,8 +6933,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error.trap, Trap::TrapCode(123)));
         assert_eq!(outputs, first);
-        vm.run_with_ctx(
-            &mut ctx,
+        vm.run_into(
             FuncRef::new(unit, entry),
             &args,
             &mut outputs,
@@ -6978,14 +7005,12 @@ mod tests {
             .unwrap();
             pb.build_verified().unwrap()
         }
-        let mut ctx = ExecutionContext::new();
         let mut vm = Vm::new(TestHost, Limits::default());
         let mut outputs = Vec::new();
         for (bytes, text) in [(&b"first"[..], "\u{00e9}"), (&b"second"[..], "\u{1f980}")] {
             let p = program(bytes, text);
             let unit = vm.install(p.clone()).unwrap();
-            vm.run_with_ctx(
-                &mut ctx,
+            vm.run_into(
                 FuncRef::new(unit, FuncId(1)),
                 &[],
                 &mut outputs,
@@ -7591,13 +7616,11 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(RecordingHost, Limits::default());
-        let mut ctx = ExecutionContext::new();
         let mut access = CountingAccessSink::default();
 
         let mut out = Vec::new();
         let unit = vm.install(p.clone()).unwrap();
-        vm.run_with_ctx(
-            &mut ctx,
+        vm.run_into(
             FuncRef::new(unit, FuncId(0)),
             &[],
             &mut out,

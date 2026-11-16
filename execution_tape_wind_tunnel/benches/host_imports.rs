@@ -17,7 +17,7 @@ use execution_tape::program::{HostSigId, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncId, FuncRef, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{Limits, Vm};
 use std::hint::black_box;
 
 const ITERS: u64 = 1_000;
@@ -111,7 +111,6 @@ fn host_imports(c: &mut Criterion) {
         ..Limits::default()
     };
     let mut group = c.benchmark_group("host_imports");
-    let mut ctx = ExecutionContext::new();
     let mut out = Vec::new();
     for n in SIZES {
         let surface = surface(n);
@@ -136,8 +135,7 @@ fn host_imports(c: &mut Criterion) {
             group.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
                 b.iter(|| {
                     out.clear();
-                    vm.run_with_ctx(
-                        &mut ctx,
+                    vm.run_into(
                         entry,
                         black_box(&args),
                         &mut out,

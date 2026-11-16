@@ -13,7 +13,7 @@ use execution_tape::{
     program::{Const, ValueType},
     trace::TraceMask,
     value::{Decimal, Value},
-    vm::{ExecutionContext, Limits, Vm},
+    vm::{Limits, Vm},
 };
 
 struct EchoHost;
@@ -92,13 +92,11 @@ fn numeric(c: &mut Criterion) {
                 )
                 .unwrap();
             let program = builder.build_verified().unwrap();
-            let mut context = ExecutionContext::new();
             let mut vm = Vm::new(NoHost, Limits::default());
             let args = [input];
             let mut outputs = Vec::new();
             let unit = vm.install(program.clone()).unwrap();
-            vm.run_with_ctx(
-                &mut context,
+            vm.run_into(
                 FuncRef::new(unit, entry),
                 &args,
                 &mut outputs,
@@ -119,8 +117,7 @@ fn numeric(c: &mut Criterion) {
             }
             group.bench_function(BenchmarkId::new(format!("{kind:?}"), count), |b| {
                 b.iter(|| {
-                    vm.run_with_ctx(
-                        &mut context,
+                    vm.run_into(
                         FuncRef::new(unit, entry),
                         black_box(&args),
                         &mut outputs,
@@ -193,11 +190,9 @@ fn boundaries(c: &mut Criterion) {
                 .unwrap();
             let program = builder.build_verified().unwrap();
             let mut vm = Vm::new(EchoHost, Limits::default());
-            let mut context = ExecutionContext::new();
             let mut outputs = Vec::new();
             let unit = vm.install(program.clone()).unwrap();
-            vm.run_with_ctx(
-                &mut context,
+            vm.run_into(
                 FuncRef::new(unit, entry),
                 &[],
                 &mut outputs,
@@ -209,8 +204,7 @@ fn boundaries(c: &mut Criterion) {
             assert_eq!(outputs, [expected]);
             group.bench_function(BenchmarkId::new(format!("{kind:?}"), path), |b| {
                 b.iter(|| {
-                    vm.run_with_ctx(
-                        &mut context,
+                    vm.run_into(
                         FuncRef::new(unit, entry),
                         &[],
                         &mut outputs,

@@ -387,3 +387,92 @@ fn collections_wrap_their_window_without_changing_what_the_run_returns() {
     let ends: Vec<u32> = windows.into_iter().map(Result::unwrap).collect();
     assert!(ends.windows(2).any(|pair| pair[1] < pair[0]), "{ends:?}");
 }
+
+/// `body()` catches `failed((7,))` as a reference and parks to `entry`, which handles `park`,
+/// waits at `pause` holding the parked continuation, and returns without resuming it.
+fn abandoned_exception() -> VerifiedProgram {
+    let mut b = ProgramBuilder::new();
+    let pause = b.host_sig_for(
+        "pause",
+        HostSig {
+            args: vec![],
+            rets: vec![],
+        },
+    );
+    let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let boxed = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+    let failed = b.declare_tag("failed", &[boxed.into()]).unwrap();
+    let park = b.declare_tag_with_results("park", &[], &[]).unwrap();
+    let thunk = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
+    let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let body = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+
+    let mut a = b.function_asm(body).unwrap();
+    let (seven, tuple, caught) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::Agg),
+        a.alloc_register(ValueType::Exn),
+    );
+    a.const_i64(seven, 7).tuple_new(tuple, &[seven]);
+    let handler = a.block(&[caught]);
+    a.begin_region(&[Catch::AllRef(handler)]);
+    b.emit_throw(&mut a, failed, &[tuple]).unwrap();
+    a.end_region();
+    a.place(handler).unwrap();
+    a.suspend(Reg::EFFECT, park, Reg::EFFECT, &[], &[])
+        .throw_ref(Reg::EFFECT, caught);
+    b.define_function(body, a).unwrap();
+
+    let mut a = b.function_asm(entry).unwrap();
+    let (function, cont, parked, result) = (
+        a.alloc_register(ValueType::Func),
+        a.alloc_register(ValueType::Cont),
+        a.alloc_register(ValueType::Cont),
+        a.alloc_register(ValueType::I64),
+    );
+    a.const_func(function, body).cont_new(cont, thunk, function);
+    let handle = a.block(&[parked]);
+    a.begin_region(&[Catch::On(park, handle)]);
+    a.resume(Reg::EFFECT, thunk, cont, Reg::EFFECT, &[], &[result]);
+    a.end_region();
+    a.ret(Reg::EFFECT, &[result]);
+    a.place(handle).unwrap();
+    a.host_call_sig_id(Reg::EFFECT, pause, Reg::EFFECT, &[], &[])
+        .const_i64(result, 1)
+        .ret(Reg::EFFECT, &[result]);
+    b.define_function(entry, a).unwrap();
+    b.build_verified().unwrap()
+}
+
+#[test]
+fn an_abandoned_continuation_keeps_no_exception_alive_once_its_run_ends() {
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(abandoned_exception()).unwrap();
+    let mut run = vm
+        .start(
+            FuncRef::new(unit, FuncId(0)),
+            &[],
+            InvocationOptions::default().yield_host_calls(),
+        )
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let held = run.continuation.ctx.continuations.held_exceptions();
+    let [exception] = held.as_slice() else {
+        panic!("one held exception, not {}", held.len());
+    };
+    let exception = Arc::clone(exception);
+    drop(held);
+    let request = run.pending_host_call().unwrap();
+    request.complete(&mut [], Ok(0)).unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.result().unwrap().unwrap(), [Value::I64(1)]);
+    drop(run);
+    assert_eq!(
+        Arc::strong_count(&exception),
+        1,
+        "the VM's idle execution state holds the abandoned continuation's exception"
+    );
+    assert!(vm.heap_stats().scratch_bytes > 0);
+    vm.shrink_scratch();
+    assert_eq!(vm.heap_stats().scratch_bytes, 0);
+}
