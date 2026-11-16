@@ -492,7 +492,16 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows paused state. Register indexes are built only for queried functions.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(&self.continuation, self.vm)
+        inspection(self.vm, &self.continuation.stack, &self.continuation.args)
+    }
+
+    /// Borrows the paused state of a computation saved in this invocation's VM, as
+    /// [`Vm::inspect`] does, while this invocation's computation waits between quanta.
+    pub fn inspect_saved(
+        &self,
+        id: ComputationId,
+    ) -> Result<InvocationInspection<'_>, ResumeError> {
+        self.vm.inspect(id)
     }
 
     /// Mutates host state between quanta. Preserve the validity of referenced object handles.
@@ -505,29 +514,49 @@ impl<H: Host> Invocation<'_, H> {
 
 impl<H: Host> invocation::Running<'_, '_, H> {
     pub(super) fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(self.continuation, self.vm)
+        inspection(self.vm, &self.continuation.stack, &self.continuation.args)
+    }
+
+    pub(super) fn inspect_saved(
+        &self,
+        id: ComputationId,
+    ) -> Result<InvocationInspection<'_>, ResumeError> {
+        self.vm.inspect(id)
+    }
+}
+
+impl<H: Host> Vm<H> {
+    /// Borrows the paused state of the saved computation `id` without resuming it.
+    ///
+    /// The view is the one [`Invocation::inspect`] gives for that computation once resumed:
+    /// its frames, initialized registers and object roots, with the activation IDs it keeps when
+    /// resumed. A computation saved at a host request or suspension shows the waiting frame as
+    /// that request's views do. Refuses an ID this VM holds no computation for, or another VM's.
+    pub fn inspect(&self, id: ComputationId) -> Result<InvocationInspection<'_>, ResumeError> {
+        let saved = self.saved.get(id)?;
+        Ok(inspection(self, &saved.stack, &saved.args))
     }
 }
 
 fn inspection<'a, H: Host>(
-    continuation: &'a continuation::Continuation<'_>,
     vm: &'a Vm<H>,
+    stack: &'a continuation::Stack,
+    args: &'a [Value],
 ) -> InvocationInspection<'a> {
     let units = &vm.units;
     InvocationInspection {
         vm: &vm.identity,
         units,
-        ctx: &continuation.stack.ctx,
-        args: &continuation.args,
-        outputs: continuation
-            .stack
+        ctx: &stack.ctx,
+        args,
+        outputs: stack
             .outcome
             .as_ref()
             .and_then(|outcome| outcome.as_ref().ok())
-            .map_or(&[][..], |()| continuation.stack.outputs.as_slice()),
+            .map_or(&[][..], |()| stack.outputs.as_slice()),
         aggregates: vm.memory.aggs(),
-        control: &continuation.stack.control,
-        active: continuation.stack.outcome.is_none(),
+        control: &stack.control,
+        active: stack.outcome.is_none(),
         facts: FrameFacts::new(units),
     }
 }

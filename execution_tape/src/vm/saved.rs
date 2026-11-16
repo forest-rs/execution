@@ -27,7 +27,8 @@ pub struct ComputationId {
     generation: u32,
 }
 
-/// Why [`Vm::resume`](super::Vm::resume) refused, leaving the computation saved.
+/// Why [`Vm::resume`](super::Vm::resume), [`Vm::discard`](super::Vm::discard) or
+/// [`Vm::inspect`](super::Vm::inspect) refused a computation ID, leaving any computation saved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResumeError {
