@@ -19,6 +19,18 @@ whose host is swapped with `Vm::replace_host` around each call.
 cargo bench -p execution_tape_wind_tunnel --bench borrowed_host
 ```
 
+## Short runs
+
+`short_runs` measures the fixed cost of one short pure run on a parked VM, shaped like an
+embedder evaluating small scalar expressions: a function of three `f32` inputs that executes 14
+instructions and returns three `f32`s, with reused argument and result buffers. `ret_only`
+returns its inputs in one instruction, which isolates per-run overhead; `native` is the same
+arithmetic in Rust.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench short_runs
+```
+
 ## Linked calls
 
 `linked_calls` runs a guest loop of 1,000 dependent calls to `step(x) = x + 1` through a direct
