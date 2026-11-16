@@ -22,7 +22,8 @@
 //! built without its default features. They are not correctly rounded; they are reproducible.
 //! Upgrading the pinned version, or replacing the implementation (for example with correctly
 //! rounded routines), changes results and is a deliberate, versioned change to this module, called
-//! out in the changelog and the specification.
+//! out in the changelog and the specification. [`LIBM_VERSION`] names the pinned release, for
+//! caches and fingerprints that must change when it does.
 //!
 //! # NaN results
 //!
@@ -80,6 +81,29 @@
 //! always order `-0.0` below `+0.0`.
 
 use crate::{float, num32};
+
+/// The exact `libm` release that defines the transcendental functions, as a version string.
+///
+/// The transcendentals here and the VM opcodes that run them return what this `libm` release
+/// computes, so a different release can change result bits. Anything that caches or fingerprints
+/// those results (golden digests, memoized outputs, compiled artifacts) should fold this value into
+/// its key rather than hard-coding the version, so moving to an `execution_tape` that pins another
+/// `libm` invalidates them instead of silently mixing bits from two releases. The exact operations
+/// do not depend on `libm` and keep their results across a change of this value.
+///
+/// This is always the crate's `=` requirement on `libm`, and Cargo resolves an `=` requirement to
+/// exactly that release, so it is also the `libm` every build of this crate links. The workspace
+/// tests fail if the requirement, `Cargo.lock` and this constant disagree. Changing it is a
+/// deliberate, versioned change, called out in the changelog and the specification.
+///
+/// ```
+/// use execution_tape::math::LIBM_VERSION;
+///
+/// // A cache key for results computed with the transcendentals.
+/// let key = format!("my-cache-v3+libm-{LIBM_VERSION}");
+/// assert!(key.ends_with(LIBM_VERSION));
+/// ```
+pub const LIBM_VERSION: &str = "0.2.16";
 
 // --- f32: exact operations ------------------------------------------------------------------
 

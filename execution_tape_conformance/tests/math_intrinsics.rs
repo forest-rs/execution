@@ -1040,3 +1040,55 @@ fn verifier_rejects_f32_operands_to_f64_intrinsics() {
         );
     }
 }
+
+/// `math::LIBM_VERSION` is the workspace's exact `libm` requirement and the one `libm` locked.
+///
+/// The manifests are read at compile time, so this also runs on targets without a filesystem.
+#[test]
+fn libm_version_is_the_pinned_requirement() {
+    const WORKSPACE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../Cargo.toml"));
+    const TAPE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../execution_tape/Cargo.toml"
+    ));
+    const LOCK: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../Cargo.lock"));
+
+    // `execution_tape` takes its requirement from the workspace, so that is the one to read.
+    assert!(
+        TAPE.lines()
+            .any(|line| line.trim() == "libm.workspace = true"),
+        "execution_tape should inherit `libm` from the workspace"
+    );
+    let pins: Vec<&str> = WORKSPACE
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("libm = "))
+        .collect();
+    assert_eq!(pins.len(), 1, "one workspace `libm` requirement: {pins:?}");
+    let requirement = pins[0]
+        .split_once("version = \"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(requirement, _)| requirement)
+        .expect("the `libm` requirement names a version");
+    assert_eq!(
+        requirement,
+        format!("={}", math::LIBM_VERSION),
+        "the `libm` pin and `math::LIBM_VERSION` disagree"
+    );
+
+    let locked: Vec<&str> = LOCK
+        .split("[[package]]")
+        // Line by line, so a CRLF checkout (Windows) parses the same as LF.
+        .filter(|package| package.lines().any(|line| line.trim() == "name = \"libm\""))
+        .filter_map(|package| {
+            package
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("version = \""))
+                .and_then(|version| version.strip_suffix('"'))
+        })
+        .collect();
+    assert_eq!(
+        locked,
+        [math::LIBM_VERSION],
+        "Cargo.lock should hold exactly the pinned `libm`"
+    );
+}

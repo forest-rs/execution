@@ -128,6 +128,10 @@ This release has an [MSRV][] of 1.88.
   (`math::pow_f32`, `math::round_half_even_f32`, `math::min_num_f64`, ...), so native code can
   compute exactly the bits a tape program does. Each function documents its `libm` counterpart.
 
+- Name the pinned `libm` release with `math::LIBM_VERSION` (`"0.2.16"`), so caches and
+  fingerprints of intrinsic results can key on it instead of hard-coding the version. A
+  conformance test holds it equal to the workspace's `=` requirement and to `Cargo.lock`.
+
 - Add `Vm::replace_host`, which moves a VM's installed units, retained aggregates and limits to
   a VM around another host and returns the previous one. A host that borrows per-call state can
   now run against units installed once, by swapping it in for a call and a parked host back
