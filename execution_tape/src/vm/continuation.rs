@@ -27,6 +27,23 @@ pub(super) struct Stack {
     pub(super) outcome: Option<Result<(), TrapInfo>>,
 }
 
+impl Stack {
+    /// Moves this stack out, leaving an empty one of the same code in its place.
+    pub(super) fn take(&mut self) -> Self {
+        let empty = Self {
+            program: Arc::clone(&self.program),
+            unit: self.unit,
+            entry: self.entry,
+            ctx: Registers::default(),
+            control: ExecutionControl::default(),
+            host_results: None,
+            outputs: Vec::new(),
+            outcome: None,
+        };
+        core::mem::replace(self, empty)
+    }
+}
+
 /// A stack driven by one lease, with that lease's inputs and observers.
 pub(super) struct Continuation<'a> {
     pub(super) stack: Stack,

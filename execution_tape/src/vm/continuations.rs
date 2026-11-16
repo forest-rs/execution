@@ -569,7 +569,7 @@ impl<H: Host> Vm<H> {
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
     )]
-    pub(super) fn resume<P: TracePolicy, const YIELD: bool>(
+    pub(super) fn resume_continuation<P: TracePolicy, const YIELD: bool>(
         &self,
         ctx: &mut Registers,
         budget: &mut Budget,

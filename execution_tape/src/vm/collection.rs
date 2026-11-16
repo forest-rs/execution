@@ -68,6 +68,16 @@ pub enum CollectError {
     /// explicit way, as registered values it resolves again, which is the intended direction
     /// rather than any implicit translation.)
     HostHandles,
+    /// A saved computation waits at a host request whose host built aggregates and called back,
+    /// and the collection would move aggregates.
+    ///
+    /// This is [`Self::HostHandles`] for a computation [`Invocation::save`] kept: it refuses
+    /// every collection that would move anything until [`Vm::resume`] continues it and its
+    /// request completes.
+    SavedHostHandles {
+        /// The saved computation.
+        computation: ComputationId,
+    },
     /// Delivering a host outcome or a suspension answer was interrupted, for example by a
     /// panicking observer. The invocation can only report its trap or be dropped.
     Abandoned,
@@ -96,6 +106,11 @@ impl fmt::Display for CollectError {
             }
             Self::HostHandles => f.write_str(
                 "cannot collect: aggregates a waiting host built would move over its handles",
+            ),
+            Self::SavedHostHandles { computation } => write!(
+                f,
+                "cannot collect: aggregates the host of saved computation {computation:?} built \
+                 would move over its handles; resume it and complete its request first",
             ),
             Self::Abandoned => f.write_str("cannot collect an abandoned invocation"),
             Self::Aggregate(error) => write!(f, "cannot collect: {error}"),
@@ -140,6 +155,11 @@ impl Retention {
     fn new((live, reclaimed): (u64, u64)) -> Self {
         Self { live, reclaimed }
     }
+
+    fn add(&mut self, (live, reclaimed): (u64, u64)) {
+        self.live += live;
+        self.reclaimed += reclaimed;
+    }
 }
 
 /// What one collection did.
@@ -160,7 +180,8 @@ pub struct CollectionReport {
     pub aggregate_bytes: Retention,
     /// Surviving aggregates whose handle changed.
     pub moved: u64,
-    /// String and byte descriptors of the invocation's registers; zero between runs.
+    /// String and byte descriptors of the registers of the waiting invocation, if any, and of
+    /// saved computations.
     pub payloads: Retention,
     /// Owned bytes of those descriptors. Borrowed constants, arguments and aggregate fields
     /// own nothing here.
@@ -201,6 +222,11 @@ pub struct HeapStats {
     /// size a run needed. This counts capacities, not allocator overhead, and is zero while an
     /// invocation has the state on loan. [`Vm::shrink_scratch`] releases them.
     pub scratch_bytes: usize,
+    /// Computations saved with [`crate::vm::Invocation::save`] and not yet resumed.
+    pub saved_computations: usize,
+    /// Bytes of register, frame and argument capacity those computations hold, beyond the
+    /// aggregates they reach. Counts capacities, not payloads or allocator overhead.
+    pub saved_bytes: usize,
 }
 
 /// Positions of the reference registers that hold values in one register file.
@@ -517,8 +543,10 @@ impl HeapPlan {
 impl<H: Host> Vm<H> {
     /// Reclaims every aggregate no registered group reaches, moving the survivors together.
     ///
-    /// Registered groups ([`Self::root`]) are the only roots between runs. Their values are
-    /// updated where aggregates move; read them with [`Self::resolve`]. Every other aggregate
+    /// Between runs, registered groups ([`Self::root`]) and saved computations
+    /// ([`Invocation::save`]) are the roots: a saved computation keeps what an invocation waiting
+    /// at the same point would (see [`Invocation::collect`]) and is relocated with it. Group
+    /// values are updated where aggregates move; read them with [`Self::resolve`]. Every other aggregate
     /// handle copied out of the VM before the call, including a previous run's outputs and an
     /// earlier resolution, is invalid afterwards. Groups whose handle was dropped are
     /// unregistered first, so what only they kept alive is reclaimed.
@@ -528,14 +556,67 @@ impl<H: Host> Vm<H> {
     /// embedding work outside every guest budget, proportional to the heap; it has no latency
     /// bound. To collect while an invocation waits, use [`Invocation::collect`].
     ///
+    /// A saved computation waiting at a host request whose host built aggregates and called back
+    /// pins them: every collection that would move anything is refused with
+    /// [`CollectError::SavedHostHandles`] until it is resumed and its request completes.
+    ///
     /// A refused collection moves and reclaims nothing, not even dropped groups. Separately, and
     /// whether or not the collection then succeeds, it first discards what a forgotten
     /// invocation or a run interrupted by a host panic allocated, as any run would.
     pub fn collect(&mut self) -> Result<CollectionReport, CollectError> {
         self.settle();
         let mut handles = Vec::new();
-        let plan = self.plan_collection(&mut handles, 0)?;
-        Ok(self.apply_collection(&plan, None))
+        let saved = self.plan_saved(&mut handles)?;
+        let roots = saved.iter().map(StackPlan::roots).sum();
+        let plan = self.plan_collection(&mut handles, roots)?;
+        self.check_saved(&plan)?;
+        // Planning succeeded: nothing below can fail.
+        let mut report = self.apply_collection(&plan, None);
+        self.relocate_saved(&saved, plan.compaction(), &mut report);
+        Ok(report)
+    }
+
+    /// Plans the relocation of every saved computation, mutating nothing. What they keep alive
+    /// is appended to `handles`.
+    pub(super) fn plan_saved(
+        &self,
+        handles: &mut Vec<AggHandle>,
+    ) -> Result<Vec<StackPlan>, CollectError> {
+        self.check_pinned();
+        self.saved
+            .iter()
+            .map(|(_, saved)| {
+                saved
+                    .stack
+                    .plan_collection(&saved.args, &self.units, self.memory.aggs(), handles)
+            })
+            .collect()
+    }
+
+    /// Refuses a heap plan that would move aggregates a saved computation's waiting host built.
+    pub(super) fn check_saved(&self, plan: &HeapPlan) -> Result<(), CollectError> {
+        self.saved.iter().try_for_each(|(computation, saved)| {
+            saved
+                .stack
+                .check_host_handles(plan)
+                .map_err(|error| match error {
+                    CollectError::HostHandles => CollectError::SavedHostHandles { computation },
+                    error => error,
+                })
+        })
+    }
+
+    /// Rewrites every saved computation's roots after the heap was compacted.
+    pub(super) fn relocate_saved(
+        &mut self,
+        plans: &[StackPlan],
+        compaction: &Compaction,
+        report: &mut CollectionReport,
+    ) {
+        for (saved, plan) in self.saved.iter_mut().zip(plans) {
+            saved.stack.relocate(&mut saved.args, plan, compaction);
+            plan.report(report);
+        }
     }
 
     /// Plans a collection rooted at registered groups and `handles`, which a stack's planning
@@ -600,6 +681,8 @@ impl<H: Host> Vm<H> {
     pub fn heap_stats(&self) -> HeapStats {
         HeapStats {
             scratch_bytes: self.exec.as_ref().map_or(0, |exec| exec.retained_bytes()),
+            saved_computations: self.saved.len(),
+            saved_bytes: self.saved.retained_bytes(),
             ..self.memory.stats(self.roots.len())
         }
     }
@@ -613,8 +696,8 @@ impl StackPlan {
 
     /// Adds the stack's payload descriptors to a report.
     pub(super) fn report(&self, report: &mut CollectionReport) {
-        report.payloads = Retention::new(self.arena.descriptors);
-        report.payload_bytes = Retention::new(self.arena.owned_bytes);
+        report.payloads.add(self.arena.descriptors);
+        report.payload_bytes.add(self.arena.owned_bytes);
     }
 }
 

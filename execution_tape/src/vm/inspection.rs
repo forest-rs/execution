@@ -100,6 +100,14 @@ impl ExecutionControl {
         });
     }
 
+    /// Sets how a resumed lease handles admitted host calls and unhandled suspensions.
+    ///
+    /// A request or suspension already waiting stays waiting either way.
+    pub(super) fn set_yields(&mut self, yield_host_calls: bool, yield_suspensions: bool) {
+        self.yield_host_calls = yield_host_calls;
+        self.yield_suspensions = yield_suspensions;
+    }
+
     /// Resets this control, keeping its buffers, for a synchronous run.
     pub(super) fn start_run(&mut self) {
         self.restart(0);

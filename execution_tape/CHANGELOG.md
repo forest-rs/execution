@@ -16,6 +16,28 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Keep a waiting computation in the VM and continue it later, so a VM can hold many long-lived
+  computations that share its units and heap. `Invocation::save(self) -> Result<ComputationId,
+  Invocation>` keeps the computation exactly where it waits, between quanta, at a host request
+  or at a yielded suspension, and ends the invocation without cancelling it;
+  `Vm::resume(ComputationId, InvocationOptions) -> Result<Invocation, ResumeError>` continues
+  it in a new invocation with a fresh work allowance, while the frames it holds still count
+  against `Limits::max_call_depth` and its activation IDs stay the same. IDs are
+  generation-checked, name a computation until it is resumed, and name their VM: another VM
+  refuses them (`ResumeError::ForeignVm`). `Vm::collect` and `Invocation::collect` keep and
+  relocate what saved computations reach; `HeapStats::saved_computations` counts them and
+  `HeapStats::saved_bytes` reports their register and frame memory. Dropping a resumed
+  invocation cancels the computation and discards only what it allocated since resuming.
+  Finished invocations, invocations that own their VM or are observed, requests whose host has
+  aggregates in staging (complete the request or call back first) and interrupted deliveries
+  are not saved, and resumed computations cannot be observed yet (`ResumeError::Observed`).
+  A computation saved at a request whose host built aggregates and called back pins them:
+  every collection that would move anything is refused with `CollectError::SavedHostHandles`,
+  naming the computation, until it is resumed and its request completes. While computations
+  are saved, `AggHeap::clear` and `AggHeap::take_nodes` panic, and a heap replaced through
+  `Vm::aggregates_mut` panics at the next resume or collection, rather than letting saved
+  handles name other aggregates.
+
 - Keep values alive across runs with registered roots, and reclaim everything else with an
   explicit, moving collection. `Vm::root(values) -> Result<RootedValues, RootError>` registers
   a group, `Vm::resolve(&RootedValues)` borrows its current values and
