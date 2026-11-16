@@ -116,10 +116,15 @@ impl Continuations {
     /// Releases every continuation and its registers, keeping buffer capacity.
     ///
     /// Continuation references never outlive their invocation, so generations restart.
+    #[inline]
     pub(super) fn clear(&mut self) {
-        if !self.used {
-            return;
+        if self.used {
+            self.clear_used();
         }
+    }
+
+    #[inline(never)]
+    fn clear_used(&mut self) {
         self.used = false;
         self.free.clear();
         for (index, slot) in self.slots.iter_mut().enumerate() {
