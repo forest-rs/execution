@@ -218,7 +218,23 @@ pub fn max_f32(a: f32, b: f32) -> f32 {
 #[inline]
 #[must_use]
 pub fn min_num_f32(a: f32, b: f32) -> f32 {
-    num32::demote(min_num_f64(num32::promote(a), num32::promote(b)))
+    // Widening and narrowing are exact here: no NaN reaches the comparison, and both NaN cases
+    // return what `min_num_f64` would after narrowing.
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => f32::NAN,
+        (true, false) => b,
+        (false, true) => a,
+        (false, false) => {
+            if a < b {
+                a
+            } else if b < a {
+                b
+            } else {
+                // Equal: the same bits, or zeros of either sign, where `-0.0` wins.
+                f32::from_bits(a.to_bits() | b.to_bits())
+            }
+        }
+    }
 }
 
 /// `f32.max_num`: the greater input, favoring numbers like [`min_num_f32`]. `+0.0` is greater
@@ -226,7 +242,21 @@ pub fn min_num_f32(a: f32, b: f32) -> f32 {
 #[inline]
 #[must_use]
 pub fn max_num_f32(a: f32, b: f32) -> f32 {
-    num32::demote(max_num_f64(num32::promote(a), num32::promote(b)))
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => f32::NAN,
+        (true, false) => b,
+        (false, true) => a,
+        (false, false) => {
+            if a > b {
+                a
+            } else if b > a {
+                b
+            } else {
+                // Equal: the same bits, or zeros of either sign, where `+0.0` wins.
+                f32::from_bits(a.to_bits() & b.to_bits())
+            }
+        }
+    }
 }
 
 /// `f32.clamp`: `x` limited to `lo..=hi`, or `None` when the bounds are invalid.
@@ -543,16 +573,11 @@ pub fn atan2_f64(y: f64, x: f64) -> f64 {
 fn ordered_min(a: f64, b: f64) -> f64 {
     if a < b {
         a
-    } else if a > b {
+    } else if b < a {
         b
-    } else if a == 0.0 {
-        if a.is_sign_negative() || b.is_sign_negative() {
-            -0.0
-        } else {
-            0.0
-        }
     } else {
-        a
+        // Equal: the same bits, or zeros of either sign, where `-0.0` wins.
+        f64::from_bits(a.to_bits() | b.to_bits())
     }
 }
 
@@ -561,16 +586,11 @@ fn ordered_min(a: f64, b: f64) -> f64 {
 fn ordered_max(a: f64, b: f64) -> f64 {
     if a > b {
         a
-    } else if a < b {
+    } else if b > a {
         b
-    } else if a == 0.0 {
-        if a.is_sign_positive() || b.is_sign_positive() {
-            0.0
-        } else {
-            -0.0
-        }
     } else {
-        a
+        // Equal: the same bits, or zeros of either sign, where `+0.0` wins.
+        f64::from_bits(a.to_bits() & b.to_bits())
     }
 }
 
@@ -889,5 +909,97 @@ mod tests {
             }
         }
         assert!(!same64(atan2_f64(1.0, 0.0), libm::atan2(0.0, 1.0)));
+    }
+
+    /// `min_num`/`max_num` as specified: through `f64` for `f32`, with branches for zeros.
+    fn reference_min(a: f64, b: f64) -> f64 {
+        match (a.is_nan(), b.is_nan()) {
+            (true, true) => f64::NAN,
+            (true, false) => b,
+            (false, true) => a,
+            (false, false) if a < b => a,
+            (false, false) if a > b => b,
+            (false, false) if a == 0.0 && (a.is_sign_negative() || b.is_sign_negative()) => -0.0,
+            (false, false) if a == 0.0 => 0.0,
+            (false, false) => a,
+        }
+    }
+
+    fn reference_max(a: f64, b: f64) -> f64 {
+        match (a.is_nan(), b.is_nan()) {
+            (true, true) => f64::NAN,
+            (true, false) => b,
+            (false, true) => a,
+            (false, false) if a > b => a,
+            (false, false) if a < b => b,
+            (false, false) if a == 0.0 && (a.is_sign_positive() || b.is_sign_positive()) => 0.0,
+            (false, false) if a == 0.0 => -0.0,
+            (false, false) => a,
+        }
+    }
+
+    #[test]
+    fn min_and_max_num_match_their_reference_bit_for_bit() {
+        let f64s = [
+            0.0_f64,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::MIN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::NAN,
+            f64::from_bits(0x7FF0_0000_0000_0001),
+            f64::from_bits(1),
+        ];
+        let bits = |x: f64| if x.is_nan() { u64::MAX } else { x.to_bits() };
+        for &a in &f64s {
+            for &b in &f64s {
+                assert_eq!(
+                    bits(min_num_f64(a, b)),
+                    bits(reference_min(a, b)),
+                    "{a} {b}"
+                );
+                assert_eq!(
+                    bits(max_num_f64(a, b)),
+                    bits(reference_max(a, b)),
+                    "{a} {b}"
+                );
+                if a.is_nan() && b.is_nan() {
+                    assert_eq!(min_num_f64(a, b).to_bits(), f64::NAN.to_bits());
+                }
+            }
+        }
+        let f32s = [
+            0.0_f32,
+            -0.0,
+            1.0,
+            -1.0,
+            0.25,
+            f32::MIN_POSITIVE,
+            f32::MAX,
+            f32::MIN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            -f32::NAN,
+            f32::from_bits(0x7F80_0001),
+            f32::from_bits(0xFFC0_1234),
+            f32::from_bits(1),
+        ];
+        for &a in &f32s {
+            for &b in &f32s {
+                let wide = |f: fn(f64, f64) -> f64| {
+                    num32::demote(f(num32::promote(a), num32::promote(b))).to_bits()
+                };
+                assert_eq!(min_num_f32(a, b).to_bits(), wide(reference_min), "{a} {b}");
+                assert_eq!(max_num_f32(a, b).to_bits(), wide(reference_max), "{a} {b}");
+            }
+        }
     }
 }
