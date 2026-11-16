@@ -983,6 +983,8 @@ for bit.
   one) fails to resolve rather than getting a second copy. An embedding therefore moves to a new
   `libm` only with an `execution_tape` release that moves this definition, and native code in
   the same build that calls `libm` computes the same bits as the intrinsics.
+  `execution_tape::math::LIBM_VERSION` names the pinned release, so caches and fingerprints of
+  intrinsic results can key on it and change when it does.
 
 `f32.clamp dst, a, lo, hi` and `f64.clamp dst, a, lo, hi` trap with `ClampBoundsInvalid` unless
 `lo <= hi`, so they trap when `lo > hi` or either bound is NaN (where Rust's `f32::clamp` and

@@ -315,7 +315,8 @@ dependency graph, so the pin applies to the whole build: a crate that asks for
 (Cargo reports the conflict with `=0.2.16`) instead of building a second copy. Moving to a
 newer `libm` waits for an `execution_tape` release that moves the pin, which changes intrinsic
 results and is called out in the changelog. The shared copy is also why native code calling
-`libm` directly gets the same bits as a tape program.
+`libm` directly gets the same bits as a tape program. `math::LIBM_VERSION` names the pinned
+release, for caches and fingerprints that must change when it does.
 
 ## Resumable execution
 
