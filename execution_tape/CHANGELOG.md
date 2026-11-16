@@ -36,6 +36,20 @@ This release has an [MSRV][] of 1.88.
   are saved, `AggHeap::clear` and `AggHeap::take_nodes` panic, and a heap replaced through
   `Vm::aggregates_mut` panics at the next resume or collection, rather than letting saved
   handles name other aggregates.
+- Record and replay a computation across the invocations that save and resume it. Pass the
+  same `Recorder` to each: it notes where each invocation saved the computation
+  (`ValueEvent::Saved`), the limits each resuming invocation started from
+  (`ValueEvent::Resumed`) and the installs, tags and relinks made in between, and
+  `Recording::replay` saves and resumes its own run at the same points, so fuel and work limits
+  apply as they did, including saves made while the computation waited at a host request or
+  suspension. Units installed, tags defined and links repointed while it was saved are repeated
+  before the next invocation. A heap changed while the computation was saved, by another run, a
+  collection or the embedding, makes the capture incomplete (`CaptureFault::Interleaved`), as
+  does an invocation of the computation the recorder did not observe
+  (`CaptureFault::Unrecorded`); a recorder that joins a computation it did not see start, or is
+  handed another computation's resume, reports `CaptureFault::MissingEntry`. The events carry the
+  computation's `StackId`, the same in every invocation that runs it, and how many invocations
+  ran it before.
 - Hand a running computation from one observer to another. Observers belong to an invocation:
   saving one gives its trace sink `TraceSink::release`, its last event, with everything it saw
   open left open, and resuming with an observer gives the new sink `TraceSink::attach` in place
@@ -44,10 +58,9 @@ This release has an [MSRV][] of 1.88.
   so later exits balance without invented start events. Both default to doing nothing: a sink
   that pairs scope or instruction events must implement `attach`, or it sees exits without
   matching enters after a resume. `OpenScope::new` and `Attachment::new` build test values.
-  The Footfall and Tracy sinks close their intervals on release and reopen them on attach; a
-  `Recorder` reports a saved or resumed invocation as `CaptureFault::Saved`. Resuming with a
-  trace observer is refused (`ResumeError::Observed`) only while a guest callback runs on top
-  of the waiting host request.
+  The Footfall and Tracy sinks close their intervals on release and reopen them on attach.
+  Resuming with a trace observer is refused (`ResumeError::Observed`) only while a guest
+  callback runs on top of the waiting host request.
 
 - Keep values alive across runs with registered roots, and reclaim everything else with an
   explicit, moving collection. `Vm::root(values) -> Result<RootedValues, RootError>` registers

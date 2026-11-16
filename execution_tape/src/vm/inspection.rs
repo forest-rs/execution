@@ -13,6 +13,27 @@ use crate::value::Obj;
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::hash::{Hash, Hasher};
 
+/// Identifies one computation for its whole life: the same in every invocation that runs it,
+/// whichever [`ComputationId`] each of its saves receives.
+///
+/// It names the computation's stack and its VM. Like a [`ComputationId`],
+/// it is a process-local handle, and an identity that outlives its VM could match a later VM
+/// that reuses the address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StackId {
+    vm: usize,
+    stack: u64,
+}
+
+impl StackId {
+    pub(super) fn new(vm: &Arc<()>, control: &ExecutionControl) -> Self {
+        Self {
+            vm: Arc::as_ptr(vm).addr(),
+            stack: control.owner(),
+        }
+    }
+}
+
 /// An activation identity valid only in its originating invocation.
 ///
 /// It names its VM, which cloning retains so address reuse cannot make an old ID refer to

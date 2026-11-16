@@ -808,6 +808,18 @@ impl<'a, H: Host> Invocation<'a, H> {
             return Err(self);
         }
         let program = Arc::clone(&self.continuation.stack.program);
+        let work = self.work();
+        let invocation = self.continuation.stack.invocations;
+        let stack = StackId::new(&self.vm.identity, &self.continuation.stack.control);
+        let aggregates = self.vm.memory.aggs();
+        self.continuation
+            .trace
+            .values(program.program(), || ValueEvent::Saved {
+                stack,
+                work,
+                invocation,
+                aggregates,
+            });
         self.continuation.trace.release(program.program());
         let mut stack = self.continuation.stack.take();
         // Host results not in staging carry only this invocation's work usage; the resuming
@@ -876,6 +888,7 @@ impl<H: Host> Vm<H> {
         let pinned = self.saved.len() != 0;
         self.memory.aggs_mut().set_pinned(pinned);
         let saved::Saved { mut stack, args } = *saved;
+        stack.invocations += 1;
         stack
             .control
             .set_yields(options.yield_host_calls, options.yield_suspensions);
@@ -908,6 +921,19 @@ impl<H: Host> Vm<H> {
             &stack.ctx,
             &stack.control,
         );
+        let program = Arc::clone(&stack.program);
+        let invocations = stack.invocations;
+        let vm = &*invocation.vm;
+        let stack = StackId::new(&vm.identity, &stack.control);
+        continuation
+            .trace
+            .values(program.program(), || ValueEvent::Resumed {
+                stack,
+                invocation: invocations,
+                limits: &vm.limits,
+                aggregates: vm.memory.aggs(),
+                units: vm.units(),
+            });
         Ok(invocation)
     }
 }

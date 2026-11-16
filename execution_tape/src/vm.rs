@@ -56,6 +56,7 @@ mod invocation;
 use inspection::ExecutionControl;
 pub use inspection::{
     ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
+    StackId,
 };
 mod observations;
 mod ownership;
