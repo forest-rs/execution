@@ -236,7 +236,7 @@ impl<H: Host> Vm<H> {
         self.start_with_inputs(entry, Cow::Borrowed(args), options, checkpoint, work)
     }
 
-    fn start_with_inputs<'a>(
+    pub(super) fn start_with_inputs<'a>(
         &'a mut self,
         entry: FuncRef,
         args: Cow<'a, [Value]>,
@@ -261,6 +261,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         let mut exec = vm.lend(checkpoint);
         let mut budget = core::mem::take(&mut exec.budget);
         budget.reset(&vm.limits);
+        budget.limit_frames(vm.saved.resident_frames());
         let stack = vm.next_stack();
         let continuation =
             continuation::Continuation::new(&mut exec, stack, program, entry, args, options);
@@ -741,6 +742,11 @@ impl<H: Host> Drop for Invocation<'_, H> {
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
+    /// Marks this unrun invocation's computation as created by [`Vm::spawn`].
+    pub(super) fn mark_spawned(&mut self) {
+        self.continuation.stack.spawned = true;
+    }
+
     /// Keeps this waiting invocation's computation in its VM and ends the invocation without
     /// cancelling it.
     ///
@@ -763,7 +769,8 @@ impl<'a, H: Host> Invocation<'a, H> {
     /// everything it saw open left open, and both observers are dropped.
     ///
     /// Returns the invocation unchanged, and saves nothing, when it has finished (take its
-    /// result instead), waits at a host request
+    /// result instead), when the VM already keeps [`Limits::max_saved_computations`]
+    /// computations (resume or discard one first), waits at a host request
     /// whose host has aggregates in staging (only the host's handles reach them, and they would
     /// alias aggregates later runs allocate: complete the request first, or call back to promote
     /// them), or holds an interrupted delivery (resume it to see its trap).
@@ -785,7 +792,8 @@ impl<'a, H: Host> Invocation<'a, H> {
                 .control
                 .pending_suspension
                 .is_some_and(|suspension| suspension.abandoned);
-        if stack.outcome.is_some() || staging || abandoned {
+        let full = self.vm.saved.len() >= self.vm.limits.max_saved_computations;
+        if stack.outcome.is_some() || full || staging || abandoned {
             return Err(self);
         }
         let program = Arc::clone(&self.continuation.stack.program);
@@ -831,7 +839,10 @@ impl<H: Host> Vm<H> {
     /// [`TraceSink::attach`] with what is already open, in
     /// place of a run start, and then the computation's events as usual. Fuel, host calls
     /// and aggregate, payload and contract work restart from [`Self::limits`]; frames the
-    /// computation holds still count against [`Limits::max_call_depth`].
+    /// computation holds still count against [`Limits::max_call_depth`], and with every other
+    /// saved computation's against [`Limits::max_frames`]. A computation [`Self::spawn`] created
+    /// enters on its first resume instead, as one [`Self::start`] begins: observers receive its
+    /// run start and entry, and this is its first invocation.
     ///
     /// The ID names nothing afterwards: save the invocation again to keep it, or drop it to
     /// cancel the computation, which discards what this invocation allocated. Refuses, leaving
@@ -869,15 +880,25 @@ impl<H: Host> Vm<H> {
         let pinned = self.saved.len() != 0;
         self.memory.aggs_mut().set_pinned(pinned);
         let saved::Saved { mut stack, args } = *saved;
-        stack.invocations += 1;
-        stack
-            .control
-            .set_yields(options.yield_host_calls, options.yield_suspensions);
+        let spawned = core::mem::take(&mut stack.spawned);
+        if spawned {
+            // Entered again below, as the first invocation, under this one's observers.
+            let owner = stack.control.owner();
+            stack
+                .control
+                .start(owner, options.yield_host_calls, options.yield_suspensions);
+        } else {
+            stack.invocations += 1;
+            stack
+                .control
+                .set_yields(options.yield_host_calls, options.yield_suspensions);
+        }
         let checkpoint = self.memory.checkpoint();
         let mut exec = self.lend(checkpoint);
         let mut budget = core::mem::take(&mut exec.budget);
         budget.reset(&self.limits);
-        budget.frames = stack.ctx.held_frames();
+        budget.limit_frames(self.saved.resident_frames());
+        budget.frames = if spawned { 0 } else { stack.ctx.held_frames() };
         let continuation = continuation::Continuation {
             stack,
             args,
@@ -892,6 +913,17 @@ impl<H: Host> Vm<H> {
             budget,
             exec: Some(exec),
         };
+        if spawned {
+            // The same entry `spawn` checked; a refusal finishes this invocation with its trap.
+            if let Err(error) = invocation.continuation.initialize(
+                invocation.vm,
+                &mut invocation.budget,
+                DataWork::default(),
+            ) {
+                invocation.running().finish(Err(error));
+            }
+            return Ok(invocation);
+        }
         // The invocation is complete before its observer runs: if the observer panics, dropping
         // it cancels the computation like any other.
         let continuation = &mut invocation.continuation;
@@ -912,6 +944,7 @@ impl<H: Host> Vm<H> {
                 stack,
                 invocation: invocations,
                 limits: &vm.limits,
+                resident_frames: vm.saved.resident_frames(),
                 aggregates: vm.memory.aggs(),
                 units: vm.units(),
             });

@@ -78,6 +78,16 @@ pub enum CollectError {
         /// The saved computation.
         computation: ComputationId,
     },
+    /// A saved computation reaches an aggregate the heap does not hold.
+    ///
+    /// This is [`Self::DanglingHandle`] for a computation [`Invocation::save`] kept: the heap
+    /// was changed behind the VM while it was saved.
+    SavedDanglingHandle {
+        /// The saved computation.
+        computation: ComputationId,
+        /// The missing aggregate.
+        handle: AggHandle,
+    },
     /// Delivering a host outcome or a suspension answer was interrupted, for example by a
     /// panicking observer. The invocation can only report its trap or be dropped.
     Abandoned,
@@ -111,6 +121,15 @@ impl fmt::Display for CollectError {
                 f,
                 "cannot collect: aggregates the host of saved computation {computation:?} built \
                  would move over its handles; resume it and complete its request first",
+            ),
+            Self::SavedDanglingHandle {
+                computation,
+                handle,
+            } => write!(
+                f,
+                "cannot collect: saved computation {computation:?} reaches aggregate {} which \
+                 the heap does not hold",
+                handle.0
             ),
             Self::Abandoned => f.write_str("cannot collect an abandoned invocation"),
             Self::Aggregate(error) => write!(f, "cannot collect: {error}"),
@@ -227,6 +246,8 @@ pub struct HeapStats {
     /// Bytes of register, frame and argument capacity those computations hold, beyond the
     /// aggregates they reach. Counts capacities, not payloads or allocator overhead.
     pub saved_bytes: usize,
+    /// Frames those computations hold, counted against [`crate::vm::Limits::max_frames`].
+    pub saved_frames: usize,
 }
 
 /// Positions of the reference registers that hold values in one register file.
@@ -583,12 +604,25 @@ impl<H: Host> Vm<H> {
         handles: &mut Vec<AggHandle>,
     ) -> Result<Vec<StackPlan>, CollectError> {
         self.check_pinned();
+        let heap = self.memory.aggs();
         self.saved
             .iter()
-            .map(|(_, saved)| {
-                saved
+            .map(|(computation, saved)| {
+                let start = handles.len();
+                let plan = saved
                     .stack
-                    .plan_collection(&saved.args, &self.units, self.memory.aggs(), handles)
+                    .plan_collection(&saved.args, &self.units, heap, handles)?;
+                // Name the computation a dangling root belongs to; heap planning cannot.
+                if let Some(&handle) = handles[start..]
+                    .iter()
+                    .find(|&&handle| heap.agg_type(handle).is_err())
+                {
+                    return Err(CollectError::SavedDanglingHandle {
+                        computation,
+                        handle,
+                    });
+                }
+                Ok(plan)
             })
             .collect()
     }
@@ -683,6 +717,7 @@ impl<H: Host> Vm<H> {
             scratch_bytes: self.exec.as_ref().map_or(0, |exec| exec.retained_bytes()),
             saved_computations: self.saved.len(),
             saved_bytes: self.saved.retained_bytes(),
+            saved_frames: self.saved.frames(),
             ..self.memory.stats(self.roots.len())
         }
     }

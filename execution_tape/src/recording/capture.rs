@@ -422,6 +422,7 @@ impl Recorder {
                 args,
                 aggregates,
                 limits,
+                resident_frames,
                 work,
                 ..
             } => {
@@ -436,6 +437,7 @@ impl Recorder {
                     func: entry,
                     args,
                     limits: limits.clone(),
+                    resident_frames,
                     work,
                 });
             }
@@ -891,6 +893,7 @@ impl TraceSink for Recorder {
                 stack,
                 invocation,
                 limits,
+                resident_frames,
                 aggregates,
                 units,
             } => {
@@ -920,6 +923,7 @@ impl TraceSink for Recorder {
                     fuel: saved.fuel,
                     stored: self.store.len(),
                     limits: limits.clone(),
+                    resident_frames,
                 });
                 return;
             }

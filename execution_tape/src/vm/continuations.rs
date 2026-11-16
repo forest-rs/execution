@@ -493,9 +493,7 @@ impl<H: Host> Vm<H> {
         env: Option<AggHandle>,
     ) -> Result<ContRef, Trap> {
         let (_, _, body) = indirect_target(&self.units, unit, call_sig, target, env.is_some())?;
-        if budget.frames >= self.limits.max_call_depth {
-            return Err(Trap::CallDepthExceeded);
-        }
+        budget.admit_frame()?;
         let depth = ctx.frames.len();
         let base = ctx.alloc_frame(body);
         if let Some(env) = env {

@@ -300,6 +300,8 @@ cargo run -p execution_tape_examples --bin bound_host
 
 A task owns its VM and keeps its computation there between polls: `Invocation::save` keeps a
 waiting computation and `Vm::resume` continues it, so the task stores no self-references.
+`Vm::spawn` saves one before it runs and `Vm::discard` ends one; `Limits::max_frames` and
+`Limits::max_saved_computations` bound what saved computations keep.
 Owned trace/access observers can follow it across polls; shared collectors remain inspectable
 after retirement. Limits, capture import, cancellation, host completion and checked replay
 are shared. Raw aggregate/function/closure IDs still need their original ownership domain;

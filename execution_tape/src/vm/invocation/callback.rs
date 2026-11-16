@@ -202,9 +202,7 @@ impl<H: Host> Running<'_, '_, H> {
             return Err(Trap::FuelExceeded);
         }
         self.budget.fuel -= 1;
-        if self.budget.frames >= self.vm.limits.max_call_depth {
-            return Err(Trap::CallDepthExceeded);
-        }
+        self.budget.admit_frame()?;
         let (function, environment) = match callee {
             Value::Func(function) => (*function, None),
             Value::Closure(closure) => (closure.func, Some(closure.env)),
