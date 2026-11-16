@@ -635,10 +635,11 @@ This release has an [MSRV][] of 1.88.
 ### Changed
 
 - Short runs cost less. Instructions no longer store their frame's next pc twice, entry and
-  return skip contract checks for functions that declare none, entry arguments are written
-  inline, and `f32` `min_num`/`max_num` compare in `f32` instead of round-tripping through
-  `f64` (bit-identical results). On the `short_runs` bench, a 14-instruction `f32` run on a
-  parked VM drops from about 125 ns to 118 ns and a return-only run from about 65 ns to 59 ns.
+  return skip the contract-check call for functions with no runtime contract checks, entry
+  arguments are written inline, and `f32` `min_num`/`max_num` compare in `f32` instead of
+  round-tripping through `f64` (bit-identical results). On the `short_runs` bench, a
+  14-instruction `f32` run on a parked VM drops from about 125 ns to 118 ns and a return-only
+  run from about 65 ns to 59 ns.
 
 - `ComputationId`, `StackId` and `RequestId` name their VM by a number no other VM in the
   process gets, instead of an allocation's address, so a VM created after another was dropped
