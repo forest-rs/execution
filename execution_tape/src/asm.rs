@@ -1253,10 +1253,71 @@ impl Asm {
         self.place(label)
     }
 
-    /// Records that subsequent instructions map to `span_id` (until overwritten).
+    /// Attributes the instructions emitted from here on to `span_id`, until the next `span` call.
     ///
-    /// This emits a span-table entry at the current `pc`. Repeated calls at the same `pc` overwrite
-    /// the previous entry (so the encoded `pc_delta` sequence remains valid).
+    /// This is how a frontend says which part of its source an instruction came from. A span id
+    /// means whatever the frontend decides (an expression index, a node id, an encoded source
+    /// offset); the VM never interprets it. Mark the span before emitting the instructions it
+    /// covers:
+    ///
+    /// - a trap reports the span of the trapping instruction as [`TrapInfo::span_id`], so mapping
+    ///   a trap back to source is a lookup of that id, not a search over program counters;
+    /// - [`VerifiedFunction::instructions`] reports each instruction's span as
+    ///   [`InstructionInfo::span`], and tracing passes it to every event.
+    ///
+    /// Instructions emitted before a function's first mark have no span. A mark lasts until the
+    /// next one, and the span table cannot clear it, so give shared glue code (such as a final
+    /// `ret`) a span id of its own if a trap there must not be attributed to the code before it.
+    /// Repeated calls at the same `pc` overwrite the previous entry. The span table travels with
+    /// the function through [`ProgramBuilder::define_function`], encoding and verification.
+    ///
+    /// For exact byte ranges in a source document rather than opaque ids, see [`Self::source`].
+    ///
+    /// ```
+    /// # use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
+    /// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
+    /// use execution_tape::program::{SpanId, ValueType};
+    /// use execution_tape::trace::TraceMask;
+    /// use execution_tape::value::{FuncRef, Value};
+    /// use execution_tape::vm::{Limits, Trap, Vm};
+    /// # struct NoHost;
+    /// # impl Host for NoHost {
+    /// #     fn call(&mut self, _: &str, _: SigHash, _: &[ValueRef<'_>], _: &mut [Value],
+    /// #         _: HostContext<'_, '_>) -> Result<u64, HostError> {
+    /// #         Err(HostError::UnknownSymbol)
+    /// #     }
+    /// # }
+    ///
+    /// // The frontend numbers its expressions; span ids are non-zero, so expression `i` is `i + 1`.
+    /// const QUOTIENT: SpanId = SpanId::new(1);
+    /// const RESULT: SpanId = SpanId::new(2);
+    ///
+    /// let mut program = ProgramBuilder::new();
+    /// let divide = program.declare_function(FunctionSig {
+    ///     arg_types: vec![ValueType::U32, ValueType::U32],
+    ///     ret_types: vec![ValueType::U32],
+    /// })?;
+    /// let (a, b) = (program.argument(divide, 0)?, program.argument(divide, 1)?);
+    /// let mut body = program.function_asm(divide)?;
+    /// let quotient = body.alloc_register(ValueType::U32);
+    /// body.span(QUOTIENT).u32_div(quotient, a, b);
+    /// body.span(RESULT).ret(Reg::EFFECT, &[quotient]);
+    /// program.define_function(divide, body)?;
+    ///
+    /// let mut vm = Vm::new(NoHost, Limits::default());
+    /// let unit = vm.install(program.build_verified()?)?;
+    /// let args = [Value::U32(1), Value::U32(0)];
+    /// let trap = vm
+    ///     .run(FuncRef::new(unit, divide), &args, TraceMask::NONE, None)
+    ///     .unwrap_err();
+    /// assert!(matches!(trap.trap, Trap::DivByZero));
+    /// assert_eq!(trap.span_id, Some(QUOTIENT));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// [`TrapInfo::span_id`]: crate::vm::TrapInfo::span_id
+    /// [`VerifiedFunction::instructions`]: crate::verifier::VerifiedFunction::instructions
+    /// [`InstructionInfo::span`]: crate::verifier::InstructionInfo::span
     pub fn span(&mut self, span_id: SpanId) -> &mut Self {
         let pc = self.pc();
         if let Some((last_pc, last_span)) = self.span_marks.last_mut()

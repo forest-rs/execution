@@ -484,7 +484,12 @@ pub struct TrapInfo {
     pub func: FuncId,
     /// Instruction boundary within the function.
     pub pc: Pc,
-    /// Best-effort span id for tracing/source mapping.
+    /// The frontend's span for the instruction at [`Self::pc`], from the function's span table.
+    ///
+    /// This is the id the frontend marked with [`Asm::span`](crate::asm::Asm::span) before
+    /// emitting that instruction, so a frontend maps a trap back to its source by this id alone.
+    /// `None` when the function has no span marked at or before `pc`, or when the trap has no
+    /// instruction (an unknown unit).
     pub span_id: Option<SpanId>,
     /// Trap kind.
     pub trap: Trap,
