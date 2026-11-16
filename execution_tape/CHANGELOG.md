@@ -58,6 +58,10 @@ This release has an [MSRV][] of 1.88.
   zero (a compile-time error in a constant). `SpanId::try_from` remains the fallible route for
   external input.
 
+- Document how a frontend maps traps back to its source: mark spans with `Asm::span` while
+  assembling and read `TrapInfo::span_id` from the trap, with an example and a conformance test
+  covering unmarked instructions and traps in callees.
+
 - Display `UnitId` as its bare index, like `FuncId`, so `format!("unit {unit}")` reads `unit 1`.
 
 - Add checked conversions, which report a value that does not fit instead of trapping, so a
