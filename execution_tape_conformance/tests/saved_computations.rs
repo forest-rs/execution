@@ -15,7 +15,8 @@ use execution_tape::{
     value::{AggHandle, AggType, FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::{
-        CollectError, ComputationId, InvocationOptions, Limits, ResumeError, RunStatus, Trap, Vm,
+        CollectError, ComputationId, InvocationOptions, Limits, RequestError, ResumeError,
+        RunStatus, Trap, Vm,
     },
 };
 use std::sync::Arc;
@@ -2315,4 +2316,158 @@ fn an_argument_naming_no_aggregate_is_refused_at_entry() {
     assert_eq!(vm.heap_stats().saved_computations, 0);
     vm.collect().unwrap();
     save_asking(&mut vm, FuncRef::new(unit, entry), "still saves");
+}
+
+#[test]
+fn a_request_id_finds_its_request_after_saving_and_refuses_once_answered() {
+    let (program, entry) = asks_twice();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let args = [Value::Str("text".into())];
+    fn options<'a>() -> InvocationOptions<'a> {
+        InvocationOptions::default().yield_host_calls()
+    }
+    let mut invocation = vm.start(entry, &args, options()).unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let first = invocation.pending_host_call().unwrap().id();
+    let id = invocation.save().unwrap();
+
+    let mut invocation = vm.resume(id, options()).unwrap();
+    assert_eq!(
+        invocation.pending_host_call().unwrap().id(),
+        first,
+        "stable"
+    );
+    invocation
+        .host_request(first)
+        .unwrap()
+        .complete(&mut [Value::I64(1)], Ok(0))
+        .unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    // The same instruction admitted again is a new request.
+    assert!(matches!(
+        invocation.host_request(first),
+        Err(RequestError::NotWaiting)
+    ));
+    let second = invocation.pending_host_call().unwrap().id();
+    assert_ne!(second, first);
+    invocation
+        .host_request(second)
+        .unwrap()
+        .complete(&mut [Value::I64(2)], Ok(0))
+        .unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert!(matches!(
+        invocation.host_request(second),
+        Err(RequestError::NotWaiting)
+    ));
+}
+
+#[test]
+fn a_request_id_is_refused_by_other_computations_and_for_the_other_kind() {
+    let (program, entry) = asks();
+    let (suspending, suspends) = suspends();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let suspends = FuncRef::new(vm.install(suspending).unwrap(), suspends);
+    let one = save_asking(&mut vm, entry, "one");
+    let two = save_asking(&mut vm, entry, "two");
+    fn options<'a>() -> InvocationOptions<'a> {
+        InvocationOptions::default()
+            .yield_host_calls()
+            .yield_suspensions()
+    }
+
+    let mut invocation = vm.resume(one, options()).unwrap();
+    let request = invocation.pending_host_call().unwrap().id();
+    let one = invocation.save().unwrap();
+    let mut invocation = vm.resume(two, options()).unwrap();
+    assert!(matches!(
+        invocation.host_request(request),
+        Err(RequestError::OtherComputation)
+    ));
+    drop(invocation);
+
+    // Another VM, whose computation is numbered and admitted the same way.
+    let (program, asks) = asks();
+    let mut other = Vm::new(Answers, Limits::default());
+    let asks = FuncRef::new(other.install(program).unwrap(), asks);
+    let elsewhere = save_asking(&mut other, asks, "elsewhere");
+    let mut invocation = other.resume(elsewhere, options()).unwrap();
+    assert!(matches!(
+        invocation.host_request(request),
+        Err(RequestError::OtherComputation)
+    ));
+    drop(invocation);
+
+    let mut invocation = vm.start(suspends, &[], options()).unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHandler
+    );
+    let suspension = invocation.pending_suspension().unwrap().id();
+    assert!(matches!(
+        invocation.host_request(suspension),
+        Err(RequestError::OtherKind)
+    ));
+    let waiting = invocation.save().unwrap();
+    let mut invocation = vm.resume(waiting, options()).unwrap();
+    invocation
+        .suspension(suspension)
+        .unwrap()
+        .resume(vec![Value::I64(41)])
+        .unwrap();
+    assert!(matches!(
+        invocation.suspension(suspension),
+        Err(RequestError::NotWaiting)
+    ));
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(42)]);
+    drop(invocation);
+    assert_eq!(finish_asking(&mut vm, one, 7), ("one".into(), 7));
+}
+
+#[test]
+fn a_request_a_callback_returned_to_keeps_its_id() {
+    let (program, entry, spin) = calls_back();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let unit = vm.install(program).unwrap();
+    fn options<'a>() -> InvocationOptions<'a> {
+        InvocationOptions::default().yield_host_calls()
+    }
+    let mut invocation = vm.start(FuncRef::new(unit, entry), &[], options()).unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::AwaitingHost
+    );
+    let request = invocation.pending_host_call().unwrap().id();
+    invocation
+        .host_request(request)
+        .unwrap()
+        .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
+        .unwrap();
+    assert!(
+        matches!(
+            invocation.host_request(request),
+            Err(RequestError::NotWaiting)
+        ),
+        "it waits for its callback"
+    );
+    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+    let id = invocation.save().unwrap();
+    let mut invocation = vm.resume(id, options()).unwrap();
+    assert_eq!(
+        invocation.resume(u64::MAX).unwrap(),
+        RunStatus::CallbackReturned
+    );
+    let mut pending = invocation.host_request(request).unwrap();
+    assert_eq!(pending.take_callback_results().unwrap(), [Value::I64(4)]);
+    pending.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
+    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
 }

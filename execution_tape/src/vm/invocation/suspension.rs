@@ -24,6 +24,8 @@ pub(in crate::vm) struct PendingSuspend {
     pub(in crate::vm) rets: VRegSlice,
     /// Depth of the suspending frame, the top of the waiting stack.
     pub(in crate::vm) depth: usize,
+    /// Which of its stack's admissions this is, for [`super::RequestId`].
+    pub(in crate::vm) admission: u64,
     /// An answer started but did not finish, for example because an observer panicked.
     pub(in crate::vm) abandoned: bool,
 }
@@ -86,6 +88,17 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
             .units
             .unit(self.pending.location.unit)
             .program
+    }
+
+    /// Names this suspension for [`Invocation::suspension`], across the invocations that run
+    /// its computation.
+    #[must_use]
+    pub fn id(&self) -> RequestId {
+        RequestId::suspension(&self.running, self.pending.admission)
+    }
+
+    pub(super) fn admission(&self) -> u64 {
+        self.pending.admission
     }
 
     /// The `suspend` instruction that was yielded.

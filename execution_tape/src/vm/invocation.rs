@@ -13,6 +13,8 @@ mod host_request;
 pub use host_request::PendingHostCall;
 pub(super) use host_request::read_registers;
 pub(super) mod callback;
+mod request;
+pub use request::{RequestError, RequestId};
 mod suspension;
 pub(super) use suspension::PendingSuspend;
 pub use suspension::PendingSuspension;
