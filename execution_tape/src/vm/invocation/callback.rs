@@ -293,7 +293,6 @@ impl<H: Host> Running<'_, '_, H> {
             func: function,
             pc: prepared.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
-            byte_len: prepared.byte_len,
             base,
             return_to: None,
         });

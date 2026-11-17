@@ -634,6 +634,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Instructions cost less. The interpreter keeps the running frame's unit, function, register
+  base and verified body between instructions and looks them up again only when the frame
+  stack changes, instead of on every instruction; the frame stack counts its changes so none is
+  missed. On the `short_runs` bench, a 14-instruction `f32` run on a parked VM drops from about
+  118 ns to about 95 ns.
+
 - Short runs cost less. Instructions no longer store their frame's next pc twice, entry and
   return skip the contract-check call for functions with no runtime contract checks, entry
   arguments are written inline, and `f32` `min_num`/`max_num` compare in `f32` instead of

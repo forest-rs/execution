@@ -48,8 +48,10 @@ pub(crate) use continuations::ContRef;
 mod exceptions;
 pub(crate) use exceptions::Exception;
 mod exec;
+mod frames;
 pub use exceptions::UncaughtException;
 use exec::Exec;
+use frames::Frames;
 mod host_call;
 mod inspection;
 mod invocation;
@@ -601,8 +603,6 @@ struct Frame {
     pc: u32,
     /// Current instruction index within the verified instruction list.
     instr_ix: usize,
-    /// Total byte length of the function bytecode stream.
-    byte_len: u32,
     /// Base offsets into each register bank for this frame's registers.
     base: RegBase,
     /// Return continuation for this frame.
@@ -668,7 +668,7 @@ struct Registers {
     continuations: continuations::Continuations,
 
     /// Call stack.
-    frames: Vec<Frame>,
+    frames: Frames,
 }
 
 impl Registers {
@@ -699,7 +699,7 @@ impl Registers {
             + capacity_bytes(&self.closures)
             + capacity_bytes(&self.exns)
             + capacity_bytes(&self.conts)
-            + capacity_bytes(&self.frames)
+            + self.frames.retained_bytes()
             + self.arena.retained_bytes()
             + self.continuations.retained_bytes()
     }
@@ -1664,7 +1664,6 @@ impl<H: Host> Vm<H> {
             func: entry,
             pc: entry_vf.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
-            byte_len: entry_vf.byte_len,
             base: entry_base,
             return_to: None,
         });
@@ -1709,6 +1708,37 @@ impl<H: Host> Vm<H> {
         let mut current: &Unit = self.units.unit(loaded_unit);
         let mut program: &VerifiedProgram = &current.program;
 
+        // The top frame's index, unit, function, register base and verified body, kept between
+        // instructions and looked up again only when the frame stack's epoch moves: a frame
+        // keeps its unit, function and base for its whole life, so only a call, return, unwind,
+        // continuation switch or callback, each of which moves the epoch, can change them.
+        macro_rules! top_frame {
+            () => {{
+                let Some(top) = ctx.frames.last() else {
+                    return Err(ctx.trap(entry, 0, None, Trap::InvalidPc));
+                };
+                if top.unit != loaded_unit {
+                    loaded_unit = top.unit;
+                    current = self.units.unit(loaded_unit);
+                    program = &current.program;
+                }
+                let Some(vf) = program.verified(top.func) else {
+                    let (func, pc) = (top.func, top.pc);
+                    let span_id = ctx.span_at(program.program(), func, pc);
+                    return Err(ctx.trap(func, pc, span_id, Trap::InvalidPc));
+                };
+                (
+                    ctx.frames.epoch(),
+                    ctx.frames.len() - 1,
+                    top.unit,
+                    top.func,
+                    top.base,
+                    vf,
+                )
+            }};
+        }
+        let (mut epoch, mut frame_index, mut unit_id, mut func_id, mut base, mut vf) = top_frame!();
+
         loop {
             if YIELD {
                 if control.remaining == 0 {
@@ -1716,14 +1746,20 @@ impl<H: Host> Vm<H> {
                 }
                 control.remaining -= 1;
             }
-            let Some(top) = ctx.frames.last() else {
-                return Err(ctx.trap(entry, 0, None, Trap::InvalidPc));
-            };
-            if top.unit != loaded_unit {
-                loaded_unit = top.unit;
-                current = self.units.unit(loaded_unit);
-                program = &current.program;
+            if epoch != ctx.frames.epoch() {
+                (epoch, frame_index, unit_id, func_id, base, vf) = top_frame!();
             }
+            debug_assert!(
+                ctx.frames.len() == frame_index + 1
+                    && ctx.frames[frame_index].unit == unit_id
+                    && ctx.frames[frame_index].func == func_id
+                    && ctx.frames[frame_index].base == base
+                    && loaded_unit == unit_id
+                    && program
+                        .verified(func_id)
+                        .is_some_and(|body| core::ptr::eq(body, vf)),
+                "the kept top frame is the frame stack's top"
+            );
             let program_ref = program.program();
             if budget.fuel == 0 {
                 return Err(ctx.trap(
@@ -1735,17 +1771,11 @@ impl<H: Host> Vm<H> {
             }
             budget.fuel -= 1;
 
-            let frame_index = ctx.frames.len() - 1;
-
-            let (unit_id, func_id, pc, instr_ix, base, _byte_len) = {
+            let (pc, instr_ix) = {
                 let f = &ctx.frames[frame_index];
-                (f.unit, f.func, f.pc, f.instr_ix, f.base, f.byte_len)
+                (f.pc, f.instr_ix)
             };
 
-            let vf = program.verified(func_id).ok_or_else(|| {
-                let span_id = ctx.span_at(program_ref, func_id, pc);
-                ctx.trap(func_id, pc, span_id, Trap::InvalidPc)
-            })?;
             // Keep span ids as plain `u64` in the dispatch loop: carrying `SpanId`/`NonZeroU64`
             // through this hot path caused measurable regressions in branch-heavy benchmarks.
             // The verifier/program pipeline still enforces non-zero span ids via `SpanId`.
@@ -1787,8 +1817,7 @@ impl<H: Host> Vm<H> {
             );
 
             // Default fallthrough: advance to the next decoded instruction.
-            ctx.frames[frame_index].pc = next_pc;
-            ctx.frames[frame_index].instr_ix = next_instr_ix;
+            ctx.frames.set_position(frame_index, next_pc, next_instr_ix);
 
             let sources = ValueSources::new(&self.units, args, self.memory.aggs())
                 .with_current(unit_id, program_ref);
@@ -3438,8 +3467,7 @@ impl<H: Host> Vm<H> {
                     let target_pc = vf
                         .pc_at_ix(target_ix)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    ctx.frames[frame_index].pc = target_pc;
-                    ctx.frames[frame_index].instr_ix = target_ix;
+                    ctx.frames.set_position(frame_index, target_pc, target_ix);
                 }
                 ExecInstr::Jmp { target_ix, copies } => {
                     for pair in vf.vregs(*copies).as_chunks::<2>().0 {
@@ -3451,8 +3479,7 @@ impl<H: Host> Vm<H> {
                     let target_pc = vf
                         .pc_at_ix(target_ix)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    ctx.frames[frame_index].pc = target_pc;
-                    ctx.frames[frame_index].instr_ix = target_ix;
+                    ctx.frames.set_position(frame_index, target_pc, target_ix);
                 }
 
                 ExecInstr::Call {
@@ -3495,7 +3522,6 @@ impl<H: Host> Vm<H> {
                         func: *callee,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
-                        byte_len: callee_vf.byte_len,
                         base: callee_base,
                         return_to: Some(ReturnTo {
                             dst_rets: *dst_rets,
@@ -3919,7 +3945,6 @@ impl<H: Host> Vm<H> {
                         func: target.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
-                        byte_len: callee_vf.byte_len,
                         base: callee_base,
                         return_to: Some(ReturnTo {
                             dst_rets: *dst_rets,
@@ -4043,7 +4068,6 @@ impl<H: Host> Vm<H> {
                         func: target.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
-                        byte_len: callee_vf.byte_len,
                         base: callee_base,
                         return_to: Some(ReturnTo {
                             dst_rets: *dst_rets,
@@ -4137,7 +4161,6 @@ impl<H: Host> Vm<H> {
                         func: target.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
-                        byte_len: callee_vf.byte_len,
                         base: callee_base,
                         return_to: Some(ReturnTo {
                             dst_rets: *dst_rets,

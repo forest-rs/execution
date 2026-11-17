@@ -317,7 +317,7 @@ impl Continuations {
 }
 
 impl RegBase {
-    fn offset_by(mut self, delta: Self, add: bool) -> Self {
+    pub(super) fn offset_by(mut self, delta: Self, add: bool) -> Self {
         macro_rules! shift {
             ($($bank:ident),*) => {$(
                 self.$bank = if add { self.$bank + delta.$bank } else { self.$bank - delta.$bank };
@@ -375,12 +375,7 @@ impl Registers {
         }
         for_each_bank!(take);
         segment.frames.clear();
-        segment
-            .frames
-            .extend(self.frames.drain(depth..).map(|mut frame| {
-                frame.base = frame.base.offset_by(base, false);
-                frame
-            }));
+        self.frames.capture(depth, base, &mut segment.frames);
         continuations.frames += segment.frames.len();
         let slot = &mut continuations.slots[slot as usize];
         slot.live = true;
@@ -401,11 +396,7 @@ impl Registers {
         }
         for_each_bank!(put);
         continuations.frames -= segment.frames.len();
-        self.frames
-            .extend(segment.frames.drain(..).map(|mut frame| {
-                frame.base = frame.base.offset_by(base, true);
-                frame
-            }));
+        self.frames.reinstate(&mut segment.frames, base);
         continuations.release(slot);
         root
     }
@@ -509,7 +500,6 @@ impl<H: Host> Vm<H> {
             func: target.func,
             pc: body.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
-            byte_len: body.byte_len,
             base,
             return_to: None,
         });
@@ -598,10 +588,13 @@ impl<H: Host> Vm<H> {
             core::mem::take(&mut ctx.continuations.slots[slot as usize].segment.activations);
         let root = ctx.reinstate(slot);
         let top = ctx.frames.len() - 1;
-        ctx.frames[root].return_to = Some(ReturnTo {
-            dst_rets: rets,
-            resumed: true,
-        });
+        ctx.frames.set_return_to(
+            root,
+            Some(ReturnTo {
+                dst_rets: rets,
+                resumed: true,
+            }),
+        );
         if let Some(args) = args {
             let targets = ctx.inputs(&self.units, top, inputs);
             let top_base = ctx.frames[top].base;
@@ -782,9 +775,8 @@ impl<H: Host> Vm<H> {
             unreachable!("verified continuation parameter");
         };
         ctx.write_cont(resumer_base, param, cont);
-        let resumer = &mut ctx.frames[handler.resumer];
-        resumer.instr_ix = target_ix;
-        resumer.pc = target.pc.0;
+        ctx.frames
+            .set_position(handler.resumer, target.pc.0, target_ix);
         Ok(Some(target))
     }
 
