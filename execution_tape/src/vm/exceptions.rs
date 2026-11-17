@@ -462,10 +462,13 @@ impl<H: Host> Vm<H> {
         if let Some(callbacks) = &mut control.callbacks {
             callbacks.discard_exited(depth);
         }
-        let catcher = ctx.frames.last_mut().expect("catching activation");
-        catcher.instr_ix = target_ix;
-        catcher.pc = handler.pc.0;
-        let base = catcher.base;
+        let catcher = ctx
+            .frames
+            .len()
+            .checked_sub(1)
+            .expect("catching activation");
+        ctx.frames.set_position(catcher, handler.pc.0, target_ix);
+        let base = ctx.frames[catcher].base;
         let params = body.vregs(catch.handler.params);
         let (payload_params, reference) = if catch.handler.binds_exception {
             let (last, payload) = params.split_last().expect("verified exception parameter");
