@@ -11,7 +11,7 @@ use execution_tape::{
     source::{BoundSources, SourceError, SourceMap},
     trace::TraceLocation,
     value::{AggHandle, AggType, Obj, UnitId, Value},
-    vm::{ActivationId, Invocation, ObjectRootOrigin, PausedFrame, RunStatus, TrapInfo},
+    vm::{ActivationId, ObjectRootOrigin, PausedFrame, RunStatus, TrapInfo, Turn, TurnOutcome},
 };
 mod objects;
 mod origin;
@@ -59,13 +59,15 @@ enum ValueTarget {
     Object(Obj),
 }
 
-/// A live debugger for an explicitly supplied invocation and host.
+/// A live debugger for an explicitly supplied turn and host.
 ///
 /// The VM owns execution, resource limits and rollback. This view owns stepping policy,
 /// instruction breakpoints and presentation. It never fabricates a host for an arbitrary tape.
 /// Default host calls execute synchronously, including their real effects, when stepped or
 /// continued. Yielded calls wait for explicit `h` dispatch or embedding-supplied completion.
-/// Quitting pauses the invocation; dropping the explorer cancels unfinished execution.
+/// Quitting pauses the turn. [`Self::finish`] publishes how it ended, as [`Turn::finish`] does;
+/// dropping the explorer drops the turn, which cancels unfinished execution and discards what
+/// it allocated, returned values included.
 ///
 /// Paused values are read-only and shown only when definitely initialized. Selecting a caller
 /// displays its pending call, not hypothetical return values. Source snapshots are optional and
@@ -73,21 +75,22 @@ enum ValueTarget {
 ///
 /// ```no_run
 /// # use execution_tape::{host::Host, source::SourceMap, value::FuncRef,
-/// #     vm::{Vm, InvocationOptions}};
+/// #     vm::{Vm, TurnOptions}};
 /// # use execution_tape_observatory::LiveExplorer;
 /// # fn debug<H: Host>(vm: &mut Vm<H>, entry: FuncRef,
 /// #     sources: &SourceMap) -> Result<(), Box<dyn std::error::Error>> {
-/// let invocation = vm.start(entry, &[], InvocationOptions::default())?;
-/// let mut debugger = LiveExplorer::new(invocation).sources(sources)?;
+/// let turn = vm.start(entry, &[], TurnOptions::default())?;
+/// let mut debugger = LiveExplorer::new(turn).sources(sources)?;
 /// debugger.run()?;
 /// if let Some(result) = debugger.result() {
 ///     println!("{result:?}");
 /// }
-/// // Leaving the UI preserves the handle. Dropping it cancels unfinished guest execution.
+/// // Leaving the UI preserves the turn. Finish it to keep what it returned; dropping it discards
+/// // that and cancels unfinished guest execution.
 /// # Ok(()) }
 /// ```
 pub struct LiveExplorer<'view, 'vm, H: Host> {
-    invocation: Invocation<'vm, H>,
+    turn: Turn<'vm, H>,
     sources: Option<BoundSources<'view>>,
     origin: Option<RequestOrigin<'view>>,
     origin_selected: bool,
@@ -117,7 +120,7 @@ pub struct LiveExplorer<'view, 'vm, H: Host> {
 impl<H: Host> fmt::Debug for LiveExplorer<'_, '_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LiveExplorer")
-            .field("invocation", &self.invocation)
+            .field("turn", &self.turn)
             .field("frames", &self.frames.len())
             .field("breakpoints", &self.breakpoints)
             .field("status", &self.status)
@@ -126,11 +129,11 @@ impl<H: Host> fmt::Debug for LiveExplorer<'_, '_, H> {
 }
 
 impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
-    /// Opens at the invocation's current safe boundary without executing an instruction.
+    /// Opens at the turn's current safe boundary without executing an instruction.
     #[must_use]
-    pub fn new(invocation: Invocation<'vm, H>) -> Self {
+    pub fn new(turn: Turn<'vm, H>) -> Self {
         let mut view = Self {
-            invocation,
+            turn,
             sources: None,
             origin: None,
             origin_selected: false,
@@ -161,12 +164,12 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
 
     /// Attaches exact frontend source snapshots, rejecting stale maps before terminal entry.
     pub fn sources(mut self, map: &'view SourceMap) -> Result<Self, SourceError> {
-        self.sources = Some(map.bind(self.invocation.program().program())?);
+        self.sources = Some(map.bind(self.turn.program().program())?);
         self.refresh_source();
         Ok(self)
     }
 
-    /// Adds read-only, on-demand inspection of host objects from the actual invocation host.
+    /// Adds read-only, on-demand inspection of host objects from the actual turn host.
     ///
     /// `Enter` follows an object in the Values pane; `Backspace` returns. The inspector runs
     /// only while an object view is open and receives a 256-field limit. Displaying fields
@@ -190,7 +193,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         self.refresh();
     }
 
-    /// Opens the terminal UI. On return, the invocation remains available to inspect or resume.
+    /// Opens the terminal UI. On return, the turn remains available to inspect or resume.
     ///
     /// `s`: step into, `n`: step over, `u`: step out, `c`: continue, Space: pause,
     /// `b`: toggle the selected instruction's breakpoint, `g`: current instruction,
@@ -210,12 +213,12 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
 
     /// Executes one guest instruction, entering callees and treating host calls as indivisible.
     pub fn step(&mut self) -> Result<RunStatus, TrapInfo> {
-        self.resume(1)
+        self.drive(1)
     }
 
     /// Executes a bounded quantum directly, ignoring UI breakpoints and stepping policy.
-    /// Hard budgets remain cumulative. Use the terminal's continue command for breakpoints.
-    pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
+    /// The turn's budgets remain cumulative. Use the terminal's continue command for breakpoints.
+    pub fn drive(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
         self.motion = None;
         self.origin_selected = false;
         if self.showing_origin
@@ -224,24 +227,52 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             self.show_location(frame.location);
         }
         self.value_path.clear();
-        let result = self.invocation.resume(quantum);
+        let result = self.turn.drive(quantum);
         self.status = "PAUSED · before next instruction".into();
         self.selected_frame = 0;
         self.refresh();
         result
     }
 
-    /// Borrows committed outputs or the actual terminal trap; `None` means still paused/running.
+    /// Peeks at the returned values or the actual terminal trap; `None` means still
+    /// paused/running. Returned values last only as long as the turn unless [`Self::finish`]
+    /// publishes them.
     #[must_use]
     pub fn result(&self) -> Option<Result<&[Value], &TrapInfo>> {
-        self.invocation.result()
+        self.turn.result()
     }
 
-    /// Takes successful owned outputs. Aggregate handles belong to the original borrowed VM.
+    /// Temporary forward to [`Self::drive`], removed later in this change.
+    #[doc(hidden)]
+    pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
+        self.drive(quantum)
+    }
+
+    /// Temporary forward, removed later in this change.
+    #[doc(hidden)]
     pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
-        let values = self.invocation.take_outputs();
+        let values = self.turn.take_outputs();
         self.refresh();
         values
+    }
+
+    /// Temporary forward to [`Self::into_turn`], removed later in this change.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_invocation(self) -> Turn<'vm, H> {
+        self.into_turn()
+    }
+
+    /// Leaves presentation and finishes the turn, as [`Turn::finish`] does.
+    ///
+    /// Returned values' aggregate handles belong to the original borrowed VM. A computation that
+    /// cannot be saved comes back as its turn.
+    #[expect(
+        clippy::result_large_err,
+        reason = "a refused finish hands back the turn, as `Turn::finish` does"
+    )]
+    pub fn finish(self) -> Result<TurnOutcome, Turn<'vm, H>> {
+        self.into_turn().finish()
     }
 
     fn location(&self) -> Option<TraceLocation> {
@@ -309,18 +340,18 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
     }
 
     fn refresh(&mut self) {
-        self.frames = self.invocation.inspect().frames().collect();
+        self.frames = self.turn.inspect().frames().collect();
         self.selected_frame = self.selected_frame.min(self.frames.len().saturating_sub(1));
         self.values.clear();
         self.value_targets.clear();
         self.values_offset = 0;
-        if let Some(result) = self.invocation.result() {
+        if let Some(result) = self.turn.result() {
             self.status = match result {
                 Ok(_) => "RETURNED · committed VM outputs".into(),
                 Err(error) => format!("TRAPPED · {}", render::trap_text(&error.trap)),
             };
         }
-        if let Some(request) = self.invocation.pending_host_call() {
+        if let Some(request) = self.turn.pending_host_call() {
             self.status = format!(
                 "AWAITING HOST · {} · h dispatch",
                 describe::preview(request.symbol(), 60)
@@ -334,7 +365,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             self.show_location_in(location, true);
             return;
         }
-        if let Some(result) = self.invocation.result() {
+        if let Some(result) = self.turn.result() {
             match result {
                 Ok(outputs) => {
                     self.status = "RETURNED · committed VM outputs".into();
@@ -373,7 +404,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             }
         } else if let Some(frame) = self.frames.get(self.selected_frame).cloned() {
             self.show_location(frame.location);
-            let mut inspection = self.invocation.inspect();
+            let mut inspection = self.turn.inspect();
             if !self.roots
                 && let Some(registers) = inspection.registers(&frame.activation)
             {
@@ -397,7 +428,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         if self.roots {
             self.values.clear();
             self.value_targets.clear();
-            let mut inspection = self.invocation.inspect();
+            let mut inspection = self.turn.inspect();
             let mut count = 0_usize;
             inspection.visit_objects(|root| {
                 count += 1;
@@ -450,7 +481,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                 .push("Add host heap/globals/external roots before collection.".into());
         }
         if let Some(&ValueTarget::Aggregate(handle)) = self.value_path.last() {
-            let heap = self.invocation.aggregates();
+            let heap = self.turn.aggregates();
             self.values.clear();
             self.value_targets.clear();
             let kind = match heap.agg_type(handle) {
@@ -502,7 +533,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                 .push("Object state unavailable: no host ObjectInspector attached.".into());
             return;
         };
-        let Some(view) = inspector.inspect(self.invocation.host(), object, 256) else {
+        let Some(view) = inspector.inspect(self.turn.host(), object, 256) else {
             self.values
                 .push("Object state unavailable from the host inspector.".into());
             return;
@@ -549,11 +580,11 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
     }
 
     fn start_motion(&mut self, kind: KeyCode) {
-        if self.invocation.pending_host_call().is_some() {
+        if self.turn.pending_host_call().is_some() {
             self.refresh();
             return;
         }
-        if self.invocation.result().is_some() {
+        if self.turn.result().is_some() {
             return;
         }
         self.origin_selected = false;
@@ -585,7 +616,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         let precise =
             !self.breakpoints.is_empty() || !matches!(self.motion, Some(Motion::Continue));
         for _ in 0..if precise { 512 } else { 1 } {
-            let leaf = self.invocation.inspect().frames().next();
+            let leaf = self.turn.inspect().frames().next();
             let Some(leaf) = leaf else {
                 self.motion = None;
                 break;
@@ -597,13 +628,13 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             }
             self.skip_breakpoint = false;
             if !matches!(
-                self.invocation.resume(if precise { 1 } else { 512 }),
+                self.turn.drive(if precise { 1 } else { 512 }),
                 Ok(RunStatus::Suspended)
             ) {
                 self.motion = None;
                 break;
             }
-            let now = self.invocation.inspect();
+            let now = self.turn.inspect();
             let stop = match &self.motion {
                 Some(Motion::Over(id)) => {
                     now.frames().next().is_some_and(|f| &f.activation == id)
@@ -714,8 +745,8 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.motion = None;
-                if self.invocation.result().is_none() {
-                    self.status = if self.invocation.pending_host_call().is_some() {
+                if self.turn.result().is_none() {
+                    self.status = if self.turn.pending_host_call().is_some() {
                         "AWAITING HOST · left terminal view; completion required".into()
                     } else {
                         "PAUSED · left terminal view".into()
@@ -731,8 +762,8 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
             KeyCode::Char('c' | 'n' | 'u') => self.start_motion(key.code),
             KeyCode::Char(' ') => {
                 self.motion = None;
-                if self.invocation.result().is_none() {
-                    self.status = if self.invocation.pending_host_call().is_some() {
+                if self.turn.result().is_none() {
+                    self.status = if self.turn.pending_host_call().is_some() {
                         "AWAITING HOST · completion required; h dispatch".into()
                     } else {
                         "PAUSED · requested by user".into()
@@ -758,7 +789,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
             KeyCode::Char('b') => {
                 if self.showing_origin {
                     self.status =
-                        "External caller belongs to another invocation; g returns to this code."
+                        "External caller belongs to another computation; g returns to this code."
                             .into();
                     return true;
                 }
@@ -769,7 +800,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                         .is_some_and(|f| f.instructions().any(|i| i.pc == loc.pc))
                     {
                         self.motion = None;
-                        if self.invocation.result().is_none() {
+                        if self.turn.result().is_none() {
                             self.status = "PAUSED · join declaration has no execution step; choose next instruction".into();
                         }
                         return true;
@@ -785,7 +816,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                 self.selected_frame = 0;
                 if let Some(frame) = self.frames.first() {
                     self.show_location(frame.location);
-                } else if let Some(Err(trap)) = self.invocation.result() {
+                } else if let Some(Err(trap)) = self.turn.result() {
                     self.show_location(TraceLocation {
                         unit: trap.unit,
                         func: trap.func,
@@ -795,7 +826,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                 self.refresh();
             }
             KeyCode::Char('h') => {
-                if let Some(request) = self.invocation.pending_host_call() {
+                if let Some(request) = self.turn.pending_host_call() {
                     let _ = request.dispatch();
                 } else {
                     return true;

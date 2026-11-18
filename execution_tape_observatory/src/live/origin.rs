@@ -1,12 +1,12 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Causal context from the actual host request that initiated another invocation.
+//! Causal context from the actual host request that initiated another turn.
 
 use super::*;
 use execution_tape::{
     verifier::VerifiedProgram,
-    vm::{InvocationInspection, PendingHostCall},
+    vm::{ComputationInspection, PendingHostCall},
 };
 
 pub(super) struct RequestOrigin<'a> {
@@ -14,7 +14,7 @@ pub(super) struct RequestOrigin<'a> {
     pub(super) location: TraceLocation,
     pub(super) symbol: String,
     pub(super) arguments: Vec<String>,
-    inspection: InvocationInspection<'a>,
+    inspection: ComputationInspection<'a>,
     pub(super) sources: Option<BoundSources<'a>>,
 }
 impl<'a> RequestOrigin<'a> {
@@ -83,7 +83,7 @@ impl<'a> RequestOrigin<'a> {
 fn caller_value(value: ValueRef<'_>) -> String {
     match value {
         ValueRef::Agg(_) | ValueRef::Closure(_) => {
-            "caller-owned aggregate/capture; inspect in its invocation".into()
+            "caller-owned aggregate/capture; inspect in its computation".into()
         }
         ValueRef::Obj(object) => format!(
             "object #{} · caller host type {}",
@@ -94,10 +94,10 @@ fn caller_value(value: ValueRef<'_>) -> String {
 }
 
 impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
-    /// Links this invocation to the actual yielded request that initiated it.
+    /// Links this turn to the actual yielded request that initiated it.
     ///
     /// The live stack gains a selectable external-caller row with its exact instruction/source
-    /// and bounded argument previews. It is causal context across independent invocations,
+    /// and bounded argument previews. It is causal context across independent turns,
     /// without inventing a guest activation or interpreting foreign handles in this VM/host.
     /// The borrowed request cannot complete while this view is using its context. Optional
     /// caller source maps must match that request's exact program, independently of this code.
@@ -126,13 +126,13 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         true
     }
 
-    /// Leaves presentation and returns the invocation, preserving its current pending state.
+    /// Leaves presentation and returns the turn, preserving its current pending state.
     ///
     /// Embeddings can inspect a yielded call, leave the UI, then complete it or hand it back
     /// to their scheduler. Unlike dropping the explorer, this does not cancel unfinished work.
     #[must_use]
-    pub fn into_invocation(self) -> Invocation<'vm, H> {
-        self.invocation
+    pub fn into_turn(self) -> Turn<'vm, H> {
+        self.turn
     }
 
     /// The program shown for `unit`: the external caller's, or that unit's in this VM.
@@ -140,18 +140,18 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         if self.showing_origin {
             self.origin.as_ref().expect("caller code").program
         } else {
-            self.invocation
+            self.turn
                 .units()
                 .program(unit)
-                .map_or_else(|| &**self.invocation.program(), |program| &**program)
+                .map_or_else(|| &**self.turn.program(), |program| &**program)
         }
     }
 
     /// Whether `unit` runs the entry unit's program, which attached sources describe.
     pub(super) fn entry_code(&self, unit: UnitId) -> bool {
-        self.invocation
+        self.turn
             .units()
             .program(unit)
-            .is_some_and(|program| std::sync::Arc::ptr_eq(program, self.invocation.program()))
+            .is_some_and(|program| std::sync::Arc::ptr_eq(program, self.turn.program()))
     }
 }

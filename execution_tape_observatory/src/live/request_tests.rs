@@ -11,7 +11,7 @@ use execution_tape::{
     source::{SourceDocument, SourceId, SourceLimits, SourceMapping},
     value::FuncId,
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, Vm},
+    vm::{Limits, TurnOptions, Vm},
 };
 use ratatui::crossterm::event::KeyModifiers;
 
@@ -105,25 +105,25 @@ fn awaiting_host_is_explicit_stepping_waits_and_only_explicit_host_dispatch_has_
         .start(
             FuncRef::new(unit, entry),
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     let mut view = LiveExplorer::new(call).sources(&sources).unwrap();
     assert_eq!(view.step().unwrap(), RunStatus::AwaitingHost);
-    let fuel = view.invocation.remaining_fuel();
+    let fuel = view.turn.remaining_fuel();
     let text = view.render_text(140, 42).unwrap();
     assert!(text.contains("AWAITING HOST"));
     assert!(text.contains("Object.send"));
     assert!(text.contains("receiver.increment()"));
     assert!(text.contains("waiting for return"));
-    assert_eq!(view.invocation.host().calls, 0);
+    assert_eq!(view.turn.host().calls, 0);
     key(&mut view, KeyCode::Char('s'));
     key(&mut view, KeyCode::Char('c'));
     view.tick();
-    assert_eq!(view.invocation.host().calls, 0);
-    assert_eq!(view.invocation.remaining_fuel(), fuel);
+    assert_eq!(view.turn.host().calls, 0);
+    assert_eq!(view.turn.remaining_fuel(), fuel);
     key(&mut view, KeyCode::Char('h'));
-    assert_eq!(view.invocation.host().calls, 1);
+    assert_eq!(view.turn.host().calls, 1);
     assert!(
         view.result().is_none(),
         "host dispatch does not execute the guest return"
@@ -154,17 +154,17 @@ fn leaving_presentation_preserves_a_pending_invocation_for_external_completion()
         .start(
             FuncRef::new(unit, entry),
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
     let mut view = LiveExplorer::new(call);
     view.step().unwrap();
-    let mut call = view.into_invocation();
+    let mut call = view.into_turn();
     call.pending_host_call()
         .unwrap()
         .complete(&mut [Value::I64(99)], Ok(0))
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(call.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(call.result().unwrap().unwrap(), &[Value::I64(99)]);
     assert_eq!(call.host().calls, 0);
 }
@@ -185,10 +185,10 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
         .start(
             FuncRef::new(unit, caller_entry),
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(parent.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(parent.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let request = parent.pending_host_call().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
     vm.aggregates_mut()
@@ -199,7 +199,7 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
         .start(
             FuncRef::new(unit, callee_entry),
             &[],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     let mut view = LiveExplorer::new(call)
@@ -217,13 +217,13 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     assert!(text.contains("real_caller → host Object.send"));
     assert!(text.contains("method.expr"));
     assert!(text.contains("Child code"));
-    assert!(text.contains("CALLER WAITING · Object.send · controls run this invocation"));
+    assert!(text.contains("CALLER WAITING · Object.send · controls run this turn"));
     view.focus = Focus::Stack;
     key(&mut view, KeyCode::Down);
     assert!(view.origin_selected);
     let text = view.render_text(160, 48).unwrap();
     assert!(text.contains("CALLER INSTRUCTIONS"));
-    assert!(text.contains("controls run this invocation"));
+    assert!(text.contains("controls run this turn"));
     assert!(text.contains("caller.expr"));
     assert!(text.contains("receiver.increment()"));
     assert!(text.contains("host Object.send"));
@@ -246,10 +246,10 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     );
     key(&mut view, KeyCode::Char('b'));
     assert!(view.breakpoints.is_empty());
-    assert!(view.status.contains("another invocation"));
+    assert!(view.status.contains("another computation"));
     key(&mut view, KeyCode::Char('h'));
     assert_eq!(
-        view.invocation.host().calls,
+        view.turn.host().calls,
         0,
         "h cannot dispatch an external ancestor's request"
     );
@@ -275,7 +275,7 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     );
     drop(view);
     request.complete(&mut [Value::I64(42)], Ok(0)).unwrap();
-    assert_eq!(parent.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(parent.drive(u64::MAX).unwrap(), RunStatus::Complete);
 }
 
 #[test]
@@ -290,19 +290,15 @@ fn stale_parent_sources_are_rejected_independently_of_the_child_source_map() {
         .start(
             FuncRef::new(unit, entry),
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    parent.resume(1).unwrap();
+    parent.drive(1).unwrap();
     let request = parent.pending_host_call().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let unit = vm.install(callee.clone()).unwrap();
     let call = vm
-        .start(
-            FuncRef::new(unit, target),
-            &[],
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, target), &[], TurnOptions::default())
         .unwrap();
     assert!(matches!(
         LiveExplorer::new(call).requested_by(&request, Some(&wrong_sources)),
@@ -318,20 +314,21 @@ fn a_saved_computation_can_use_local_sources_and_return_to_its_scheduler() {
     let callable = Callable::function(Arc::new(program), entry).unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let call = callable
-        .start(&mut vm, unit, vec![], InvocationOptions::default())
+    let call = vm
+        .start(callable.at(unit), vec![], TurnOptions::default())
         .unwrap();
     let saved = {
         let mut view = LiveExplorer::new(call).sources(&sources).unwrap();
         assert!(view.render_text(120, 40).unwrap().contains("method.expr"));
         view.step().unwrap();
-        view.into_invocation()
-            .save()
-            .expect("waiting between quanta")
+        let Ok(TurnOutcome::Saved(id)) = view.finish() else {
+            panic!("waiting between quanta")
+        };
+        id
     };
     drop(sources);
     drop(callable);
-    let mut call = vm.resume(saved, InvocationOptions::default()).unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    let mut call = vm.resume(saved, TurnOptions::default()).unwrap();
+    assert_eq!(call.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(call.result().unwrap().unwrap(), [Value::I64(42)]);
 }

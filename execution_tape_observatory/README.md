@@ -1,6 +1,6 @@
 # Execution Tape Observatory
 
-A terminal browser for compiled Execution Tape programs, live invocations and real, owned recordings. The optional `std` UI borrows a
+A terminal browser for compiled Execution Tape programs, live turns and real, owned recordings. The optional `std` UI borrows a
 recording; capture, immutable value ownership, completeness and replay remain in
 `execution_tape::recording`. The core VM and recorder have no terminal dependencies.
 
@@ -27,26 +27,26 @@ source. Focus uses a green double border. `Enter` opens the first visible value'
 closure environment, or follows a host object through an attached inspector; `Backspace` goes up.
 The `▸` row in Values is the value Enter will open. Values and source scroll with arrows or `j`/`k`.
 
-Invocations started with `InvocationOptions::yield_host_calls()` show **AWAITING HOST** at an
+Turns started with `TurnOptions::yield_host_calls()` show **AWAITING HOST** at an
 admitted request. Stepping/continuing does not silently invoke it. `h` explicitly dispatches
 through the embedding's existing host and finishes that instruction, including its real effects.
-`LiveExplorer::into_invocation` leaves presentation while preserving the pending handle for an
+`LiveExplorer::into_turn` leaves presentation while preserving the pending handle for an
 external or asynchronous completion. Dropping an unfinished explorer still cancels its guest.
 
-When a host request initiates another invocation, attach
+When a host request initiates another turn, attach
 `LiveExplorer::requested_by(&request, Some(&caller_sources))`. The stack gains a selectable
 **external caller** row. Select it to inspect the requesting instruction, its exact authored
 source, and bounded arguments/initialized registers. Caller register analysis is built on first selection;
 unreturned destinations remain unavailable. Caller and child maps are validated independently;
 overlapping local function IDs do not imply the same code. Foreign handles are not opened in
-the child's heap or host. This is one causal link across independent invocations, without a
+the child's heap or host. This is one causal link across independent turns, without a
 synthetic guest activation or a scheduler-wide task graph. Stepping still controls the child;
-breakpoints in the external caller belong to its own invocation. `g` returns to current code.
+breakpoints in the external caller belong to its own turn. `g` returns to current code.
 The gold **CALLER WAITING** header remains visible while browsing either program. The main
-status describes the controlled invocation: it can be `PAUSED` or `RETURNED` while its caller
+status describes the controlled turn: it can be `PAUSED` or `RETURNED` while its caller
 still awaits the embedding's host reply. Selecting a caller does not transfer execution control.
 Yielding hands a request to the embedding; it does not imply an asynchronous operation or an
-I/O wait. An embedding can answer immediately, run another invocation, or await external work.
+I/O wait. An embedding can answer immediately, run another turn, or await external work.
 
 Attach `LiveExplorer::object_inspector` with an `ObjectInspector<H>` (or a closure) to project
 actual host state as an `ObjectView`. It runs on demand while an object view is open, between
@@ -65,16 +65,16 @@ value. Unavailable values are never presented as zero or false. `o` switches to 
 host-object references, including VM aggregate fields; this is not a minimal liveness set or
 a complete root set for an embedding language. The host still owns its objects and collection.
 
-An invocation can borrow local sources and caller context for a temporary view, then return
-to its scheduler with `into_invocation`, which can save it until the next step. The explorer borrows view data
+A turn can borrow local sources and caller context for a temporary view, then return
+to its scheduler with `into_turn`, which can save it until the next step. The explorer borrows view data
 separately from VM data. Migration for explicit type annotations: use
 `LiveExplorer<'view, 'vm, H>`; constructor and method calls continue to infer these lifetimes.
-The source map is validated against the invocation's exact code and is not retained by the VM.
+The source map is validated against the turn's exact code and is not retained by the VM.
 
 Embed `LiveExplorer::new(vm.start(...)?).sources(&source_map)?` with your actual host and program.
-`run(&mut self)` leaves the invocation available on return; dropping an unfinished explorer cancels
-guest work. `step`, bounded `resume`, `result`, `take_outputs` and `render_text` also work without
-terminal modes. Direct `resume` uses VM quanta and ignores UI breakpoints. Hard resource budgets
+`run(&mut self)` leaves the turn available on return; dropping an unfinished explorer cancels
+guest work. `step`, bounded `drive`, `result`, `finish` and `render_text` also work without
+terminal modes. Direct `drive` uses VM quanta and ignores UI breakpoints. The turn's budgets
 accumulate across quanta. Continuation polls input between bounded batches; host calls are
 synchronous and indivisible and can block input. **Host effects are real and are not rolled back.**
 Trace scopes measure logical elapsed latency, including time paused. This does not edit registers,
@@ -111,7 +111,7 @@ open at the reported function/instruction when one is available; `d` returns to 
 Program-wide failures do not invent an instruction location. A file that cannot be decoded reports
 an error before terminal mode starts. Files are limited to 64 MiB of encoded input; decoded data and
 verification use additional memory. Successfully displaying a rejected program is a successful
-browser invocation; both the program header and the Details panel title explicitly say
+browser turn; both the program header and the Details panel title explicitly say
 `VERIFIED` or `REJECTED`. Details starts with the outcome and, for rejection, the reason.
 
 Use `[` and `]` to switch between functions, imports, constants and aggregate types. `/` searches
@@ -156,14 +156,14 @@ The example reads three fixed samples (7, 5, 9) through `read_sample`, doubles e
 code through the guest function `read_and_double`, and passes each `(index, sample, doubled)` tuple to `store_result`. It returns their sum,
 42. The six real host calls are captured before the original VM and host state are dropped.
 The initial view selects the first host call and shows the final guest result above it.
-Recorded events are the invocation, host calls and completion; guest instructions execute between
+Recorded events are the turn, host calls and completion; guest instructions execute between
 these events. The selected call names its host function and signature. One call-values pane shows
 blue `→ Argument` rows sent to the host and green `← Return` rows received before VM signature
 checks. Values start with their contents; aggregate IDs are secondary. Open a tuple, array, struct
 or closure environment to inspect its immediate fields.
 
 The application enters `double_and_sum` through the VM; in this demo the Rust `demo_recording`
-function calls `Vm::run`. The header and first event show the application-to-guest invocation with
+function calls `Vm::run`. The header and first event show the application-to-guest turn with
 its captured inputs. This boundary sits outside the guest stack; the application's native Rust
 call stack is not captured.
 

@@ -17,7 +17,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             Constraint::Length(2),
         ])
         .split(area);
-        let color = if self.invocation.result().is_some_and(|r| r.is_err()) {
+        let color = if self.turn.result().is_some_and(|r| r.is_err()) {
             ROSE
         } else if self.motion.is_some() {
             GOLD
@@ -29,7 +29,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
                 "LIVE · {} · {}",
                 self.status,
                 describe::preview(
-                    self.invocation
+                    self.turn
                         .program()
                         .program()
                         .name()
@@ -39,16 +39,16 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             )),
             Line::raw(format!(
                 "Fuel remaining: {} · work: {} aggregate units / {} payload bytes · {} breakpoints",
-                self.invocation.remaining_fuel(),
-                self.invocation.data_work().aggregate,
-                self.invocation.data_work().payload,
+                self.turn.remaining_fuel(),
+                self.turn.data_work().aggregate,
+                self.turn.data_work().payload,
                 self.breakpoints.len()
             )),
         ];
         if let Some(origin) = &self.origin {
             header.push(Line::styled(
                 format!(
-                    "CALLER WAITING · {} · controls run this invocation",
+                    "CALLER WAITING · {} · controls run this turn",
                     describe::preview(&origin.symbol, 24)
                 ),
                 Style::default().fg(GOLD),
@@ -108,7 +108,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
                     format!(
                         "#{} {} · {}",
                         f.activation.ordinal(),
-                        describe::function(self.invocation.program().program(), f.location.func),
+                        describe::function(self.turn.program().program(), f.location.func),
                         if f.waiting_for_return {
                             "waiting for return"
                         } else {
@@ -170,7 +170,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             " AGGREGATE CONTENTS "
         } else if self.roots {
             " HOST OBJECT REFERENCES "
-        } else if self.invocation.result().is_some() {
+        } else if self.turn.result().is_some() {
             " FINAL OUTCOME "
         } else {
             " PAUSED REGISTERS "
@@ -223,7 +223,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
                 .get(self.selected_frame)
                 .map(|f| f.location)
                 .or_else(|| {
-                    self.invocation
+                    self.turn
                         .result()
                         .and_then(Result::err)
                         .map(|t| TraceLocation {
@@ -290,7 +290,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
                     self.focus == Focus::Code,
                 )
                 .title_bottom(if self.showing_origin {
-                    "external request · breakpoints belong to its own invocation"
+                    "external request · breakpoints belong to its own computation"
                 } else {
                     "▸ next/pending · ● breakpoint · static flow"
                 }),

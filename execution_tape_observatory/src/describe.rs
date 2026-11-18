@@ -207,13 +207,13 @@ pub(super) fn code(record: &Recording, unit: UnitId) -> &Program {
 /// A function of any recorded unit, prefixed by its unit when that is not the entry unit.
 pub(super) fn function_ref(record: &Recording, func: FuncRef) -> String {
     let name = function(code(record, func.unit), func.func);
-    match record.invocation() {
+    match record.entry() {
         Some(entry) if entry.entry.unit != func.unit => format!("u{}:{name}", func.unit.0),
         _ => name,
     }
 }
 
-/// A VM tag of the recorded invocation.
+/// A VM tag of the recorded turn.
 pub(super) fn vm_tag(record: &Recording, tag: TagRef) -> String {
     record
         .tag_name(tag)

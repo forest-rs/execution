@@ -178,7 +178,7 @@ impl<'a> View<'a> {
             return self.record.instruction(index).map(|step| step.location);
         }
         if self.selected == 0 {
-            return self.record.invocation().map(|entry| TraceLocation {
+            return self.record.entry().map(|entry| TraceLocation {
                 unit: entry.entry.unit,
                 func: entry.entry.func,
                 pc: Pc(0),
@@ -362,7 +362,7 @@ impl<'a> View<'a> {
             } else if self.selected == 0 {
                 (
                     "arg",
-                    self.record.invocation().map_or(&[], |entry| entry.args),
+                    self.record.entry().map_or(&[], |entry| entry.args),
                     &[],
                 )
             } else if let Some(boundary) = self.boundary(self.selected) {

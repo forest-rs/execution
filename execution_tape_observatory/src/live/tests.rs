@@ -12,7 +12,7 @@ use execution_tape::{
     source::{SourceDocument, SourceId, SourceLimits, SourceMapping},
     value::FuncId,
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, Vm},
+    vm::{Limits, TurnOptions, Vm},
 };
 use ratatui::{Terminal, backend::TestBackend, crossterm::event::KeyModifiers};
 
@@ -171,11 +171,7 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
     let args = [Value::Obj(object(42))];
     let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
     let reads = Rc::clone(&queries);
     let mut view =
@@ -208,8 +204,8 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
         });
     view.render_text(140, 42).unwrap();
     assert_eq!(queries.get(), 0, "no projection before opening an object");
-    let fuel = view.invocation.remaining_fuel();
-    let work = view.invocation.data_work();
+    let fuel = view.turn.remaining_fuel();
+    let work = view.turn.data_work();
     let location = view.frames[0].location;
     view.focus = Focus::Values;
     view.values_offset = 1; // receiver argument, after unit effect token
@@ -235,8 +231,8 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
     key(&mut view, KeyCode::Enter);
     assert!(view.values[0].contains("unavailable from the host inspector"));
     assert!(!view.values[0].contains("collected"));
-    assert_eq!(view.invocation.remaining_fuel(), fuel);
-    assert_eq!(view.invocation.data_work(), work);
+    assert_eq!(view.turn.remaining_fuel(), fuel);
+    assert_eq!(view.turn.data_work(), work);
     assert_eq!(view.frames[0].location, location);
 }
 
@@ -247,11 +243,7 @@ fn missing_inspector_and_omitted_fields_are_explicit_and_root_rows_navigate_corr
     let args = [Value::Obj(object(42))];
     let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.focus = Focus::Values;
@@ -286,7 +278,7 @@ fn missing_inspector_and_omitted_fields_are_explicit_and_root_rows_navigate_corr
     view.inspect_object(object(42));
     assert!(matches!(view.focus, Focus::Values));
     assert!(view.render_text(140, 42).unwrap().contains("Wide"));
-    assert_eq!(view.invocation.host().calls, 0);
+    assert_eq!(view.turn.host().calls, 0);
 }
 fn finish_motion(view: &mut LiveExplorer<'_, '_, Counter>) {
     for _ in 0..20 {
@@ -310,10 +302,10 @@ fn live_frames_source_stepping_and_aggregate_contents_are_real() {
         .unwrap();
     let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
-    assert_eq!(view.invocation.host().calls, 0);
+    assert_eq!(view.turn.host().calls, 0);
     assert!(view.render_text(120, 36).unwrap().contains("unavailable"));
     view.step().unwrap(); // const
     let root = view.frames[0].activation.clone();
@@ -334,12 +326,12 @@ fn live_frames_source_stepping_and_aggregate_contents_are_real() {
     key(&mut view, KeyCode::Char('u'));
     finish_motion(&mut view);
     assert_eq!(view.frames[0].activation, root);
-    assert_eq!(view.invocation.host().calls, 0);
+    assert_eq!(view.turn.host().calls, 0);
     assert!(view.values.iter().any(|v| v == "r2 · i64 = 42"));
     key(&mut view, KeyCode::Char('n')); // host call is atomic
     finish_motion(&mut view);
-    assert_eq!(view.invocation.host().calls, 1);
-    view.resume(100).unwrap();
+    assert_eq!(view.turn.host().calls, 1);
+    view.drive(100).unwrap();
     assert!(view.render_text(120, 36).unwrap().contains("RETURNED"));
     view.focus = Focus::Values;
     key(&mut view, KeyCode::Enter);
@@ -358,8 +350,9 @@ fn live_frames_source_stepping_and_aggregate_contents_are_real() {
             .contains("HOST OBJECT REFERENCES")
     );
     key(&mut view, KeyCode::Char('o'));
-    let outputs = view.take_outputs().unwrap();
-    drop(view);
+    let Ok(TurnOutcome::Returned(outputs)) = view.finish() else {
+        panic!("the computation returned")
+    };
     let [Value::Agg(tuple)] = outputs.as_slice() else {
         panic!("expected tuple")
     };
@@ -375,7 +368,7 @@ fn breakpoints_stop_before_effects_and_step_over_stops_after_callee_return() {
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.step().unwrap();
@@ -387,7 +380,7 @@ fn breakpoints_stop_before_effects_and_step_over_stops_after_callee_return() {
     // Move back to entry in a fresh run; set a future instruction breakpoint through UI keys.
     drop(view);
     let invocation = vm
-        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.code_selected = view.code.iter().position(|i| i.0 == publish).unwrap();
@@ -395,12 +388,12 @@ fn breakpoints_stop_before_effects_and_step_over_stops_after_callee_return() {
     key(&mut view, KeyCode::Char('c'));
     finish_motion(&mut view);
     assert_eq!(view.frames[0].location.pc, publish);
-    assert_eq!(view.invocation.host().calls, 0);
+    assert_eq!(view.turn.host().calls, 0);
     assert!(view.status.contains("breakpoint"));
     key(&mut view, KeyCode::Char('c')); // intentionally pass the current breakpoint once
     finish_motion(&mut view);
     assert!(view.result().unwrap().is_ok());
-    assert_eq!(view.invocation.host().calls, 1);
+    assert_eq!(view.turn.host().calls, 1);
 }
 
 #[test]
@@ -409,10 +402,10 @@ fn terminal_trap_has_no_fabricated_live_values_and_keeps_source_location() {
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
-    let error = view.resume(100).unwrap_err();
+    let error = view.drive(100).unwrap_err();
     assert!(view.frames.is_empty());
     assert_eq!(
         view.location(),
@@ -427,9 +420,9 @@ fn terminal_trap_has_no_fabricated_live_values_and_keeps_source_location() {
     assert!(text.contains("No active guest frames"));
     assert!(!text.contains("r2 · i64 ="));
     assert!(view.values[0].contains("discarded"));
-    let calls = view.invocation.host().calls;
-    assert_eq!(view.resume(100).unwrap_err().to_string(), error.to_string());
-    assert_eq!(view.invocation.host().calls, calls);
+    let calls = view.turn.host().calls;
+    assert_eq!(view.drive(100).unwrap_err().to_string(), error.to_string());
+    assert_eq!(view.turn.host().calls, calls);
 }
 
 #[test]
@@ -438,7 +431,7 @@ fn focus_uses_double_borders_and_color_and_small_terminal_reports_current_size()
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
@@ -485,7 +478,7 @@ fn join_declarations_cannot_create_unreachable_breakpoints_and_transfers_are_ato
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], TurnOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.code_selected = view.code.iter().position(|i| i.0 == declaration).unwrap();
@@ -493,7 +486,7 @@ fn join_declarations_cannot_create_unreachable_breakpoints_and_transfers_are_ato
     assert!(view.breakpoints.is_empty());
     assert!(view.status.contains("no execution step"));
     // Two constants and one simultaneous transfer. The declaration consumes no quantum.
-    view.resume(3).unwrap();
+    view.drive(3).unwrap();
     assert!(view.values.iter().any(|v| v == "r1 · i64 = 22"));
     assert!(view.values.iter().any(|v| v == "r2 · i64 = 11"));
     assert_eq!(view.step().unwrap(), RunStatus::Complete);
@@ -548,7 +541,7 @@ fn stepping_into_another_unit_shows_that_units_code_and_keys_its_breakpoints() {
         .start(
             FuncRef::new(caller, FuncId(0)),
             &args,
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     let mut view = LiveExplorer::new(invocation);

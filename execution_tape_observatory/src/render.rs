@@ -209,8 +209,8 @@ fn title(view: &View<'_>, index: usize) -> String {
         );
     }
     if index == 0 {
-        return view.record.invocation().map_or_else(
-            || "Invocation · missing".into(),
+        return view.record.entry().map_or_else(
+            || "Entry · missing".into(),
             |entry| format!("App → {}", describe::function_ref(view.record, entry.entry)),
         );
     }
@@ -317,7 +317,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         Line::from(format!(
             " {} · {}",
             view.record.program().program().name().map_or_else(
-                || view.record.invocation().map_or_else(
+                || view.record.entry().map_or_else(
                     || "Unknown invocation".into(),
                     |entry| describe::function_ref(view.record, entry.entry)
                 ),
@@ -349,8 +349,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             Style::default().fg(MUTED),
         ),
         Line::styled(
-            view.record.invocation().map_or_else(
-                || " Invocation inputs unavailable".into(),
+            view.record.entry().map_or_else(
+                || " Entry inputs unavailable".into(),
                 |entry| {
                     format!(
                         " Application → {}({}) · VM invocation",
@@ -734,14 +734,14 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             ValueSection {
                 title: format!(
                     " INPUTS TO {} ",
-                    view.record.invocation().map_or_else(
+                    view.record.entry().map_or_else(
                         || "GUEST".into(),
                         |entry| describe::function_ref(view.record, entry.entry)
                     )
                 ),
                 note: "Values supplied when execution started".into(),
                 label: "Input",
-                values: view.record.invocation().map_or(&[], |entry| entry.args),
+                values: view.record.entry().map_or(&[], |entry| entry.args),
                 base: 0,
                 empty: if view.calls.is_empty() {
                     "No entry arguments.\nEnd selects the guest outcome."

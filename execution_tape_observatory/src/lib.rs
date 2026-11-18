@@ -3,7 +3,7 @@
 
 //! Browse a compiled program or explore a borrowed in-memory VM recording in a terminal.
 //!
-//! [`LiveExplorer`] steps a real borrow-scoped invocation with an embedding-supplied host.
+//! [`LiveExplorer`] steps a real borrow-scoped turn with an embedding-supplied host.
 //! It shows live activations, initialized values and exact authored source, with instruction
 //! breakpoints and cooperative continuation. Host calls perform real effects when executed.
 //!
@@ -13,7 +13,7 @@
 //! frontend source snapshots through [`execution_tape::source::SourceMap`]. Span IDs remain opaque; static
 //! register declarations are not runtime values.
 //!
-//! [`explore`] connects invocation/host-call/outcome navigation, immediate aggregate inspection,
+//! [`explore`] connects turn/host-call/outcome navigation, immediate aggregate inspection,
 //! source instruction context, captured guest callers and checked replay. [`render_text`] renders the same initial view
 //! without taking over a terminal. Incomplete captures remain visible; replay reports their fault.
 //! This optional `std` adapter does not add dependencies to the VM or recording crates.
