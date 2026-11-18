@@ -980,7 +980,7 @@ impl<H: Host> Vm<H> {
     /// Relinking executes no code, spends no execution budget and allocates nothing: it
     /// overwrites one entry of the unit's link table, which [`Units::metadata_bytes`] counts.
     /// No history is kept, so repeated relinking does not grow the VM; a recording snapshots
-    /// the targets when its invocation starts. A rejected relink changes nothing.
+    /// the targets when its turn starts. A rejected relink changes nothing.
     pub fn relink(
         &mut self,
         unit: UnitId,

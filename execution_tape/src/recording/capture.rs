@@ -24,16 +24,16 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 /// Owns boundary observations for one computation and the units it runs, across the
-/// invocations that save and resume it.
+/// turns that save and resume it.
 ///
 /// At entry the recorder snapshots the VM's units and tags, sharing their programs; installs
-/// while the invocation is suspended are recorded where they happen. Replay rebuilds the same
+/// while the turn is suspended are recorded where they happen. Replay rebuilds the same
 /// units and tags with the same identities.
 ///
 /// Pass [`Self::mask`] to the ordinary VM run, then consume the recorder with [`Self::finish`].
 /// Capture failure stops value/graph retention; guest execution and live host effects continue.
 /// The final VM trap is still retained when its payload budget permits. Create a new
-/// recorder for each computation, and pass it to every invocation that runs it. The recorder
+/// recorder for each computation, and pass it to every turn that runs it. The recorder
 /// never changes the VM, host or supplied values.
 pub struct Recorder {
     history: Option<alloc::boxed::Box<History>>,
@@ -69,19 +69,19 @@ pub struct Recorder {
     resumptions: Vec<Resumption>,
 }
 
-/// A recorded computation's state when its invocation saved it.
+/// A recorded computation's state when its turn saved it.
 #[derive(Clone, Copy)]
 struct Saved {
     sequence: usize,
     fuel: u64,
-    /// How many invocations ran the computation before the one that saved it.
-    invocation: u64,
+    /// How many turns ran the computation before the one that saved it.
+    turn: u64,
     /// The heap's end, which must not move before the computation is resumed.
     heap_end: u32,
 }
 
 impl Recorder {
-    /// Creates a recorder for an invocation entering a unit of `program`.
+    /// Creates a recorder for a turn entering a unit of `program`.
     ///
     /// The entry unit must run this same prepared instance; other units may run any program.
     pub fn new(program: Arc<VerifiedProgram>, limits: RecordLimits) -> Self {
@@ -115,7 +115,7 @@ impl Recorder {
         }
     }
 
-    /// Enables bounded instruction history. Configure before starting the invocation.
+    /// Enables bounded instruction history. Configure before starting the turn.
     ///
     /// Requests instruction callbacks in [`Self::mask`]. Reaching `max_steps` preserves a
     /// labelled prefix; boundary recording and guest execution continue normally.
@@ -226,7 +226,7 @@ impl Recorder {
     /// Records the VM's installs and tag definitions not yet recorded.
     ///
     /// `installed` is the observation sequence for those made after entry, during an
-    /// invocation or while the computation was saved; `None` records the store at entry. A
+    /// turn or while the computation was saved; `None` records the store at entry. A
     /// unit installed after entry is recorded with the links its program declares, which
     /// replay's install gives it too; [`Self::record_relinks`] records any relink since. A
     /// unit recorded at entry keeps its links as they are.
@@ -312,7 +312,7 @@ impl Recorder {
         }
     }
 
-    /// A new raise requires a started invocation whose previous exception, if any, was caught.
+    /// A new raise requires a started turn whose previous exception, if any, was caught.
     fn check_raise(&self) -> Result<(), CaptureFault> {
         if self.entry.is_none()
             || self.end.is_some()
@@ -423,6 +423,7 @@ impl Recorder {
                 aggregates,
                 limits,
                 resident_frames,
+                yields_suspensions,
                 work,
                 ..
             } => {
@@ -438,6 +439,7 @@ impl Recorder {
                     args,
                     limits: limits.clone(),
                     resident_frames,
+                    yields_suspensions,
                     work,
                 });
             }
@@ -870,7 +872,7 @@ impl TraceSink for Recorder {
             ValueEvent::Saved {
                 stack,
                 work,
-                invocation,
+                turn,
                 aggregates,
             } => {
                 if self.entry.is_none() || self.end.is_some() || self.saved.is_some() {
@@ -884,16 +886,17 @@ impl TraceSink for Recorder {
                 self.saved = Some(Saved {
                     sequence: self.sequence,
                     fuel: work.fuel,
-                    invocation,
+                    turn,
                     heap_end: aggregates.handle_end(),
                 });
                 return;
             }
             ValueEvent::Resumed {
                 stack,
-                invocation,
+                turn,
                 limits,
                 resident_frames,
+                yields_suspensions,
                 aggregates,
                 units,
             } => {
@@ -906,7 +909,7 @@ impl TraceSink for Recorder {
                     self.fail(CaptureFault::MissingEntry);
                     return;
                 }
-                if invocation != saved.invocation + 1 {
+                if turn != saved.turn + 1 {
                     self.fail(CaptureFault::Unrecorded);
                     return;
                 }
@@ -924,6 +927,7 @@ impl TraceSink for Recorder {
                     stored: self.store.len(),
                     limits: limits.clone(),
                     resident_frames,
+                    yields_suspensions,
                 });
                 return;
             }

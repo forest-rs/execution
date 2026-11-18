@@ -3,15 +3,18 @@
 
 //! Execution state the VM owns between runs and lends to one lease at a time.
 //!
-//! A run or an invocation borrows the VM's register file, control and work budget for its
+//! A run or a turn borrows the VM's register file, control and work budget for its
 //! duration and returns them when it ends, so their buffers are reused instead of rebuilt and no
-//! caller has to keep scratch storage of its own. An invocation moves the parts out of the lent
+//! caller has to keep scratch storage of its own. A turn moves the parts out of the lent
 //! box and back, which moves no buffer contents. While they are lent the VM records the lease:
-//! where its allocations begin. A lease that never returns, because its invocation was
+//! where its allocations begin. A lease that never returns, because its turn was
 //! forgotten or a host panicked mid-run, is settled the next time the VM lends, collects,
-//! registers or releases a group, or hands out its heap mutably, by discarding those allocations
-//! as a cancelled run would. An invocation whose outcome is final closes its lease first, so a
-//! forgotten finished invocation keeps its outputs, as a dropped one does.
+//! registers or releases a group, snapshots or retains values, or hands out its heap mutably, by
+//! discarding those allocations as a cancelled run would. A lease closes only when nothing is
+//! left to discard: a trap already discarded the turn's allocations, a finished turn published
+//! its returned values, and a saved computation keeps what it allocated. A returned turn that
+//! was never finished is settled like any other, so forgetting it discards its outputs as
+//! dropping it does.
 
 use super::*;
 
@@ -56,9 +59,9 @@ impl<H: Host> Vm<H> {
         self.lease = None;
     }
 
-    /// Ends the open lease's claim on the heap once its outcome is final, while it keeps the
-    /// execution state. A finished invocation keeps its committed outputs when dropped, and so
-    /// when forgotten: settling has nothing left to discard.
+    /// Ends the open lease's claim on the heap once nothing is left to discard: after a trap
+    /// rolled it back, when [`Turn::finish`] publishes returned values, or when a computation is
+    /// saved. Settling a closed lease discards nothing.
     pub(super) fn close_lease(&mut self) {
         self.lease = None;
     }
@@ -90,7 +93,7 @@ impl<H: Host> Vm<H> {
         self.exec = None;
     }
 
-    /// The budget the last run or invocation returned.
+    /// The budget the last run or turn returned.
     #[cfg(test)]
     pub(super) fn exec_budget(&self) -> &Budget {
         &self.exec.as_ref().expect("no lease is open").budget

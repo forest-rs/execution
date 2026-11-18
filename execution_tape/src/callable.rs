@@ -29,7 +29,7 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CallableError {
-    /// The invocation has no successful outputs to retain.
+    /// The turn has no successful outputs to retain.
     NoSuccessfulResult,
     /// The requested successful result slot is absent.
     OutputIndex {
@@ -39,7 +39,7 @@ pub enum CallableError {
         count: usize,
     },
     /// The value has no retained prepared-program owner. Obtain an owned result from a
-    /// callable invocation or tape graph node, or explicitly retain its original program.
+    /// callable turn or tape graph node, or explicitly retain its original program.
     MissingCodeOwner,
     /// The selected value is neither a function nor a closure.
     NotCallable {
@@ -134,8 +134,8 @@ pub(crate) struct Capture {
 /// representation rather than borrowing a VM heap. Source snapshots can be bound to
 /// [`Self::program`] in the same way as any verified program.
 ///
-/// [`Self::start`] creates the ordinary resumable invocation with this target. A closure's hidden
-/// environment is imported into that invocation's heap transaction. Existing invocations and
+/// [`Vm::start`](crate::vm::Vm::start) with [`Self::at`] starts the ordinary resumable turn with
+/// this target. A closure's hidden environment is imported into that turn's heap transaction. Existing turns and
 /// retained callables keep their original code even if an embedding replaces its lookup entry.
 /// A callable retains one program, so it captures function values of one unit only; starting it
 /// names the unit that runs its program. Host objects, mutable cells and their collection remain
@@ -266,7 +266,7 @@ impl Callable {
     /// Supply its actual prepared program. This declares the identity domain of all captured
     /// function/nominal type IDs; it does not relocate them to another program. Invalid target
     /// IDs and bodies without an environment argument are rejected. Value contracts are checked
-    /// when execution starts, with that invocation's normal contract-work budget.
+    /// when execution starts, with that turn's normal contract-work budget.
     pub fn from_snapshot(
         program: Arc<VerifiedProgram>,
         snapshot: ValueSnapshot,
@@ -378,7 +378,7 @@ impl Callable {
             .map(|capture| (capture.environment, capture.snapshot.aggregates()))
     }
     /// Logical work to import the immutable captures once, without performing the import.
-    /// Plain functions cost zero. User arguments move into the invocation without cloning their
+    /// Plain functions cost zero. User arguments move into the turn without cloning their
     /// byte/string payloads; this reports only the retained environment's copy debit.
     #[must_use]
     pub fn capture_work(&self) -> crate::vm::DataWork {

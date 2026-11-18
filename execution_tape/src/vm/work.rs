@@ -1,11 +1,11 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Work quantities shared by invocation inspection and embedding accounting.
+//! Work quantities shared by turn inspection and embedding accounting.
 
 use super::DataWork;
 
-/// Cumulative admitted work from an invocation, or a sum across independent invocations.
+/// Cumulative admitted work from a turn, or a sum across independent turns.
 ///
 /// Units match [`super::Limits`]. This is work accounting, not live memory or elapsed time.
 /// Checked arithmetic makes overflow and snapshots taken in the wrong order explicit.
@@ -37,7 +37,7 @@ impl ExecutionWork {
     }
 
     /// Subtracts an earlier snapshot, returning `None` if any counter regresses.
-    /// Snapshots must describe the same invocation; numeric counters cannot establish identity.
+    /// Snapshots must describe the same turn; numeric counters cannot establish identity.
     #[must_use]
     pub fn checked_sub(self, earlier: Self) -> Option<Self> {
         Some(Self {
@@ -63,7 +63,7 @@ mod tests {
         program::ValueType,
         trace::TraceMask,
         value::{FuncId, Value},
-        vm::{InvocationOptions, Limits, RunStatus, Vm},
+        vm::{Limits, RunStatus, TurnOptions, Vm},
     };
     use alloc::{vec, vec::Vec};
 
@@ -111,24 +111,24 @@ mod tests {
         let program = program();
         let mut vm = Vm::new(Producer, Limits::default());
         let unit = vm.install(program.clone()).unwrap();
-        let mut invocation = vm
+        let mut turn = vm
             .start(
                 FuncRef::new(unit, FuncId(0)),
                 &[],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
-        assert_eq!(invocation.work(), ExecutionWork::default());
-        assert_eq!(invocation.resume(10).unwrap(), RunStatus::AwaitingHost);
-        assert_eq!(invocation.work().host_calls, 1);
-        let before = invocation.work();
-        let mut request = invocation.pending_host_call().unwrap();
+        assert_eq!(turn.work(), ExecutionWork::default());
+        assert_eq!(turn.drive(10).unwrap(), RunStatus::AwaitingHost);
+        assert_eq!(turn.work().host_calls, 1);
+        let before = turn.work();
+        let mut request = turn.pending_host_call().unwrap();
         let aggregate = request
             .context()
             .tuple_new(vec![Value::Str("hello".into())])
             .unwrap();
         drop(request);
-        let staged = invocation.work();
+        let staged = turn.work();
         assert_eq!(
             staged.data,
             DataWork {
@@ -137,21 +137,20 @@ mod tests {
             }
         );
         assert_eq!(staged.checked_sub(before).unwrap().data, staged.data);
-        invocation
-            .pending_host_call()
+        turn.pending_host_call()
             .unwrap()
             .complete(&mut [Value::Agg(aggregate)], Ok(7))
             .unwrap();
-        assert_eq!(invocation.work().data, staged.data);
-        assert_eq!(invocation.resume(10).unwrap(), RunStatus::Complete);
-        let work = invocation.work();
+        assert_eq!(turn.work().data, staged.data);
+        assert_eq!(turn.drive(10).unwrap(), RunStatus::Complete);
+        let work = turn.work();
         assert_eq!(work.fuel, 9);
         assert_eq!(work.host_calls, 1);
         assert!(work.contract > 0);
         assert_eq!(work.data, staged.data);
-        assert_eq!(invocation.resume(10).unwrap(), RunStatus::Complete);
-        assert_eq!(invocation.work(), work);
-        drop(invocation);
+        assert_eq!(turn.drive(10).unwrap(), RunStatus::Complete);
+        assert_eq!(turn.work(), work);
+        drop(turn);
         // The ordinary unobserved path remains usable without a work observer.
         vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap();
@@ -168,28 +167,28 @@ mod tests {
             },
         );
         let unit = vm.install(program.clone()).unwrap();
-        let mut invocation = vm
+        let mut turn = vm
             .start(
                 FuncRef::new(unit, FuncId(0)),
                 &[],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
-        invocation.resume(1).unwrap();
-        let error = invocation
+        turn.drive(1).unwrap();
+        let error = turn
             .pending_host_call()
             .unwrap()
             .complete(&mut [Value::I64(1)], Ok(100));
         assert!(error.is_err());
-        let work = invocation.work();
+        let work = turn.work();
         assert_eq!(
             work.fuel, 3,
             "fuel reports the actual debit, not the host's request"
         );
         assert_eq!(work.host_calls, 1);
         assert_eq!(work.data, DataWork::default());
-        assert!(invocation.resume(10).is_err());
-        assert_eq!(invocation.work(), work);
+        assert!(turn.drive(10).is_err());
+        assert_eq!(turn.work(), work);
     }
 
     #[test]

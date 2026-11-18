@@ -841,7 +841,7 @@ pub enum ValueType {
     /// A caught exception: its tag, payload and original throw site.
     ///
     /// Exception references live only in guest registers and guest-to-guest signatures. They
-    /// cannot appear in host signatures, invocation entry signatures, tag payloads or aggregates,
+    /// cannot appear in host signatures, turn entry signatures, tag payloads or aggregates,
     /// and they have no [`crate::value::Value`] representation.
     Exn,
     /// Signed 32-bit integer.

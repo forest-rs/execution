@@ -113,7 +113,7 @@ pub struct InstructionStep<'a> {
     pub opcode: u16,
     /// Actual guest successor, absent at root/callback return, trap or missing completion.
     pub next: Option<TraceLocation>,
-    /// Observed instruction outcome, separate from the eventual invocation result.
+    /// Observed instruction outcome, separate from the eventual turn result.
     pub outcome: InstructionOutcome,
     /// Guest ancestry at the start of this attempt, when captured.
     pub stack: Option<CallStack<'a>>,

@@ -17,7 +17,7 @@ struct Site<'a> {
     destinations: &'a [VReg],
     ret_types: &'a [ValueType],
 }
-/// Installed code with the invocation's entry unit at hand, the usual requester.
+/// Installed code with the turn's entry unit at hand, the usual requester.
 #[derive(Clone, Copy)]
 struct Code<'a> {
     units: &'a UnitTable,
@@ -98,7 +98,7 @@ pub(in crate::vm) fn read_registers<'a>(
 ) -> impl ExactSizeIterator<Item = ValueRef<'a>> {
     regs.iter().map(move |&register| {
         // All arguments were read successfully before the instruction yielded. No guest
-        // operation or heap mutation can run while the pending guard borrows its invocation.
+        // operation or heap mutation can run while the pending guard borrows its turn.
         read_value_ref_at(
             &ctx.arena,
             sources,
@@ -121,7 +121,7 @@ pub(in crate::vm) fn read_registers<'a>(
     })
 }
 
-/// Exclusive view of one admitted host call, borrowed from its originating invocation.
+/// Exclusive view of one admitted host call, borrowed from its originating turn.
 ///
 /// Arguments, code and aggregate storage remain alive while it is pending. Inspection borrows
 /// payloads; no byte/string copy is required. The embedding owns asynchronous work, scheduling,
@@ -130,28 +130,28 @@ pub(in crate::vm) fn read_registers<'a>(
 ///
 /// [`Self::complete`] supplies an external outcome; [`Self::dispatch`] invokes the existing host.
 /// Both consume the guard and finish exactly this instruction, without executing the next one.
-/// Dropping a view without either operation leaves the call pending. Dropping its invocation
+/// Dropping a view without either operation leaves the call pending. Dropping its turn
 /// cancels the guest and closes scopes; performed host effects are not rolled back.
 ///
-/// If delivery or an observer panics, the invocation cannot retry that operation. Drop it, or
+/// If delivery or an observer panics, the turn cannot retry that operation. Drop it, or
 /// observe [`Trap::HostCallAbandoned`] on resumption; cancelled trace evidence is incomplete.
 ///
 /// # Handle validity
 ///
-/// Aggregate, closure and function handles read from any request of an invocation (its
+/// Aggregate, closure and function handles read from any request of a turn (its
 /// [`arguments`](Self::arguments), [`callback_results`](Self::callback_results) and the values
-/// they reach) stay valid until that invocation commits its root or rolls back. The embedding may
+/// they reach) stay valid until that turn commits its root or rolls back. The embedding may
 /// keep them as plain [`Value`]s and pass them to a later [`call_guest`](Self::call_guest) or
-/// [`complete`](Self::complete) of the same invocation, including from a nested or later request.
+/// [`complete`](Self::complete) of the same turn, including from a nested or later request.
 /// Guest execution, callbacks, completions and caught exceptions only append to the heap; the
 /// heap is compacted only when the root returns, and a trap or cancellation truncates it to the
-/// invocation's start. The one exception is an explicit [`Invocation::collect`] while the
+/// turn's start. The one exception is an explicit [`Turn::collect`] while the
 /// request waits: it moves aggregates, so every handle read before it names nothing afterwards
 /// and fails with [`AggError::BadHandle`]. Read the arguments and callback results again
 /// afterwards. Handles from [`context`](Self::context) are staged: `call_guest` promotes them
 /// unchanged, while `complete` adopts only those reachable from its outcome, under new handles.
 /// Promoted handles stay valid until this request completes: while any are held, a collection
-/// that would move aggregates is refused with [`CollectError::HostHandles`]. Retain values that must outlive the invocation through its outputs, a snapshot or
+/// that would move aggregates is refused with [`CollectError::HostHandles`]. Retain values that must outlive the turn through its outputs, a snapshot or
 /// [`HostContext::retain`].
 pub struct PendingHostCall<'request, 'vm, H: Host> {
     pub(super) running: Running<'request, 'vm, H>,
@@ -170,7 +170,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     fn code(&self) -> Code<'_> {
         self.running.code()
     }
-    /// Names this request for [`Invocation::host_request`], across the invocations that run its
+    /// Names this request for [`Turn::host_request`], across the turns that run its
     /// computation.
     #[must_use]
     pub fn id(&self) -> RequestId {
@@ -194,7 +194,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Installs `program` in this request's VM while the request waits.
     ///
     /// The waiting frames keep their units. Complete the request with, or call back into, a
-    /// [`FuncRef`] of the new unit to run its code in this invocation.
+    /// [`FuncRef`] of the new unit to run its code in this turn.
     pub fn install(
         &mut self,
         program: impl Into<Arc<VerifiedProgram>>,
@@ -204,16 +204,16 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Points `link` of `unit` at `target` while the request waits, returning the previous
     /// target.
     ///
-    /// This is [`Vm::relink`] during an invocation. The waiting frames keep the functions they
+    /// This is [`Vm::relink`] during a turn. The waiting frames keep the functions they
     /// entered; their unit's later `call.link` through `link` calls `target`.
     ///
-    /// An invocation repoints links only while a host request or suspension waits, the points a
+    /// A turn repoints links only while a host request or suspension waits, the points a
     /// recording replays at. There is no relink between scheduling quanta, where a replay that
     /// runs to completion could not repeat it at the same instruction:
     ///
     /// ```compile_fail,E0599
-    /// # use execution_tape::{host::Host, program::LinkId, value::{FuncRef, UnitId}, vm::Invocation};
-    /// fn between_quanta<H: Host>(run: &mut Invocation<'_, H>, unit: UnitId, target: FuncRef) {
+    /// # use execution_tape::{host::Host, program::LinkId, value::{FuncRef, UnitId}, vm::Turn};
+    /// fn between_quanta<H: Host>(run: &mut Turn<'_, H>, unit: UnitId, target: FuncRef) {
     ///     run.relink(unit, LinkId(0), target);
     /// }
     /// ```
@@ -258,7 +258,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     }
     /// Mutates host state while this request waits, without releasing the request.
     ///
-    /// This is [`Invocation::host_mut`] reached through the request, so a driver can consult or
+    /// This is [`Turn::host_mut`] reached through the request, so a driver can consult or
     /// update its runtime and then complete, dispatch or call back on the same view. The borrow
     /// is exclusive: copy what you need from [`Self::arguments`] first, as handles stay valid
     /// (see [handle validity](Self#handle-validity)). Preserve the validity of object handles the
@@ -268,10 +268,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     }
     /// Borrows the actual caller's frames and initialized registers while this request waits.
     ///
-    /// Analysis is lazy and read-only, as with [`Invocation::inspect`]. The pending call is
+    /// Analysis is lazy and read-only, as with [`Turn::inspect`]. The pending call is
     /// shown before its result, preserving uninitialized destinations as unavailable.
     #[must_use]
-    pub fn inspect(&self) -> InvocationInspection<'_> {
+    pub fn inspect(&self) -> ComputationInspection<'_> {
         self.running.inspect()
     }
     /// Borrows the paused state of another computation saved in this VM while this request
@@ -279,7 +279,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn inspect_saved(
         &self,
         id: ComputationId,
-    ) -> Result<InvocationInspection<'_>, ResumeError> {
+    ) -> Result<ComputationInspection<'_>, ComputationError> {
         self.running.inspect_saved(id)
     }
     /// Declared host symbol, without allocating a label.
@@ -305,7 +305,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Borrows actual arguments without copying byte/string payloads.
     ///
     /// Aggregate, closure and function handles among them stay valid for the rest of this
-    /// invocation, as described under [handle validity](Self#handle-validity).
+    /// turn, as described under [handle validity](Self#handle-validity).
     pub fn arguments(&self) -> impl ExactSizeIterator<Item = ValueRef<'_>> {
         let inv = &self.running;
         let code = self.code();
@@ -347,8 +347,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Reads arguments, stages new aggregate results and records actual host resource accesses.
     ///
     /// Context readers include earlier staged results across successive views. Completing the
-    /// call adopts reachable results; dropping the invocation discards them. Handles belong to
-    /// this invocation's heap. Copy scalar/opaque arguments before borrowing
+    /// call adopts reachable results; dropping the turn discards them. Handles belong to
+    /// this turn's heap. Copy scalar/opaque arguments before borrowing
     /// this context mutably to record reads or writes, as in an ordinary host implementation.
     pub fn context(&mut self) -> HostContext<'_, '_> {
         let pending = self.pending;
@@ -374,10 +374,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// The raw outcome is observed before arity, type and payload-work validation. Aggregate,
     /// function, closure and nominal type IDs must belong to this request's original heap/code;
     /// this method does not import foreign VM handles. An aggregate handle or closure
-    /// environment naming no node, such as one read before an [`Invocation::collect`], traps
+    /// environment naming no node, such as one read before an [`Turn::collect`], traps
     /// with [`AggError::BadHandle`]. Validation failure terminates the run,
     /// rolls back new guest aggregates, and preserves already performed external effects.
-    /// Values may be handles read from any earlier request of this invocation; see
+    /// Values may be handles read from any earlier request of this turn; see
     /// [handle validity](Self#handle-validity).
     pub fn complete(
         mut self,
@@ -403,7 +403,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ///
     /// The producer can borrow request inputs across `await`; no argument payload clone or
     /// async runtime dependency is required. Once the future has been polled, abandoning it
-    /// marks this delivery unusable: external effects may already have occurred. The invocation
+    /// marks this delivery unusable: external effects may already have occurred. The turn
     /// then cancels on drop or reports [`Trap::HostCallAbandoned`] on resumption, preventing
     /// accidental re-dispatch. Dropping an unpolled future leaves the request pending.
     pub async fn complete_with(
@@ -411,6 +411,15 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         produce: impl AsyncFnOnce(&mut Self) -> Result<(Vec<Value>, u64), HostError>,
     ) -> Result<(), TrapInfo> {
         self.delivering = true;
+        // A future that is forgotten once polled never runs this guard's destructor, so the
+        // request is marked abandoned in the stack itself until delivery completes and takes it.
+        self.running
+            .continuation
+            .stack
+            .control
+            .pending_host
+            .get_or_insert(self.pending)
+            .abandoned = true;
         let outcome = produce(&mut self).await;
         let (mut values, outcome) = match outcome {
             Ok((values, fuel)) => (values, Ok(fuel)),
@@ -448,10 +457,10 @@ impl<H: Host> Drop for PendingHostCall<'_, '_, H> {
     }
 }
 
-impl<'vm, H: Host> Invocation<'vm, H> {
-    /// Borrows one admitted host request. Only opt-in yielded invocations expose requests.
+impl<'vm, H: Host> Turn<'vm, H> {
+    /// Borrows one admitted host request. Only opt-in yielded turns expose requests.
     ///
-    /// The guard prevents resuming or completing another invocation by accident. Repeated
+    /// The guard prevents resuming or completing another turn by accident. Repeated
     /// queries and dropped views do not execute the host or replenish hard budgets.
     pub fn pending_host_call(&mut self) -> Option<PendingHostCall<'_, 'vm, H>> {
         self.running().pending_host_call()
@@ -661,7 +670,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         self.finish_abandoned(pending.location)
     }
 
-    /// Ends the invocation after a delivery to the waiting instruction at `location` was
+    /// Ends the turn after a delivery to the waiting instruction at `location` was
     /// abandoned part way, so that it can be neither retried nor continued.
     pub(super) fn finish_abandoned(&mut self, location: TraceLocation) -> TrapInfo {
         let span = self.continuation.stack.ctx.span_at(

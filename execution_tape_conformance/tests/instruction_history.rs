@@ -464,6 +464,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
             aggregates: &heap,
             limits: &limits,
             resident_frames: 0,
+            yields_suspensions: false,
             work: execution_tape::vm::DataWork::default(),
             units: vm.units(),
         },

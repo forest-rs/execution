@@ -39,7 +39,7 @@ pub enum ControlAction<'a> {
         /// Promoted nodes in original construction order, including otherwise unused staging.
         constructed: &'a [AggregateId],
         /// Actual normal guest return. `None` also occurs after rejection, trap, cancellation
-        /// or an exception that abandons the callback; inspect the invocation outcome separately.
+        /// or an exception that abandons the callback; inspect the turn outcome separately.
         returned: Option<GuestReturn<'a>>,
     },
 }

@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Same-invocation guest reentry. Native stacks and scheduling stay with the embedding.
+//! Same-turn guest reentry. Native stacks and scheduling stay with the embedding.
 
 use super::*;
 use crate::vm::host_call::PendingHost;
@@ -63,7 +63,7 @@ impl Callbacks {
 impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Starts a guest function or closure of any installed unit while retaining this request.
     ///
-    /// Consumes the view, not the host operation. Drive the same invocation with `resume`:
+    /// Consumes the view, not the host operation. Drive the same turn with `resume`:
     /// the callback may yield further host requests, whose guards support the same operation.
     /// When the callback returns, `resume` reports [`RunStatus::CallbackReturned`] and this
     /// original request is pending again. Take its callback results, then complete the host
@@ -73,19 +73,19 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// The target may belong to any unit of this VM, including one installed while this request
     /// waits; it runs that unit's code, and an unknown unit traps with [`Trap::UnknownUnit`].
     /// Raw argument handles belong to this VM's heap; they may be handles read from any earlier
-    /// request of this invocation (see [handle validity](Self#handle-validity)). Closure arguments
+    /// request of this turn (see [handle validity](Self#handle-validity)). Closure arguments
     /// exclude the hidden environment.
-    /// Arguments move into the invocation. Their immediate byte/string lengths are charged as
+    /// Arguments move into the turn. Their immediate byte/string lengths are charged as
     /// host ingress; result materialization uses the ordinary payload-work budget. Each callback
     /// consumes one hard-fuel unit and shares call-depth, host-call and contract limits with its
     /// suspended callers. There is no budget reset or native Rust stack capture.
     ///
     /// Previously staged host aggregates are promoted, preserving handles, before guest reentry.
     /// Even unused staged nodes then live until this request completes or the run ends. Only
-    /// the host holds their handles, so meanwhile an [`Invocation::collect`] that would move
+    /// the host holds their handles, so meanwhile an [`Turn::collect`] that would move
     /// them refuses with [`CollectError::HostHandles`]. Their already admitted work remains
     /// charged. Later host construction uses the updated shared heap/budgets.
-    /// Invalid targets, arguments or exhausted limits terminate the whole invocation, as guest
+    /// Invalid targets, arguments or exhausted limits terminate the whole computation, as guest
     /// calls do. Dropping it cancels all waiting operations without executing guest code.
     ///
     /// Callback entry/return and actual guest ancestry are observable. The boundary recorder
@@ -100,7 +100,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Borrows the latest successful callback results without consuming them.
     ///
     /// An empty successful callback yields `Some(&[])`; `None` means no results are available.
-    /// Handles use this request's original heap/code and stay valid until the invocation commits
+    /// Handles use this request's original heap/code and stay valid until the turn commits
     /// its root, rolls back or is collected. Inspection spends no guest work.
     #[must_use]
     pub fn callback_results(&self) -> Option<&[Value]> {
@@ -117,10 +117,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Takes the latest successful callback results belonging to this pending host operation.
     ///
     /// `None` means no callback has returned or the slots were already taken. The host operation
-    /// is still pending; result handles retain this invocation's original heap/code domains and
-    /// may be passed to later `call_guest`/`complete` calls of this invocation, as described
+    /// is still pending; result handles retain this computation's original heap/code domains and
+    /// may be passed to later `call_guest`/`complete` calls of this turn, as described
     /// under [handle validity](Self#handle-validity). Taking values does not retain them
-    /// independently of the invocation. Completing the host operation discards
+    /// independently of the turn. Completing the host operation discards
     /// untaken slots. Use the request context's `retain` for an independent aggregate snapshot.
     pub fn take_callback_results(&mut self) -> Option<Vec<Value>> {
         self.running
@@ -273,7 +273,7 @@ impl<H: Host> Running<'_, '_, H> {
                         self.vm.memory.aggs(),
                         &Value::Agg(environment),
                         contract,
-                        self.vm.limits.max_contract_work,
+                        self.budget.contract_limit,
                     )
                     .map_err(|error| {
                         self.vm.contract_trap(
@@ -283,6 +283,7 @@ impl<H: Host> Running<'_, '_, H> {
                                 index: 0,
                             },
                             error,
+                            self.budget.contract_limit,
                         )
                     })?;
             }

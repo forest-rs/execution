@@ -54,10 +54,10 @@ use exec::Exec;
 use frames::Frames;
 mod host_call;
 mod inspection;
-mod invocation;
+mod turn;
 use inspection::ExecutionControl;
 pub use inspection::{
-    ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
+    ActivationId, ComputationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
     StackId,
 };
 mod observations;
@@ -65,15 +65,27 @@ mod ownership;
 mod roots;
 pub use roots::{RootError, RootedValues};
 mod saved;
-pub use saved::{ComputationId, ResumeError};
+pub use saved::{ComputationError, ComputationId};
 mod units;
 mod work;
-pub use invocation::{
-    Invocation, InvocationOptions, PendingHostCall, PendingSuspension, RequestError, RequestId,
-    RunStatus,
-};
 use ownership::BorrowedOrOwned;
+pub use turn::{
+    Arguments, Callee, PendingHostCall, PendingSuspension, RequestError, RequestId, RunStatus,
+    Turn, TurnOptions, TurnOutcome,
+};
 pub use units::{InstallError, LinkMismatch, RelinkError, StoreEvent, TagError, Units};
+/// Temporary name for [`Turn`], removed later in this change.
+#[doc(hidden)]
+pub type Invocation<'a, H> = Turn<'a, H>;
+/// Temporary name for [`TurnOptions`], removed later in this change.
+#[doc(hidden)]
+pub type InvocationOptions<'a> = TurnOptions<'a>;
+/// Temporary name for [`ComputationInspection`], removed later in this change.
+#[doc(hidden)]
+pub type InvocationInspection<'a> = ComputationInspection<'a>;
+/// Temporary name for [`ComputationError`], removed later in this change.
+#[doc(hidden)]
+pub type ResumeError = ComputationError;
 pub(crate) use units::{Unit, UnitTable};
 pub use work::ExecutionWork;
 #[cfg(test)]
@@ -95,7 +107,7 @@ pub struct Limits {
     pub max_frames: usize,
     /// Maximum computations the VM keeps saved at once (4,096 by default).
     ///
-    /// [`Invocation::save`] beyond it hands the invocation back, and [`Vm::spawn`] traps with
+    /// [`Turn::finish`] beyond it hands the turn back, and [`Vm::spawn`] traps with
     /// [`Trap::SavedComputationLimitExceeded`].
     pub max_saved_computations: usize,
     /// Maximum host calls.
@@ -140,7 +152,7 @@ pub struct Limits {
 ///
 /// Captured environments and their payloads are admitted before allocation, then charged
 /// against the same limits as guest work. Ordinary borrowed entry arguments spend zero here.
-/// Entry observations report the preparation debit; [`Invocation::data_work`] includes guest
+/// Entry observations report the preparation debit; [`Turn::data_work`] includes guest
 /// work as well. Recorders preserve the debit so replay cannot replenish remaining budgets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DataWork {
@@ -167,6 +179,53 @@ impl DataWork {
             });
         }
         Ok(())
+    }
+}
+
+/// The work one turn may do, which [`TurnOptions::allowance`] sets in place of the VM's
+/// [`Limits`] for that turn.
+///
+/// Fuel, host calls and contract, aggregate and payload work each restart from it in every turn;
+/// frame and saved-computation limits stay the VM's. Start from [`Limits::allowance`] and set the
+/// fields to change; it may grow fields for further kinds of work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Allowance {
+    /// Instruction budget ([`Limits::fuel`]).
+    pub fuel: u64,
+    /// Host calls ([`Limits::max_host_calls`]).
+    pub host_calls: u64,
+    /// Contract work ([`Limits::max_contract_work`]).
+    pub contract_work: u64,
+    /// Aggregate construction and import work ([`Limits::max_aggregate_work`]).
+    pub aggregate_work: u64,
+    /// Byte and string payload work ([`Limits::max_payload_work`]).
+    pub payload_work: u64,
+}
+
+impl Limits {
+    /// The work these limits allow one turn, which a turn gets unless its options set another.
+    #[must_use]
+    pub fn allowance(&self) -> Allowance {
+        Allowance {
+            fuel: self.fuel,
+            host_calls: self.max_host_calls,
+            contract_work: self.max_contract_work,
+            aggregate_work: self.max_aggregate_work,
+            payload_work: self.max_payload_work,
+        }
+    }
+
+    /// These limits with `allowance` in place of their work limits.
+    fn with_allowance(&self, allowance: Allowance) -> Self {
+        Self {
+            fuel: allowance.fuel,
+            max_host_calls: allowance.host_calls,
+            max_contract_work: allowance.contract_work,
+            max_aggregate_work: allowance.aggregate_work,
+            max_payload_work: allowance.payload_work,
+            ..self.clone()
+        }
     }
 }
 
@@ -302,8 +361,9 @@ pub enum Trap {
         /// Actual number of return values, capped at `u32::MAX` for external replies.
         actual: u32,
     },
-    /// A yielded host delivery was started but abandoned before producing a complete outcome.
-    /// This includes panic unwinding and cancellation of a polled asynchronous producer.
+    /// A host delivery was started but abandoned before producing a complete outcome.
+    /// This includes panic unwinding, including a host panicking inside a synchronous call
+    /// while a turn drives it, and a polled asynchronous producer that was dropped or forgotten.
     /// Its external effects are unknown and cannot safely be retried. An answer to a yielded
     /// suspension that an observer's panic interrupted ends the same way.
     HostCallAbandoned,
@@ -335,13 +395,13 @@ pub enum Trap {
         /// Requested tag.
         tag: crate::value::TagRef,
     },
-    /// An exception reference would cross the invocation boundary.
+    /// An exception reference would cross the turn boundary.
     ///
     /// Entry functions, guest callbacks and the embedding exchange [`Value`]s, which cannot hold
     /// an exception reference. A callee whose signature contains `Exn` cannot be entered from
     /// outside the guest.
     ExceptionBoundary,
-    /// A continuation reference would cross the invocation boundary.
+    /// A continuation reference would cross the turn boundary.
     ///
     /// Like exception references, continuations have no [`Value`] representation; a callee
     /// whose signature contains `Cont` cannot be entered from outside the guest.
@@ -371,10 +431,10 @@ pub enum Trap {
         /// The suspended VM tag.
         tag: crate::value::TagRef,
     },
-    /// A guest exception escaped every activation of the invocation.
+    /// A guest exception escaped every activation of the turn.
     ///
     /// This is a guest-raised outcome rather than a VM failure. Its payload survives the
-    /// invocation's rollback as a detached snapshot.
+    /// turn's rollback as a detached snapshot.
     Uncaught(Box<UncaughtException>),
 }
 
@@ -467,7 +527,7 @@ impl fmt::Display for Trap {
                     "host return arity mismatch (expected {expected}, got {actual})"
                 )
             }
-            Self::HostCallAbandoned => f.write_str("host call delivery was abandoned; discard the invocation rather than retrying its effects"),
+            Self::HostCallAbandoned => f.write_str("host call delivery was abandoned; discard the computation rather than retrying its effects"),
             Self::IntCastOverflow => write!(f, "int cast overflow"),
             Self::DecimalScaleMismatch => write!(f, "decimal scale mismatch"),
             Self::DecimalOverflow => write!(f, "decimal overflow"),
@@ -483,10 +543,10 @@ impl fmt::Display for Trap {
                 write!(f, "host raised tag#{}, which this VM never issued", tag.0)
             }
             Self::ExceptionBoundary => f.write_str(
-                "exception references cannot cross the invocation boundary",
+                "exception references cannot cross the entry boundary",
             ),
             Self::ContinuationBoundary => f.write_str(
-                "continuation references cannot cross the invocation boundary",
+                "continuation references cannot cross the entry boundary",
             ),
             Self::ContinuationConsumed => f.write_str("continuation was already consumed"),
             Self::ContinuationSignatureMismatch { signature } => write!(
@@ -660,11 +720,11 @@ struct Registers {
     unit: UnitId,
     /// Exception reference registers; `None` only before initialization.
     exns: Vec<Option<Arc<Exception>>>,
-    /// Exceptions raised so far in this invocation; also the next raise's ordinal.
+    /// Exceptions raised so far in this turn; also the next raise's ordinal.
     raised: usize,
     /// Continuation registers, naming entries of [`Self::continuations`].
     conts: Vec<ContRef>,
-    /// Suspended and unstarted continuations of this invocation.
+    /// Suspended and unstarted continuations of this turn.
     continuations: continuations::Continuations,
 
     /// Call stack.
@@ -757,9 +817,9 @@ pub struct Vm<H: Host> {
     /// Computations saved between leases.
     saved: saved::Store,
 
-    /// Execution state between runs; `None` while a run or invocation has it on loan.
+    /// Execution state between runs; `None` while a run or turn has it on loan.
     exec: Option<Box<Exec>>,
-    /// The run or invocation that has the execution state, if any.
+    /// The run or turn that has the execution state, if any.
     lease: Option<exec::Lease>,
     /// Identities handed to resumable stacks so far.
     stacks: u64,
@@ -1541,6 +1601,7 @@ impl<H: Host> Vm<H> {
                 aggregates: self.memory.aggs(),
                 limits: &self.limits,
                 resident_frames: self.saved.resident_frames(),
+                yields_suspensions: false,
                 work: DataWork::default(),
                 units: self.units(),
             });
@@ -1698,7 +1759,6 @@ impl<H: Host> Vm<H> {
     ) -> Result<Progress, TrapInfo> {
         let root_args = args;
         let output_start = outputs.len();
-        let max_host_calls = self.limits.max_host_calls;
         // The program of the unit the top frame runs. Frames of different units interleave on
         // one stack; the program is reloaded only when control crosses into another unit.
         let Some(top) = ctx.frames.last() else {
@@ -2036,7 +2096,7 @@ impl<H: Host> Vm<H> {
                         )
                         .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     if handled.is_none() {
-                        // Only resumable invocations opt into yielding suspensions.
+                        // Only resumable turns opt into yielding suspensions.
                         debug_assert!(YIELD, "synchronous execution cannot yield a suspension");
                         return Ok(Progress::AwaitingHandler);
                     }
@@ -3560,8 +3620,8 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::Ret { rets } => {
-                    if YIELD && invocation::callback::returns_to_host(control, ctx.frames.len()) {
-                        invocation::callback::return_to_host::<H, P>(
+                    if YIELD && turn::callback::returns_to_host(control, ctx.frames.len()) {
+                        turn::callback::return_to_host::<H, P>(
                             self,
                             ctx,
                             budget,
@@ -3680,7 +3740,7 @@ impl<H: Host> Vm<H> {
                     args,
                     rets,
                 } => {
-                    if budget.host_calls >= max_host_calls {
+                    if budget.host_calls >= budget.host_call_limit {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::HostCallLimitExceeded));
                     }
                     budget.host_calls += 1;
@@ -3789,6 +3849,13 @@ impl<H: Host> Vm<H> {
                         &mut host_results,
                         access_for_call,
                     );
+                    if YIELD {
+                        control.delivering = Some(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        });
+                    }
                     let mut host_result =
                         self.host
                             .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx);
@@ -3861,6 +3928,9 @@ impl<H: Host> Vm<H> {
                             },
                             span_id,
                         )?;
+                        if YIELD {
+                            control.delivering = None;
+                        }
                         continue;
                     }
                     host_call::admit_return(
@@ -3883,6 +3953,9 @@ impl<H: Host> Vm<H> {
                         ret_slots,
                         host_result,
                     )?;
+                    if YIELD {
+                        control.delivering = None;
+                    }
                     P::host_scope_exit(
                         trace,
                         program_ref,
@@ -4043,7 +4116,7 @@ impl<H: Host> Vm<H> {
                                 self.memory.aggs(),
                                 &Value::Agg(callee.env),
                                 environment_contract,
-                                self.limits.max_contract_work,
+                                budget.contract_limit,
                             )
                             .map_err(|error| {
                                 ctx.trap(
@@ -4057,6 +4130,7 @@ impl<H: Host> Vm<H> {
                                             index: 0,
                                         },
                                         error,
+                                        budget.contract_limit,
                                     ),
                                 )
                             })?;
@@ -4245,7 +4319,7 @@ impl<H: Host> Vm<H> {
                             self.memory.aggs(),
                             &Value::Agg(closure.env),
                             env_contract,
-                            self.limits.max_contract_work,
+                            budget.contract_limit,
                         )
                         .map_err(|error| {
                             ctx.trap(
@@ -4259,6 +4333,7 @@ impl<H: Host> Vm<H> {
                                         index: 0,
                                     },
                                     error,
+                                    budget.contract_limit,
                                 ),
                             )
                         })?;
@@ -4907,7 +4982,7 @@ impl<H: Host> Vm<H> {
                     self.memory.aggs(),
                     &value,
                     check.contract,
-                    self.limits.max_contract_work,
+                    budget.contract_limit,
                 )
                 .map_err(|error| {
                     self.contract_trap(
@@ -4917,6 +4992,7 @@ impl<H: Host> Vm<H> {
                             index: check.index,
                         },
                         error,
+                        budget.contract_limit,
                     )
                 })?;
         }
@@ -4962,13 +5038,14 @@ impl<H: Host> Vm<H> {
                     self.memory.aggs(),
                     &value,
                     check.contract,
-                    self.limits.max_contract_work,
+                    budget.contract_limit,
                 )
                 .map_err(|error| {
                     self.contract_trap(
                         FuncRef::new(unit, function),
                         ContractPosition::Result { index: check.index },
                         error,
+                        budget.contract_limit,
                     )
                 })?;
         }
@@ -4980,6 +5057,7 @@ impl<H: Host> Vm<H> {
         function: FuncRef,
         position: ContractPosition,
         error: CheckError,
+        limit: u64,
     ) -> Trap {
         match error {
             CheckError::Mismatch(error) => Trap::ContractMismatch {
@@ -4990,7 +5068,7 @@ impl<H: Host> Vm<H> {
             CheckError::Limit => Trap::ContractWorkExceeded {
                 function,
                 position,
-                limit: self.limits.max_contract_work,
+                limit,
             },
         }
     }
@@ -5023,15 +5101,15 @@ impl<H: Host> Vm<H> {
     /// [`Limits::max_aggregate_work`]) and stay valid. A run that needs more than the new limits
     /// allow traps as it would on a VM created with them.
     ///
-    /// An [`Invocation`] borrows its VM and exposes no `&mut Vm`, so limits cannot change
-    /// while one is in progress; a suspended or awaiting invocation keeps the budget it started
+    /// An [`Turn`] borrows its VM and exposes no `&mut Vm`, so limits cannot change
+    /// while one is in progress; a suspended or awaiting turn keeps the budget it started
     /// with. The limits move with the VM through [`Self::replace_host`].
     ///
     /// ```compile_fail,E0499
     /// # use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
     /// # use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
     /// # use execution_tape::value::{FuncRef, Value};
-    /// # use execution_tape::vm::{InvocationOptions, Limits, Vm};
+    /// # use execution_tape::vm::{TurnOptions, Limits, Vm};
     /// # struct NoHost;
     /// # impl Host for NoHost {
     /// #     fn call(&mut self, _: &str, _: SigHash, _: &[ValueRef<'_>], _: &mut [Value],
@@ -5047,9 +5125,9 @@ impl<H: Host> Vm<H> {
     /// # builder.define_function(entry, asm)?;
     /// # let mut vm = Vm::new(NoHost, Limits::default());
     /// # let entry = FuncRef::new(vm.install(builder.build_verified()?)?, entry);
-    /// let mut invocation = vm.start(entry, &[], InvocationOptions::default())?;
-    /// vm.set_limits(Limits::default()); // error: `vm` is borrowed by `invocation`
-    /// invocation.resume(u64::MAX)?;
+    /// let mut turn = vm.start(entry, &[], TurnOptions::default())?;
+    /// vm.set_limits(Limits::default()); // error: `vm` is borrowed by `turn`
+    /// turn.drive(u64::MAX)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -5065,8 +5143,8 @@ impl<H: Host> Vm<H> {
     /// borrow, run, and swap the parked host back. The swap moves the VM's tables without
     /// copying or reinstalling them. See the crate documentation for the pattern.
     ///
-    /// The VM holds nothing of a host between runs, and an [`Invocation`] borrows the VM, so a
-    /// host can only be replaced while no invocation is in progress. Object handles are the
+    /// The VM holds nothing of a host between runs, and an [`Turn`] borrows the VM, so a
+    /// host can only be replaced while no turn is in progress. Object handles are the
     /// hosts' own: [`Value::Obj`] values that outlive a run, in retained aggregates or in values
     /// the embedding kept, carry the same bits under the new host. When handles only mean
     /// something for one call, do not keep them past it, or reclaim retained aggregates before
@@ -5124,6 +5202,10 @@ impl<H: Host> Vm<H> {
     }
 
     /// Returns a reference to the aggregate heap.
+    ///
+    /// This reads the heap as it is: what a forgotten turn allocated stays visible here until
+    /// the VM's next entry point discards it, and handles copied out of a turn that was dropped
+    /// or forgotten may name aggregates later runs allocated in their place.
     pub fn aggregates(&self) -> &AggHeap {
         self.memory.aggs()
     }
@@ -5137,7 +5219,7 @@ impl<H: Host> Vm<H> {
     /// Releasing nodes this way bypasses registered groups ([`Self::root`]): their handles are
     /// left dangling, and [`Self::collect`] then refuses with
     /// [`CollectError::DanglingHandle`]. Reclaim through [`Self::collect`] instead when groups are
-    /// registered. While computations are saved ([`Invocation::save`]), clearing or taking the
+    /// registered. While computations are saved ([`Turn::finish`]), clearing or taking the
     /// heap's nodes panics, and replacing the heap is caught by the next resume or collection,
     /// which panics: their handles would name other aggregates.
     pub fn aggregates_mut(&mut self) -> &mut AggHeap {

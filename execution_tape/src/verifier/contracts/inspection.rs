@@ -74,7 +74,7 @@ pub enum FactOrigin {
         pc: Pc,
     },
     /// A fact admitted through incoming control flow. Inspect incoming edges for evidence.
-    /// Block zero also meets the invocation's argument/effect seeds, which are not CFG edges.
+    /// Block zero also meets the turn's argument/effect seeds, which are not CFG edges.
     BlockEntry {
         /// Source offset of the current block's first instruction.
         pc: Pc,
@@ -489,7 +489,7 @@ impl<'a> InstructionFacts<'a> {
     }
     /// Reachable incoming control-flow arms for the containing block. Same-target arms remain
     /// separate. Binding facts read the predecessor before simultaneous parameter transfer.
-    /// External invocation is not a CFG edge; block zero additionally meets argument/effect seeds.
+    /// External turn is not a CFG edge; block zero additionally meets argument/effect seeds.
     pub fn incoming_edges(&self) -> impl ExactSizeIterator<Item = IncomingEdge<'a>> + '_ {
         self.analysis.incoming[self.analysis.incoming_ranges[self.block].clone()]
             .iter()

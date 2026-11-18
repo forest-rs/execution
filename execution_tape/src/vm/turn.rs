@@ -19,14 +19,14 @@ mod suspension;
 pub(super) use suspension::PendingSuspend;
 pub use suspension::PendingSuspension;
 
-/// Progress after executing an invocation's scheduling quantum.
+/// Progress after executing a turn's scheduling quantum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RunStatus {
-    /// A safe instruction boundary was reached with the invocation still active.
+    /// A safe instruction boundary was reached with the turn still active.
     Suspended,
     /// An admitted host instruction is waiting for embedding-supplied completion.
-    /// Query [`Invocation::pending_host_call`]; resuming alone does not invoke the host.
+    /// Query [`Turn::pending_host_call`]; resuming alone does not invoke the host.
     AwaitingHost,
     /// A guest callback returned to the host request that started it.
     ///
@@ -36,11 +36,12 @@ pub enum RunStatus {
     CallbackReturned,
     /// A `suspend` that no guest `on` clause handles is waiting for the embedding to handle it.
     ///
-    /// Only invocations started with [`InvocationOptions::yield_suspensions`] report this.
-    /// Query [`Invocation::pending_suspension`] for the tag and payload, then resume, raise into
-    /// or discard it. Resuming the invocation alone executes nothing and reports this again.
+    /// Only turns started with [`TurnOptions::yield_suspensions`] report this.
+    /// Query [`Turn::pending_suspension`] for the tag and payload, then resume, raise into
+    /// or discard it. Resuming the turn alone executes nothing and reports this again.
     AwaitingHandler,
-    /// The root returned and its results were committed.
+    /// The root returned. Its results stay in the turn, readable through [`Turn::result`],
+    /// until [`Turn::finish`] publishes them; dropping the turn discards them.
     Complete,
 }
 
@@ -54,36 +55,56 @@ impl RunStatus {
     }
 }
 
-/// Optional borrowed or owned observers of one logical invocation.
+/// How one turn runs: whether it yields host calls and suspensions, its allowance, and the
+/// observers it borrows.
 ///
 /// Scheduling does not change the VM's hard resource limits. Trace scopes cover the logical
-/// invocation, including time spent suspended; they measure elapsed latency, not active CPU time.
+/// turn, including time spent suspended; they measure elapsed latency, not active CPU time.
 #[derive(Default)]
-pub struct InvocationOptions<'a> {
+pub struct TurnOptions<'a> {
     pub(super) yield_host_calls: bool,
     pub(super) yield_suspensions: bool,
     pub(super) mask: Option<TraceMask>,
     pub(super) trace: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
     pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
+    pub(super) allowance: Option<Allowance>,
 }
 
-impl fmt::Debug for InvocationOptions<'_> {
+impl fmt::Debug for TurnOptions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InvocationOptions")
+        f.debug_struct("TurnOptions")
             .field("mask", &self.mask)
             .field("yield_host_calls", &self.yield_host_calls)
             .field("yield_suspensions", &self.yield_suspensions)
             .field("access_recording", &self.access.is_some())
+            .field("allowance", &self.allowance)
             .finish_non_exhaustive()
     }
 }
 
-impl<'a> InvocationOptions<'a> {
+impl<'a> TurnOptions<'a> {
+    /// Gives this turn `allowance` in place of the work its VM's [`Limits`] allow.
+    ///
+    /// Fuel, host calls and contract, aggregate and payload work restart from it; frame and
+    /// saved-computation limits stay the VM's. Recordings note the limits each turn ran under,
+    /// so replay gives each the same.
+    #[must_use]
+    pub fn allowance(mut self, allowance: Allowance) -> Self {
+        self.allowance = Some(allowance);
+        self
+    }
+
+    /// The limits a turn with these options runs under, given its VM's.
+    pub(super) fn limits(&self, vm: &Limits) -> Limits {
+        self.allowance
+            .map_or_else(|| vm.clone(), |allowance| vm.with_allowance(allowance))
+    }
+
     /// Yields admitted host calls for the embedding to complete or dispatch explicitly.
     ///
     /// This preserves the ordinary host ABI and adds no async runtime. A pending request
-    /// exclusively borrows its invocation; the embedding owns scheduling and external effects.
-    /// Default invocations continue to invoke their host synchronously.
+    /// exclusively borrows its turn; the embedding owns scheduling and external effects.
+    /// Default turns continue to invoke their host synchronously.
     #[must_use]
     pub fn yield_host_calls(mut self) -> Self {
         self.yield_host_calls = true;
@@ -92,18 +113,18 @@ impl<'a> InvocationOptions<'a> {
 
     /// Yields suspensions that no guest handler handles to the embedding, which handles them.
     ///
-    /// A `suspend` whose search for an `on` clause reaches the invocation's root returns
+    /// A `suspend` whose search for an `on` clause reaches the computation's root returns
     /// [`RunStatus::AwaitingHandler`] instead of trapping with [`Trap::UnhandledSuspension`].
-    /// [`Invocation::pending_suspension`] then exposes its tag and payload, and resumes it with
+    /// [`Turn::pending_suspension`] then exposes its tag and payload, and resumes it with
     /// the tag's results, raises an exception at it, or discards it. A suspension inside a guest
     /// callback still traps with [`Trap::SuspensionAcrossHost`]: only one that reaches the root
-    /// of the invocation's own stack is yielded. Default invocations keep trapping.
+    /// of the turn's own stack is yielded. Default turns keep trapping.
     #[must_use]
     pub fn yield_suspensions(mut self) -> Self {
         self.yield_suspensions = true;
         self
     }
-    /// Requests the existing VM observation callbacks for the entire logical invocation.
+    /// Requests the existing VM observation callbacks for the whole turn.
     #[must_use]
     pub fn trace(mut self, mask: TraceMask, sink: &'a mut dyn TraceSink) -> Self {
         self.mask = Some(mask);
@@ -118,8 +139,8 @@ impl<'a> InvocationOptions<'a> {
         self
     }
 
-    /// Owns a trace observer for an independently stored invocation.
-    /// Shared `Rc<RefCell<S>>` sinks can retain captured evidence after invocation retirement.
+    /// Owns a trace observer for an independently stored turn.
+    /// Shared `Rc<RefCell<S>>` sinks can retain captured evidence after turn retirement.
     #[must_use]
     pub fn trace_owned(mut self, mask: TraceMask, sink: impl TraceSink + 'a) -> Self {
         self.mask = Some(mask);
@@ -136,28 +157,101 @@ impl<'a> InvocationOptions<'a> {
     }
 }
 
-/// One invocation that may suspend between instructions or at an admitted host request.
+/// What [`Vm::start`] runs: an installed function, or a retained [`Callable`] in a unit installed
+/// from its exact program ([`Callable::at`]).
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum Callee<'c> {
+    /// The installed function, whose arguments are exactly those passed.
+    Function(FuncRef),
+    /// A retained function or closure, started in `unit`. A closure imports its captures into
+    /// the VM, charged to the turn, and receives its environment ahead of the arguments passed.
+    Callable {
+        /// The retained target.
+        callable: &'c Callable,
+        /// The unit installed from the callable's program.
+        unit: UnitId,
+    },
+}
+
+impl From<FuncRef> for Callee<'_> {
+    fn from(function: FuncRef) -> Self {
+        Self::Function(function)
+    }
+}
+
+/// The arguments [`Vm::start`] passes: borrowed for the turn, or owned.
 ///
-/// `Vm::start`, `Callable::start` and `Vm::resume` borrow their VM; a task that outlives one
-/// borrow owns the VM and saves its computation between invocations ([`Self::save`]).
-/// Observers can be borrowed or owned. Every entry runs an
-/// installed unit and retains its program; raw entries borrow their inputs, while callable
-/// entries own theirs. These domains remain intact while suspended. Host calls dispatch synchronously by default; opting into yielded
-/// requests retains an admitted host instruction until the embedding supplies its completion.
-/// Dropping an active invocation cancels it, discards its new aggregates, and closes trace scopes
-/// with [`TraceOutcome::Cancelled`]. External host effects are not rolled back.
+/// Borrowed arguments are copied into the VM, payloads included, only if the turn saves its
+/// computation. A [`Callable`] entry takes ownership, copying borrowed arguments.
+#[derive(Clone, Debug)]
+pub struct Arguments<'t>(pub(super) Cow<'t, [Value]>);
+
+impl<'t> From<&'t [Value]> for Arguments<'t> {
+    fn from(args: &'t [Value]) -> Self {
+        Self(Cow::Borrowed(args))
+    }
+}
+
+impl<'t, const N: usize> From<&'t [Value; N]> for Arguments<'t> {
+    fn from(args: &'t [Value; N]) -> Self {
+        Self(Cow::Borrowed(args))
+    }
+}
+
+impl<'t> From<&'t Vec<Value>> for Arguments<'t> {
+    fn from(args: &'t Vec<Value>) -> Self {
+        Self(Cow::Borrowed(args))
+    }
+}
+
+impl From<Vec<Value>> for Arguments<'_> {
+    fn from(args: Vec<Value>) -> Self {
+        Self(Cow::Owned(args))
+    }
+}
+
+/// How a [`Turn`] ended, which [`Turn::finish`] publishes.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum TurnOutcome {
+    /// The computation returned these values, whose aggregates stay in the VM's heap until
+    /// collected or released like any other values.
+    Returned(Vec<Value>),
+    /// The computation trapped; everything it allocated was discarded.
+    Trapped(TrapInfo),
+    /// The computation waits in the VM under this ID, for [`Vm::resume`] to continue it.
+    Saved(ComputationId),
+}
+
+/// A lease on a VM that drives one computation, from [`Vm::start`] or [`Vm::resume`], until it
+/// finishes.
 ///
-/// A waiting invocation can instead be kept in its VM with [`Self::save`] and continued later
-/// with [`Vm::resume`].
+/// [`Self::drive`] runs the computation in bounded quanta; it may stop between instructions,
+/// at an admitted host request or at a yielded suspension. Every entry runs an installed unit
+/// and retains its program; the turn borrows its VM, its observers and any borrowed arguments.
+/// Host calls dispatch synchronously by default; opting into yielded requests retains an
+/// admitted host instruction until the embedding supplies its completion.
 ///
-/// Completed invocations cannot execute again. Their result remains available through
-/// [`Self::result`] until dropped, and owned outputs can be taken with [`Self::take_outputs`].
-pub struct Invocation<'a, H: Host> {
+/// [`Self::finish`] ends the turn and publishes how it ended: the values the computation
+/// returned, its trap, or, for one still running or waiting, the ID it is saved under in the VM
+/// for a later [`Vm::resume`]. Each turn has its own work allowance. Dropping a turn instead
+/// discards everything it allocated, even after the computation returned, cancels an unfinished
+/// computation and closes trace scopes with [`TraceOutcome::Cancelled`]; forgetting it does the
+/// same at the VM's next entry point. External host effects are not rolled back.
+///
+/// [`Self::result`] peeks at a computation that returned or trapped before finishing.
+pub struct Turn<'a, H: Host> {
     pub(super) vm: &'a mut Vm<H>,
     pub(super) continuation: continuation::Continuation<'a>,
     checkpoint: Checkpoint,
     budget: Budget,
-    /// The VM's execution state while this invocation has it on loan. Its register file,
+    /// The limits this turn runs under: the VM's, with its options' allowance in place of their
+    /// work limits.
+    limits: Limits,
+    /// Whether [`Self::finish`] published the returned outputs, which dropping must keep.
+    published: bool,
+    /// The VM's execution state while this turn has it on loan. Its register file,
     /// control and budget are moved out into the fields above, and back before it is returned.
     exec: Option<Box<Exec>>,
 }
@@ -171,7 +265,7 @@ pub(super) struct Running<'request, 'state, H: Host> {
     pub(super) budget: &'request mut Budget,
 }
 
-impl<'a, H: Host> Invocation<'a, H> {
+impl<'a, H: Host> Turn<'a, H> {
     pub(super) fn running(&mut self) -> Running<'_, 'a, H> {
         Running::new(
             self.vm,
@@ -199,9 +293,9 @@ impl<'request, 'state, H: Host> Running<'request, 'state, H> {
     }
 }
 
-impl<H: Host> fmt::Debug for Invocation<'_, H> {
+impl<H: Host> fmt::Debug for Turn<'_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Invocation")
+        f.debug_struct("Turn")
             .field("entry", &self.continuation.stack.entry)
             .field("frames", &self.continuation.stack.ctx.frames.len())
             .field("remaining_fuel", &self.budget.fuel)
@@ -211,28 +305,53 @@ impl<H: Host> fmt::Debug for Invocation<'_, H> {
 }
 
 impl<H: Host> Vm<H> {
-    /// Starts an invocation of the installed function `entry` without executing an instruction.
+    /// Starts a computation of `callee` with `args` in a new turn, without executing an
+    /// instruction.
     ///
-    /// Validates entry arguments and contracts, initializes the root frame, and emits requested
-    /// entry observations. Use [`Invocation::resume`] to execute bounded scheduling quanta.
-    /// A rejected entry returns its ordinary trap and leaves no new aggregates behind. A unit
-    /// this VM did not install traps with [`Trap::UnknownUnit`] before any observation.
-    pub fn start<'a>(
-        &'a mut self,
-        entry: FuncRef,
-        args: &'a [Value],
-        options: InvocationOptions<'a>,
-    ) -> Result<Invocation<'a, H>, TrapInfo> {
-        self.start_prepaid(entry, args, options, DataWork::default())
+    /// The callee is an installed function or a retained [`Callable`] in a unit installed from
+    /// its program ([`Callable::at`]). Arguments are borrowed or owned ([`Arguments`]). Validates
+    /// entry arguments and contracts, initializes the root frame, and emits requested entry
+    /// observations; [`Turn::drive`] then executes bounded scheduling quanta. A rejected entry
+    /// returns its ordinary trap and leaves no new aggregates behind. A unit this VM did not
+    /// install traps with [`Trap::UnknownUnit`] before any observation, and a callable whose
+    /// program is not the unit's traps with [`Trap::UnitProgramMismatch`]. A closure imports its
+    /// retained captures, charged to the turn's aggregate and payload work, and receives its
+    /// environment ahead of `args`; dropping the turn or a trap discards the imports.
+    pub fn start<'t, 'c>(
+        &'t mut self,
+        callee: impl Into<Callee<'c>>,
+        args: impl Into<Arguments<'t>>,
+        options: TurnOptions<'t>,
+    ) -> Result<Turn<'t, H>, TrapInfo> {
+        let Arguments(args) = args.into();
+        match callee.into() {
+            Callee::Function(entry) => {
+                self.settle();
+                let checkpoint = self.memory.checkpoint();
+                self.start_with_inputs(entry, args, options, checkpoint, DataWork::default())
+            }
+            Callee::Callable { callable, unit } => {
+                let limits = options.limits(&self.limits);
+                let (checkpoint, args, work) =
+                    callable.prepare_inputs(self, unit, args.into_owned(), &limits)?;
+                self.start_with_inputs(
+                    FuncRef::new(unit, callable.function_id()),
+                    Cow::Owned(args),
+                    options,
+                    checkpoint,
+                    work,
+                )
+            }
+        }
     }
 
     pub(crate) fn start_prepaid<'a>(
         &'a mut self,
         entry: FuncRef,
         args: &'a [Value],
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
         work: DataWork,
-    ) -> Result<Invocation<'a, H>, TrapInfo> {
+    ) -> Result<Turn<'a, H>, TrapInfo> {
         self.settle();
         let checkpoint = self.memory.checkpoint();
         self.start_with_inputs(entry, Cow::Borrowed(args), options, checkpoint, work)
@@ -242,64 +361,71 @@ impl<H: Host> Vm<H> {
         &'a mut self,
         entry: FuncRef,
         args: Cow<'a, [Value]>,
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
         checkpoint: Checkpoint,
         work: DataWork,
-    ) -> Result<Invocation<'a, H>, TrapInfo> {
-        Invocation::prepare(self, entry, args, options, checkpoint, work)
+    ) -> Result<Turn<'a, H>, TrapInfo> {
+        Turn::prepare(self, entry, args, options, checkpoint, work)
     }
 }
 
-impl<'a, H: Host> Invocation<'a, H> {
+impl<'a, H: Host> Turn<'a, H> {
     fn prepare(
         vm: &'a mut Vm<H>,
         entry: FuncRef,
         args: Cow<'a, [Value]>,
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
         let program = Arc::clone(vm.entry_program(entry.unit)?);
+        let limits = options.limits(&vm.limits);
         let mut exec = vm.lend(checkpoint);
         let mut budget = core::mem::take(&mut exec.budget);
-        budget.reset(&vm.limits);
+        budget.reset(&limits);
         budget.limit_frames(vm.saved.resident_frames());
         let stack = vm.next_stack();
         let continuation =
             continuation::Continuation::new(&mut exec, stack, program, entry, args, options);
-        let mut invocation = Invocation {
+        let mut turn = Turn {
             vm,
             budget,
             checkpoint,
+            limits,
+            published: false,
             continuation,
             exec: Some(exec),
         };
         if let Err(error) =
-            invocation
-                .continuation
-                .initialize(invocation.vm, &mut invocation.budget, work)
+            turn.continuation
+                .initialize(turn.vm, &mut turn.budget, &turn.limits, work)
         {
-            invocation.running().finish(Err(error.clone()));
+            turn.running().finish(Err(error.clone()));
             return Err(error);
         }
-        Ok(invocation)
+        Ok(turn)
     }
 }
 
-impl<H: Host> Invocation<'_, H> {
+impl<H: Host> Turn<'_, H> {
     /// Admits at most `quantum` guest instructions, or returns the terminal result again.
     ///
-    /// A quantum of zero observes the current suspension without executing. Hard fuel, host-call,
-    /// contract, payload and aggregate-work usage accumulate across resumes; quanta reset none of
-    /// these. Host extra fuel is charged against hard fuel, not against the instruction quantum.
-    /// Prepared block declarations take no steps; an edge transfer belongs to its branch step.
-    /// A yielded host call spends its instruction/host-call debit once and returns
-    /// [`RunStatus::AwaitingHost`]; a guest callback returning to its request reports
-    /// [`RunStatus::CallbackReturned`]. Resuming while a request waits spends nothing, reports
-    /// the same status again and never dispatches the host. Completing the request finishes that instruction without admitting another.
-    pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
+    /// A quantum of zero observes the current suspension without executing. Fuel, host-call,
+    /// contract, payload and aggregate-work usage accumulate across quanta within the turn;
+    /// quanta reset none of these. Host extra fuel is charged against fuel, not against the
+    /// instruction quantum. Prepared block declarations take no steps; an edge transfer belongs
+    /// to its branch step. A yielded host call spends its instruction/host-call debit once and
+    /// returns [`RunStatus::AwaitingHost`]; a guest callback returning to its request reports
+    /// [`RunStatus::CallbackReturned`]. Driving while a request waits spends nothing, reports the
+    /// same status again and never dispatches the host. Completing the request finishes that
+    /// instruction without admitting another.
+    pub fn drive(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
         if let Some(outcome) = &self.continuation.stack.outcome {
             return outcome.clone().map(|()| RunStatus::Complete);
+        }
+        if let Some(location) = self.continuation.stack.control.delivering.take() {
+            // A synchronous host call was interrupted before its results were admitted.
+            return Err(self.running().finish_abandoned(location));
         }
         if let Some(pending) = self.continuation.stack.control.pending_host {
             if pending.abandoned {
@@ -366,7 +492,12 @@ impl<H: Host> Invocation<'_, H> {
         result
     }
 
-    /// Borrows the committed outputs or terminal trap; `None` means execution is suspended.
+    /// Peeks at the returned values or terminal trap; `None` means execution is still running or
+    /// waiting.
+    ///
+    /// Returned values, and the aggregates they reach, last only as long as the turn unless
+    /// [`Self::finish`] publishes them: dropping or forgetting the turn discards them, and later
+    /// allocations reuse their handles. Copying handles out of this view keeps nothing alive.
     #[must_use]
     pub fn result(&self) -> Option<Result<&[Value], &TrapInfo>> {
         self.continuation.stack.outcome.as_ref().map(|result| {
@@ -377,16 +508,26 @@ impl<H: Host> Invocation<'_, H> {
     }
 
     /// Takes committed owned outputs, leaving an empty result buffer. Returns `None` before a
-    /// successful return. Aggregate handles remain owned by this invocation's VM heap.
+    /// successful return. Aggregate handles remain owned by this turn's VM heap.
     /// These are raw ABI values: function and closure references name units of this VM.
     /// Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
-    /// invocation to keep them independently of the VM.
+    /// turn to keep them independently of the VM.
     pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
-        matches!(self.continuation.stack.outcome, Some(Ok(())))
-            .then(|| core::mem::take(&mut self.continuation.stack.outputs))
+        let returned = matches!(self.continuation.stack.outcome, Some(Ok(())));
+        if returned && !self.published {
+            self.published = true;
+            self.vm.close_lease();
+        }
+        returned.then(|| core::mem::take(&mut self.continuation.stack.outputs))
     }
 
-    /// Consumes a successful invocation and retains its result independently of the VM.
+    /// Temporary forward to [`Self::drive`], removed later in this change.
+    #[doc(hidden)]
+    pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
+        self.drive(quantum)
+    }
+
+    /// Consumes a successful turn and retains its result independently of the VM.
     ///
     /// Copies the reachable aggregates, leaving the VM's existing retained handles valid; root
     /// payloads move, sharing is preserved and unreachable nodes are left behind. To move a VM's
@@ -396,20 +537,19 @@ impl<H: Host> Invocation<'_, H> {
     /// is explicit embedding work outside guest budgets.
     ///
     /// Returns `None` after a trap or before successful completion; consuming an unfinished
-    /// invocation cancels it. Inspect [`Self::result`] first to preserve a trap diagnostic.
+    /// turn cancels it. Inspect [`Self::result`] first to preserve a trap diagnostic.
     /// If outputs were already taken, the snapshot is empty.
     pub fn into_snapshot(mut self) -> Result<Option<crate::aggregates::ValueSnapshot>, AggError> {
-        if !matches!(self.continuation.stack.outcome, Some(Ok(()))) {
+        let Some(outputs) = self.take_outputs() else {
             return Ok(None);
-        }
-        let outputs = core::mem::take(&mut self.continuation.stack.outputs);
+        };
         Ok(Some(self.vm.memory.aggs().snapshot_owned(outputs)?))
     }
 
     /// Retains one successful function/closure result with its exact code and captures.
     ///
-    /// The result remains in the invocation; retention explicitly copies its reachable immutable
-    /// captures outside guest work budgets. The retained callable survives this invocation and
+    /// The result remains in the turn; retention explicitly copies its reachable immutable
+    /// captures outside guest work budgets. The retained callable survives this turn and
     /// VM.
     pub fn retain_callable(&self, index: usize) -> Result<Callable, CallableError> {
         let outputs = self
@@ -420,6 +560,41 @@ impl<H: Host> Invocation<'_, H> {
             index,
             count: outputs.len(),
         })?;
+        self.vm.retained_callable(value)
+    }
+}
+
+impl<H: Host> Vm<H> {
+    /// Copies `values` and the aggregates they reach out of this VM into a snapshot.
+    ///
+    /// The VM's aggregates and their handles stay as they are; shared nodes stay shared in the
+    /// copy, and unreachable ones are left behind. Function, closure and nominal IDs still need
+    /// their original program, and host objects stay the host's. Snapshot work is the
+    /// embedding's, outside any turn's budget. To move a retiring VM's graph without copying,
+    /// use [`Self::into_snapshot`].
+    ///
+    /// Like every VM entry point, this first discards what a forgotten turn allocated, so values
+    /// a turn returned but never published through [`Turn::finish`] name nothing to copy.
+    pub fn snapshot(
+        &mut self,
+        values: &[Value],
+    ) -> Result<crate::aggregates::ValueSnapshot, AggError> {
+        self.settle();
+        self.memory.aggs().snapshot_owned(values.to_vec())
+    }
+
+    /// Retains a function or closure `value` of this VM with its exact code and captures.
+    ///
+    /// Copies the closure's reachable immutable captures outside any turn's budget. The
+    /// retained callable outlives this VM and can start in any VM with its program installed.
+    /// Like [`Self::snapshot`], this first discards what a forgotten turn allocated.
+    pub fn retain_callable(&mut self, value: &Value) -> Result<Callable, CallableError> {
+        self.settle();
+        self.retained_callable(value)
+    }
+
+    /// Retains `value` as [`Self::retain_callable`] does, without settling first.
+    fn retained_callable(&self, value: &Value) -> Result<Callable, CallableError> {
         let unit = match value {
             Value::Func(function) => function.unit,
             Value::Closure(closure) => closure.func.unit,
@@ -429,9 +604,8 @@ impl<H: Host> Invocation<'_, H> {
                 });
             }
         };
-        // The result may be code of any unit, not only the entry unit.
+        // The value may be code of any unit, not only an entry unit.
         let program = self
-            .vm
             .units
             .get(unit)
             .ok_or(CallableError::MissingCodeOwner)?;
@@ -441,7 +615,9 @@ impl<H: Host> Invocation<'_, H> {
             ValueRef::from_value(value),
         )
     }
+}
 
+impl<H: Host> Turn<'_, H> {
     /// Remaining hard instruction/host fuel, including after completion or a trap.
     #[must_use]
     pub fn remaining_fuel(&self) -> u64 {
@@ -456,11 +632,11 @@ impl<H: Host> Invocation<'_, H> {
     /// the refused work. Capture/snapshot copies and arbitrary native work are outside this meter.
     ///
     /// This read-only query does not install tracing or change any limits. Summing independent
-    /// invocations accounts for task work; it does not enforce a shared allocation or work ceiling.
+    /// turns accounts for task work; it does not enforce a shared allocation or work ceiling.
     #[must_use]
     pub fn work(&self) -> ExecutionWork {
         ExecutionWork {
-            fuel: self.vm.limits.fuel - self.budget.fuel,
+            fuel: self.limits.fuel - self.budget.fuel,
             host_calls: self.budget.host_calls,
             contract: self.budget.contract_scratch.work_used(),
             data: self.data_work(),
@@ -491,24 +667,24 @@ impl<H: Host> Invocation<'_, H> {
         }
     }
 
-    /// The entry unit's program, retained by this invocation.
+    /// The entry unit's program, retained by this turn.
     ///
-    /// Clone this handle before consuming the invocation when a retained aggregate snapshot
+    /// Clone this handle before consuming the turn when a retained aggregate snapshot
     /// contains function, closure or nominal type IDs.
     #[must_use]
     pub fn program(&self) -> &Arc<VerifiedProgram> {
         &self.continuation.stack.program
     }
 
-    /// The installed unit this invocation entered.
+    /// The installed unit this turn entered.
     #[must_use]
     pub fn unit(&self) -> UnitId {
         self.continuation.stack.unit
     }
 
-    /// Installs `program` in this invocation's VM between scheduling quanta.
+    /// Installs `program` in this turn's VM between scheduling quanta.
     ///
-    /// This is [`Vm::install`] for a VM the invocation borrows or owns. Suspended frames keep
+    /// This is [`Vm::install`] for a VM the turn borrows or owns. Suspended frames keep
     /// the units they run; guest code reaches the new unit only through a [`FuncRef`] it is
     /// given, for example by a host call or as a callback.
     pub fn install(
@@ -518,7 +694,7 @@ impl<H: Host> Invocation<'_, H> {
         install_observed(self.vm, &mut self.continuation, program.into())
     }
 
-    /// Inspects the units installed in this invocation's VM.
+    /// Inspects the units installed in this turn's VM.
     #[must_use]
     pub fn units(&self) -> Units<'_> {
         self.vm.units()
@@ -530,30 +706,30 @@ impl<H: Host> Invocation<'_, H> {
         self.vm.memory.aggs()
     }
 
-    /// Reclaims every aggregate this invocation and the VM's registered groups do not reach,
-    /// while the invocation waits between quanta, at a host request or at a suspension.
+    /// Reclaims every aggregate this turn and the VM's registered groups do not reach,
+    /// while the turn waits between quanta, at a host request or at a suspension.
     ///
-    /// This is [`Vm::collect`], saved computations included, with the invocation's state as
+    /// This is [`Vm::collect`], saved computations included, with the turn's state as
     /// further roots: its arguments, the reference registers of its active frames and of the
     /// frames its unresumed continuations hold, the payloads of exceptions those registers hold, pending callback results and,
     /// once it has returned, its outputs. A register is a root only where verification
     /// establishes that it holds a value: a register not yet written retains nothing, while a
     /// written one keeps its value alive until overwritten, even if never read again. The
-    /// invocation's string and byte descriptors are compacted the same way, dropping owned
+    /// turn's string and byte descriptors are compacted the same way, dropping owned
     /// payloads no live register names. Aggregates a waiting host built and promoted by calling
     /// back stay alive until its request completes.
     ///
-    /// The invocation continues as before. Every aggregate handle copied out of it earlier,
+    /// The turn continues as before. Every aggregate handle copied out of it earlier,
     /// such as a request's [`arguments`](PendingHostCall::arguments), callback results already
     /// taken, or a previous resolution of a registered group, names nothing afterwards and
-    /// fails with [`AggError::BadHandle`]: read them again. Borrowed entry arguments are left untouched; the invocation keeps its own relocated copy.
+    /// fails with [`AggError::BadHandle`]: read them again. Borrowed entry arguments are left untouched; the turn keeps its own relocated copy.
     ///
     /// Collection is refused, moving and reclaiming nothing, while a host request holds
     /// aggregates its host constructed in staging ([`CollectError::HostStaging`]), or holds
     /// ones it built and promoted by calling back and the collection would move anything
     /// ([`CollectError::HostHandles`]),
     /// after an interrupted delivery ([`CollectError::Abandoned`]), or when planning finds a
-    /// handle or register it cannot account for. Observers of an invocation that has not
+    /// handle or register it cannot account for. Observers of a turn that has not
     /// finished see [`ValueEvent::Collected`]; a recording cannot replay across it and reports
     /// [`crate::recording::CaptureFault::Relocated`].
     pub fn collect(&mut self) -> Result<CollectionReport, CollectError> {
@@ -585,7 +761,7 @@ impl<H: Host> Invocation<'_, H> {
         // Contract proofs are keyed by handles that may now name other aggregates.
         self.budget.contract_scratch.clear_proofs();
         if running.stack.outcome.is_none() {
-            // A finished invocation's observers have seen its end, and a finished recording
+            // A finished turn's observers have seen its end, and a finished recording
             // already holds its values by content.
             let program = Arc::clone(&running.stack.program);
             let aggregates = vm.memory.aggs();
@@ -599,9 +775,9 @@ impl<H: Host> Invocation<'_, H> {
         Ok(report)
     }
 
-    /// Borrows the current values of a group registered with this invocation's VM.
+    /// Borrows the current values of a group registered with this turn's VM.
     ///
-    /// This is [`Vm::resolve`] while the invocation borrows or owns the VM; resolve again after
+    /// This is [`Vm::resolve`] while the turn borrows or owns the VM; resolve again after
     /// [`Self::collect`].
     pub fn resolve(&self, root: &RootedValues) -> Result<&[Value], RootError> {
         self.vm.resolve(root)
@@ -639,9 +815,19 @@ impl<H: Host> Running<'_, '_, H> {
                 TraceOutcome::Trap(error)
             }
         };
-        // The outcome is final: dropping this invocation now rolls nothing back, so neither may
-        // settling it if it is forgotten. Close the lease before observers run.
-        self.vm.close_lease();
+        // A trap is final: dropping this turn now rolls nothing more back, so neither may settling
+        // it if it is forgotten. A return publishes only through `Turn::finish`, so its lease
+        // stays open and dropping or forgetting the turn discards what it allocated. Close the
+        // lease before observers run.
+        if self
+            .continuation
+            .stack
+            .outcome
+            .as_ref()
+            .is_some_and(Result::is_err)
+        {
+            self.vm.close_lease();
+        }
         self.continuation
             .trace
             .finish(self.continuation.stack.program.program(), outcome);
@@ -730,55 +916,102 @@ impl<H: Host> Running<'_, '_, H> {
     }
 }
 
-impl<H: Host> Drop for Invocation<'_, H> {
+impl<H: Host> Drop for Turn<'_, H> {
     fn drop(&mut self) {
-        // A saved invocation already returned the execution state and kept its stack.
-        let Some(mut exec) = self.exec.take() else {
+        // A saved or finished turn already returned the execution state.
+        if self.exec.is_none() {
             return;
-        };
-        self.running().cancel();
-        self.continuation.give_back(&mut exec);
-        exec.budget = core::mem::take(&mut self.budget);
-        self.vm.restore(exec);
+        }
+        if matches!(self.continuation.stack.outcome, Some(Ok(()))) {
+            // Returned but not published: discard what it allocated, outputs included, as
+            // settling a forgotten turn would.
+            if !self.published {
+                self.vm.memory.rollback(self.checkpoint);
+                self.vm.close_lease();
+            }
+        } else {
+            self.running().cancel();
+        }
+        self.release();
     }
 }
 
-impl<'a, H: Host> Invocation<'a, H> {
-    /// Marks this unrun invocation's computation as created by [`Vm::spawn`].
+impl<H: Host> Turn<'_, H> {
+    /// Returns the execution state to the VM, ending the turn's use of it.
+    fn release(&mut self) {
+        if let Some(mut exec) = self.exec.take() {
+            self.continuation.give_back(&mut exec);
+            exec.budget = core::mem::take(&mut self.budget);
+            self.vm.restore(exec);
+        }
+    }
+
+    /// Ends this turn and publishes how it ended: the values the computation returned, its trap,
+    /// or the ID it waits under, saved in the VM.
+    ///
+    /// This is the only way to keep what a computation returned: dropping a turn, even one whose
+    /// computation returned, discards what it allocated. Returned values' aggregates stay in the
+    /// VM's heap, valid until a collection moves them; root them with [`Vm::root`], copy them
+    /// out with [`Vm::snapshot`], or retain a returned function with [`Vm::retain_callable`].
+    ///
+    /// A computation still running or waiting is saved: it stays exactly where it stopped,
+    /// between quanta, at a host request with its callbacks, or at a yielded suspension, and
+    /// keeps every aggregate it allocated. [`Vm::resume`] continues it in a later turn, with a
+    /// fresh allowance; until then the VM can run, start, collect and save other computations,
+    /// and [`Vm::collect`] keeps what it reaches. Borrowed arguments are copied into the VM,
+    /// payloads included, outside guest budgets. A computation saved at a host request whose
+    /// host built aggregates and then called back pins them: only the host holds their handles,
+    /// so the VM keeps them and refuses every collection that would move aggregates
+    /// ([`CollectError::SavedHostHandles`]) until the computation is resumed and its request
+    /// completes. While computations are saved, [`AggHeap::clear`] and [`AggHeap::take_nodes`]
+    /// panic: the saved handles would name other aggregates. Observers belong to the turn, not
+    /// the computation: a trace observer receives [`TraceSink::release`] and no further events,
+    /// with everything it saw open left open, and both observers are dropped.
+    ///
+    /// The turn comes back unchanged, and nothing is saved, when the VM already keeps
+    /// [`Limits::max_saved_computations`] computations, when the computation waits at a host
+    /// request whose host has aggregates in staging (only the host's handles reach them, and
+    /// they would alias aggregates later runs allocate: complete the request first, or call back
+    /// to promote them), or when a delivery to it was interrupted (drive it to see its trap).
+    /// While the turn is held, its VM cannot resume or discard another computation, so a full
+    /// store leaves two choices: drive this computation to the end, or drop the turn. Free a
+    /// slot before opening a turn that will need to save.
+    #[expect(
+        clippy::result_large_err,
+        reason = "a refused finish hands back the turn it was given, which is moved in anyway"
+    )]
+    pub fn finish(mut self) -> Result<TurnOutcome, Self> {
+        match &self.continuation.stack.outcome {
+            Some(Ok(())) => {
+                let values = core::mem::take(&mut self.continuation.stack.outputs);
+                if !self.published {
+                    self.published = true;
+                    self.vm.close_lease();
+                }
+                self.release();
+                Ok(TurnOutcome::Returned(values))
+            }
+            Some(Err(trap)) => {
+                let trap = trap.clone();
+                self.release();
+                Ok(TurnOutcome::Trapped(trap))
+            }
+            None => self.save().map(TurnOutcome::Saved),
+        }
+    }
+}
+
+impl<'a, H: Host> Turn<'a, H> {
+    /// Marks this unrun turn's computation as created by [`Vm::spawn`].
     pub(super) fn mark_spawned(&mut self) {
         self.continuation.stack.spawned = true;
     }
 
-    /// Keeps this waiting invocation's computation in its VM and ends the invocation without
-    /// cancelling it.
-    ///
-    /// The computation stays exactly where it stopped, between quanta, at a host request with
-    /// its callbacks, or at a yielded suspension, and keeps every aggregate it allocated.
-    /// [`Vm::resume`] continues it later in a new invocation; until then the VM can run, start,
-    /// collect and save other computations, and [`Vm::collect`] keeps what it reaches. Borrowed
-    /// arguments are copied into the VM, payloads included, outside guest budgets. Saving ends
-    /// this invocation's work allowance: the resuming invocation starts a fresh one.
-    ///
-    /// A computation saved at a host request whose host built aggregates and then called back
-    /// pins them: only the host holds their handles, so the VM keeps them and refuses every
-    /// collection that would move aggregates ([`CollectError::SavedHostHandles`]) until the
-    /// computation is resumed and its request completes. While computations are saved,
-    /// [`AggHeap::clear`] and [`AggHeap::take_nodes`] panic: the saved handles would name other
-    /// aggregates.
-    ///
-    /// Observers belong to this invocation, not to the computation: a trace observer receives
-    /// [`TraceSink::release`] and no further events, with
-    /// everything it saw open left open, and both observers are dropped.
-    ///
-    /// Returns the invocation unchanged, and saves nothing, when it has finished (take its
-    /// result instead), when the VM already keeps [`Limits::max_saved_computations`]
-    /// computations (resume or discard one first), waits at a host request
-    /// whose host has aggregates in staging (only the host's handles reach them, and they would
-    /// alias aggregates later runs allocate: complete the request first, or call back to promote
-    /// them), or holds an interrupted delivery (resume it to see its trap).
+    /// Saves this turn's computation in its VM; [`Self::finish`] describes when and how.
+    #[doc(hidden)]
     #[expect(
         clippy::result_large_err,
-        reason = "a refused save hands back the invocation it was given, which is moved in anyway"
+        reason = "a refused save hands back the turn it was given, which is moved in anyway"
     )]
     pub fn save(mut self) -> Result<ComputationId, Self> {
         let stack = &self.continuation.stack;
@@ -786,10 +1019,11 @@ impl<'a, H: Host> Invocation<'a, H> {
             .host_results
             .as_ref()
             .is_some_and(crate::host::HostResults::is_staging);
-        let abandoned = stack
-            .control
-            .pending_host
-            .is_some_and(|host| host.abandoned)
+        let abandoned = stack.control.delivering.is_some()
+            || stack
+                .control
+                .pending_host
+                .is_some_and(|host| host.abandoned)
             || stack
                 .control
                 .pending_suspension
@@ -800,7 +1034,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         }
         let program = Arc::clone(&self.continuation.stack.program);
         let work = self.work();
-        let invocation = self.continuation.stack.invocations;
+        let turn = self.continuation.stack.turns;
         let stack = StackId::new(self.vm.number, &self.continuation.stack.control);
         let aggregates = self.vm.memory.aggs();
         self.continuation
@@ -808,19 +1042,19 @@ impl<'a, H: Host> Invocation<'a, H> {
             .values(program.program(), || ValueEvent::Saved {
                 stack,
                 work,
-                invocation,
+                turn,
                 aggregates,
             });
         self.continuation.trace.release(program.program());
         let mut stack = self.continuation.stack.take();
-        // Host results not in staging carry only this invocation's work usage; the resuming
-        // invocation starts its own.
+        // Host results not in staging carry only this turn's work usage; the resuming
+        // turn starts its own.
         stack.host_results = None;
         let args = Cow::Owned(core::mem::take(&mut self.continuation.args).into_owned());
         let mut exec = self
             .exec
             .take()
-            .expect("a live invocation holds the execution state");
+            .expect("a live turn holds the execution state");
         exec.budget = core::mem::take(&mut self.budget);
         // The saved stack keeps everything it allocated: nothing is left to discard.
         self.vm.close_lease();
@@ -832,29 +1066,28 @@ impl<'a, H: Host> Invocation<'a, H> {
 }
 
 impl<H: Host> Vm<H> {
-    /// Continues a saved computation in a new invocation, with a fresh work allowance.
+    /// Continues a saved computation in a new turn, with a fresh work allowance.
     ///
-    /// The invocation picks up exactly where [`Invocation::save`] left it: [`Invocation::resume`]
-    /// runs it on, and a request or suspension it was waiting at is still pending. `options`
-    /// sets how this invocation handles host calls and suspensions it reaches, and its
-    /// observers: a trace observer receives
-    /// [`TraceSink::attach`] with what is already open, in
-    /// place of a run start, and then the computation's events as usual. Fuel, host calls
-    /// and aggregate, payload and contract work restart from [`Self::limits`]; frames the
-    /// computation holds still count against [`Limits::max_call_depth`], and with every other
-    /// saved computation's against [`Limits::max_frames`]. A computation [`Self::spawn`] created
-    /// enters on its first resume instead, as one [`Self::start`] begins: observers receive its
-    /// run start and entry, and this is its first invocation.
+    /// The computation picks up exactly where its last turn finished: [`Turn::drive`] runs it
+    /// on, and a request or suspension it was waiting at is still pending. `options` sets how
+    /// this turn handles host calls and suspensions it reaches, its allowance and its observers:
+    /// a trace observer receives [`TraceSink::attach`] with what is already open, in place of a
+    /// run start, and then the computation's events as usual. Fuel, host calls and aggregate,
+    /// payload and contract work restart from the turn's allowance; frames the computation holds
+    /// still count against [`Limits::max_call_depth`], and with every other saved computation's
+    /// against [`Limits::max_frames`]. A computation [`Self::spawn`] created enters on its first
+    /// resume instead, as one [`Self::start`] begins: observers receive its run start and entry,
+    /// and this is its first turn.
     ///
-    /// The ID names nothing afterwards: save the invocation again to keep it, or drop it to
-    /// cancel the computation, which discards what this invocation allocated. Refuses, leaving
+    /// The ID names nothing afterwards: finish the turn to save the computation again, or drop
+    /// it to cancel the computation, which discards what this turn allocated. Refuses, leaving
     /// the computation saved, an ID this VM holds no computation for, another VM's ID, and
     /// options with a trace observer while a guest callback runs on top of a waiting host
     /// request.
     ///
     /// The computation leaves the VM's saved computations before the trace observer's
     /// [`TraceSink::attach`] runs, and the ID names nothing from then on: if the observer
-    /// panics, dropping the invocation cancels the computation.
+    /// panics, dropping the turn cancels the computation.
     ///
     /// # Panics
     ///
@@ -863,8 +1096,8 @@ impl<H: Host> Vm<H> {
     pub fn resume<'a>(
         &'a mut self,
         id: ComputationId,
-        options: InvocationOptions<'a>,
-    ) -> Result<Invocation<'a, H>, ResumeError> {
+        options: TurnOptions<'a>,
+    ) -> Result<Turn<'a, H>, ComputationError> {
         let saved = self.saved.get(id)?;
         let calling_back = saved
             .stack
@@ -874,7 +1107,7 @@ impl<H: Host> Vm<H> {
             .is_some_and(|callbacks| callbacks.running());
         // Access observers pair no events, so only a trace observer needs the handoff.
         if calling_back && options.trace.is_some() {
-            return Err(ResumeError::Observed);
+            return Err(ComputationError::Observed);
         }
         self.check_pinned();
         self.settle();
@@ -884,21 +1117,22 @@ impl<H: Host> Vm<H> {
         let saved::Saved { mut stack, args } = *saved;
         let spawned = core::mem::take(&mut stack.spawned);
         if spawned {
-            // Entered again below, as the first invocation, under this one's observers.
+            // Entered again below, as the first turn, under this one's observers.
             let owner = stack.control.owner();
             stack
                 .control
                 .start(owner, options.yield_host_calls, options.yield_suspensions);
         } else {
-            stack.invocations += 1;
+            stack.turns += 1;
             stack
                 .control
                 .set_yields(options.yield_host_calls, options.yield_suspensions);
         }
+        let limits = options.limits(&self.limits);
         let checkpoint = self.memory.checkpoint();
         let mut exec = self.lend(checkpoint);
         let mut budget = core::mem::take(&mut exec.budget);
-        budget.reset(&self.limits);
+        budget.reset(&limits);
         budget.limit_frames(self.saved.resident_frames());
         budget.frames = if spawned { 0 } else { stack.ctx.held_frames() };
         let continuation = continuation::Continuation {
@@ -908,53 +1142,69 @@ impl<H: Host> Vm<H> {
             access: options.access,
             register_state: observations::RegisterState::default(),
         };
-        let mut invocation = Invocation {
+        let mut turn = Turn {
             vm: self,
             continuation,
             checkpoint,
             budget,
+            limits,
+            published: false,
             exec: Some(exec),
         };
         if spawned {
-            // The same entry `spawn` checked; a refusal finishes this invocation with its trap.
-            if let Err(error) = invocation.continuation.initialize(
-                invocation.vm,
-                &mut invocation.budget,
+            // The same entry `spawn` checked; a refusal finishes this turn with its trap.
+            if let Err(error) = turn.continuation.initialize(
+                turn.vm,
+                &mut turn.budget,
+                &turn.limits,
                 DataWork::default(),
             ) {
-                invocation.running().finish(Err(error));
+                turn.running().finish(Err(error));
             }
-            return Ok(invocation);
+            return Ok(turn);
         }
-        // The invocation is complete before its observer runs: if the observer panics, dropping
+        // The turn is complete before its observer runs: if the observer panics, dropping
         // it cancels the computation like any other.
-        let continuation = &mut invocation.continuation;
+        let continuation = &mut turn.continuation;
         let stack = &continuation.stack;
         continuation.trace.attach(
-            &invocation.vm.units,
+            &turn.vm.units,
             FuncRef::new(stack.unit, stack.entry),
             &stack.ctx,
             &stack.control,
         );
         let program = Arc::clone(&stack.program);
-        let invocations = stack.invocations;
-        let vm = &*invocation.vm;
+        let turns = stack.turns;
+        let vm = &*turn.vm;
+        let limits = &turn.limits;
+        let yields_suspensions = stack.control.yield_suspensions;
         let stack = StackId::new(vm.number, &stack.control);
         continuation
             .trace
             .values(program.program(), || ValueEvent::Resumed {
                 stack,
-                invocation: invocations,
-                limits: &vm.limits,
+                turn: turns,
+                limits,
                 resident_frames: vm.saved.resident_frames(),
+                yields_suspensions,
                 aggregates: vm.memory.aggs(),
                 units: vm.units(),
             });
-        Ok(invocation)
+        Ok(turn)
     }
 }
 
 impl Callable {
+    /// This callable started in `unit`, a unit installed from its exact program, for
+    /// [`Vm::start`].
+    #[must_use]
+    pub fn at(&self, unit: UnitId) -> Callee<'_> {
+        Callee::Callable {
+            callable: self,
+            unit,
+        }
+    }
+
     /// Starts this exact retained target in a VM, without executing a guest instruction.
     ///
     /// `unit` must be a unit of `vm` installed from this callable's exact program (the same
@@ -963,7 +1213,7 @@ impl Callable {
     /// cloning their byte/string payloads. Raw argument handles must belong to the destination
     /// VM and this program's identity domain. A closure imports its retained graph and prepends
     /// its hidden environment. Capture copy work is admitted before import and debited against
-    /// the invocation's normal
+    /// the turn's normal
     /// aggregate/payload limits. Preparation rejection emits no run observations or host effects.
     ///
     /// Dropping, trapping, or rejecting entry rolls back imported captures as well as guest
@@ -971,15 +1221,16 @@ impl Callable {
     /// include the hidden environment and the entry-work debit, so checked replay uses the
     /// ordinary body signature with the same budgets. Host object validity remains the host's
     /// responsibility; use `visit_objects` to enumerate retained capture references. The returned
-    /// invocation owns its code and inputs, so the lookup/callable handle can be dropped at once.
+    /// turn owns its code and inputs, so the lookup/callable handle can be dropped at once.
     pub fn start<'a, H: Host>(
         &self,
         vm: &'a mut Vm<H>,
         unit: UnitId,
         args: Vec<Value>,
-        options: InvocationOptions<'a>,
-    ) -> Result<Invocation<'a, H>, TrapInfo> {
-        let (checkpoint, args, work) = self.prepare_inputs(vm, unit, args)?;
+        options: TurnOptions<'a>,
+    ) -> Result<Turn<'a, H>, TrapInfo> {
+        let limits = options.limits(&vm.limits);
+        let (checkpoint, args, work) = self.prepare_inputs(vm, unit, args, &limits)?;
         vm.start_with_inputs(
             FuncRef::new(unit, self.function_id()),
             Cow::Owned(args),
@@ -994,6 +1245,7 @@ impl Callable {
         vm: &mut Vm<H>,
         unit: UnitId,
         mut args: Vec<Value>,
+        limits: &Limits,
     ) -> Result<(Checkpoint, Vec<Value>, DataWork), TrapInfo> {
         let entry = self.function_id();
         vm.settle();
@@ -1028,7 +1280,7 @@ impl Callable {
             aggregate: capture.aggregate_work,
             payload: capture.payload_work,
         };
-        work.check(&vm.limits).map_err(trap)?;
+        work.check(limits).map_err(trap)?;
         let checkpoint = vm.memory.checkpoint();
         let first = vm.memory.aggs().handle_end();
         let imported = vm
@@ -1046,7 +1298,7 @@ impl Callable {
     }
 }
 
-/// Repoints a link while an invocation is suspended and reports the change to its trace.
+/// Repoints a link while a turn is suspended and reports the change to its trace.
 ///
 /// A relink to the current target changes nothing and reports nothing.
 pub(super) fn relink_observed<H: Host>(
@@ -1072,7 +1324,7 @@ pub(super) fn relink_observed<H: Host>(
     Ok(previous)
 }
 
-/// Installs `program` while an invocation is suspended and reports it to the invocation's trace.
+/// Installs `program` while a turn is suspended and reports it to the turn's trace.
 pub(super) fn install_observed<H: Host>(
     vm: &mut Vm<H>,
     continuation: &mut continuation::Continuation<'_>,

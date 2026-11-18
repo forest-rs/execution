@@ -1416,19 +1416,16 @@ mod tests {
         // Remember both imports from ordinary calls first.
         assert_eq!(resolve(&mut vm, unit, surface), [Some(A), Some(B)]);
 
-        let mut invocation = vm
+        let mut turn = vm
             .start(
                 FuncRef::new(unit, FuncId(0)),
                 &[Value::I64(1)],
-                crate::vm::InvocationOptions::default().yield_host_calls(),
+                crate::vm::TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
         for expected in [A, B] {
-            assert_eq!(
-                invocation.resume(100).unwrap(),
-                crate::vm::RunStatus::AwaitingHost
-            );
-            let mut request = invocation.pending_host_call().unwrap();
+            assert_eq!(turn.drive(100).unwrap(), crate::vm::RunStatus::AwaitingHost);
+            let mut request = turn.pending_host_call().unwrap();
             assert_eq!(request.context().import_in(surface), Some(expected));
             assert_eq!(request.context().import_in(&[A_BOOL]), None);
             request.complete(&mut [Value::I64(1)], Ok(0)).unwrap();

@@ -7,7 +7,7 @@
 //! The VM only emits events requested by a [`TraceMask`].
 //!
 //! To enable tracing, pass a [`TraceMask`] and [`TraceSink`] to [`Vm::run`].
-//! [`TraceMask::VALUES`] borrows values at invocation, host-call completion and root return.
+//! [`TraceMask::VALUES`] borrows values at turn, host-call completion and root return.
 //! Combine it with [`TraceMask::RUN`] to observe the final outcome; a return candidate can
 //! still be rejected. The sink owns retention and recording policy.
 
@@ -241,7 +241,7 @@ impl<'a> Attachment<'a> {
 pub enum TraceOutcome<'a> {
     /// Completed successfully.
     Ok,
-    /// The invocation or an admitted host delivery was cancelled before guest completion.
+    /// The turn or an admitted host delivery was cancelled before guest completion.
     /// Host effects are not undone; abandoned deliveries produce incomplete evidence.
     /// An interrupted instruction attempt has no successful completion.
     Cancelled,
@@ -319,7 +319,7 @@ pub enum HostCallOutcome<'a> {
     /// The host returned an owned operation error, borrowed for this callback.
     Failed(&'a HostError),
     /// The host raised a guest exception with [`HostError::throw`]. Payload aggregates have been
-    /// adopted into the invocation heap; tag and payload are validated after observation.
+    /// adopted into the turn heap; tag and payload are validated after observation.
     Threw {
         /// Raised VM tag, not yet checked to exist.
         tag: TagRef,
@@ -351,7 +351,7 @@ pub enum SuspensionAnswer<'a> {
         /// Raw payload values.
         payload: &'a [Value],
     },
-    /// The embedding discarded the suspension, ending the invocation with
+    /// The embedding discarded the suspension, ending the turn with
     /// [`crate::vm::Trap::UnhandledSuspension`].
     Discarded,
 }
@@ -368,7 +368,7 @@ pub enum SuspensionAnswer<'a> {
 pub enum ValueEvent<'a> {
     /// Embedding-requested guest reentry while a host instruction remains pending.
     /// Observed before callback target, argument or fuel validation. IDs and handles use this
-    /// invocation's original code/heap. Promoted staging keeps its original handle identities.
+    /// computation's original code/heap. Promoted staging keeps its original handle identities.
     CallbackEnter {
         /// Host instruction whose embedding requested the callback.
         location: TraceLocation,
@@ -376,11 +376,11 @@ pub enum ValueEvent<'a> {
         callee: &'a Value,
         /// Supplied user arguments, excluding a closure's hidden environment.
         args: &'a [Value],
-        /// Prior host construction work promoted to the shared invocation before reentry.
+        /// Prior host construction work promoted to the shared turn before reentry.
         work: DataWork,
         /// Promoted aggregate handles, including values still held by the embedding.
         created: &'a core::ops::Range<u32>,
-        /// Shared invocation storage after promotion.
+        /// Shared turn storage after promotion.
         aggregates: &'a AggHeap,
     },
     /// A callback returned successfully to the embedding, without completing its host call.
@@ -389,12 +389,12 @@ pub enum ValueEvent<'a> {
         location: TraceLocation,
         /// Original pending host instruction.
         caller: TraceLocation,
-        /// Contract-checked result slots. Handles still belong to this invocation.
+        /// Contract-checked result slots. Handles still belong to this turn.
         values: &'a [Value],
-        /// Shared invocation storage; no root commit or handle compaction occurred.
+        /// Shared turn storage; no root commit or handle compaction occurred.
         aggregates: &'a AggHeap,
     },
-    /// Invocation inputs, before entry, argument, shape or execution-limit validation.
+    /// Turn inputs, before entry, argument, shape or execution-limit validation.
     Entry {
         /// Requested entry function, which may be absent from its unit.
         entry: FuncRef,
@@ -402,19 +402,21 @@ pub enum ValueEvent<'a> {
         args: &'a [Value],
         /// Aggregate storage at entry. Its length distinguishes initial from run-created nodes.
         aggregates: &'a AggHeap,
-        /// Limits governing this invocation.
+        /// Limits governing this turn.
         limits: &'a Limits,
         /// Frames the VM's other computations hold, which count against
-        /// [`Limits::max_frames`] with this invocation's own.
+        /// [`Limits::max_frames`] with this turn's own.
         resident_frames: usize,
+        /// Whether this turn yields suspensions no guest handler handles, instead of trapping.
+        yields_suspensions: bool,
         /// Input preparation already debited against these limits.
         work: DataWork,
-        /// The VM's units and tags when the invocation starts. Installs while it is suspended
+        /// The VM's units and tags when the turn starts. Installs while it is suspended
         /// are reported by [`Self::Installed`], and relinks by [`Self::Relinked`].
         units: Units<'a>,
     },
-    /// A unit was installed while this invocation was suspended, through
-    /// [`crate::vm::Invocation::install`] or [`crate::vm::PendingHostCall::install`].
+    /// A unit was installed while this turn was suspended, through
+    /// [`crate::vm::Turn::install`] or [`crate::vm::PendingHostCall::install`].
     ///
     /// Observers that rebuild the VM, such as recordings, repeat the install at the same point.
     Installed {
@@ -423,7 +425,7 @@ pub enum ValueEvent<'a> {
         /// The VM's units and tags, including the new unit.
         units: Units<'a>,
     },
-    /// A link was repointed while a host request or suspension of this invocation waited,
+    /// A link was repointed while a host request or suspension of this turn waited,
     /// through [`crate::vm::PendingHostCall::relink`] or
     /// [`crate::vm::PendingSuspension::relink`].
     ///
@@ -438,8 +440,8 @@ pub enum ValueEvent<'a> {
         /// The VM's units, tags and links after the change.
         units: Units<'a>,
     },
-    /// An explicit collection moved this invocation's aggregates while it waited, through
-    /// [`crate::vm::Invocation::collect`].
+    /// An explicit collection moved this turn's aggregates while it waited, through
+    /// [`crate::vm::Turn::collect`].
     ///
     /// Aggregate handles observed before this event no longer name the same values: survivors
     /// moved and the rest were reclaimed. Observers that keep handles must stop relying on
@@ -457,36 +459,38 @@ pub enum ValueEvent<'a> {
         /// Storage after the collection.
         aggregates: &'a AggHeap,
     },
-    /// This invocation is about to be saved with [`crate::vm::Invocation::save`]; the
-    /// computation continues in a later invocation.
+    /// This turn is about to be saved with [`crate::vm::Turn::finish`]; the
+    /// computation continues in a later turn.
     ///
     /// Precedes [`TraceSink::release`]. Observers that follow the computation across
-    /// invocations, such as recordings, note where it stopped.
+    /// turns, such as recordings, note where it stopped.
     Saved {
         /// The computation saved.
         stack: crate::vm::StackId,
-        /// The work this invocation admitted, which a replay must reach before it saves too.
+        /// The work this turn admitted, which a replay must reach before it saves too.
         work: crate::vm::ExecutionWork,
-        /// How many invocations ran the computation before this one.
-        invocation: u64,
+        /// How many turns ran the computation before this one.
+        turn: u64,
         /// Storage when saved. Anything that changes it before the computation is resumed,
-        /// another invocation, a collection or the embedding, moves later allocations.
+        /// another turn, a collection or the embedding, moves later allocations.
         aggregates: &'a AggHeap,
     },
-    /// This invocation resumed a saved computation with [`crate::vm::Vm::resume`].
+    /// This turn resumed a saved computation with [`crate::vm::Vm::resume`].
     ///
     /// Follows [`TraceSink::attach`] and precedes the computation's other events.
     Resumed {
         /// The computation resumed.
         stack: crate::vm::StackId,
-        /// How many invocations ran the computation before this one; one more than the
-        /// invocation that saved it last.
-        invocation: u64,
-        /// Limits this invocation's fresh work allowance comes from.
+        /// How many turns ran the computation before this one; one more than the
+        /// turn that saved it last.
+        turn: u64,
+        /// Limits this turn's fresh work allowance comes from.
         limits: &'a Limits,
         /// Frames the VM's other computations hold, which count against
         /// [`Limits::max_frames`] with this computation's own.
         resident_frames: usize,
+        /// Whether this turn yields suspensions no guest handler handles, instead of trapping.
+        yields_suspensions: bool,
         /// Storage when resumed.
         aggregates: &'a AggHeap,
         /// The VM's units, tags and links when resumed, including any installed, defined or
@@ -548,8 +552,8 @@ pub enum ValueEvent<'a> {
     },
     /// A `suspend` that no guest `on` clause handles was yielded to the embedding.
     ///
-    /// Only invocations that opt into
-    /// [`InvocationOptions::yield_suspensions`](crate::vm::InvocationOptions::yield_suspensions)
+    /// Only turns that opt into
+    /// [`TurnOptions::yield_suspensions`](crate::vm::TurnOptions::yield_suspensions)
     /// yield suspensions. Payload contracts have been checked. The suspended activations then
     /// close their scopes with [`TraceOutcome::Suspended`], innermost first; the embedding's
     /// answer is reported by [`Self::SuspensionAnswered`].
@@ -590,7 +594,7 @@ pub enum ValueEvent<'a> {
         tag: TagRef,
         /// The tag's ID in the rethrowing program, if that program declares or imports it.
         local: Option<TagId>,
-        /// Zero-based ordinal of the original [`Self::Thrown`] among this invocation's raises.
+        /// Zero-based ordinal of the original [`Self::Thrown`] among this turn's raises.
         exception: usize,
         /// The original throwing instruction.
         origin: TraceLocation,
@@ -659,28 +663,30 @@ impl core::fmt::Debug for ValueEvent<'_> {
             Self::Saved {
                 stack,
                 work,
-                invocation,
+                turn,
                 aggregates,
             } => f
                 .debug_struct("Saved")
                 .field("stack", stack)
                 .field("work", work)
-                .field("invocation", invocation)
+                .field("turn", turn)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
             Self::Resumed {
                 stack,
-                invocation,
+                turn,
                 limits,
                 resident_frames,
+                yields_suspensions,
                 aggregates,
                 units,
             } => f
                 .debug_struct("Resumed")
                 .field("stack", stack)
-                .field("invocation", invocation)
+                .field("turn", turn)
                 .field("limits", limits)
                 .field("resident_frames", resident_frames)
+                .field("yields_suspensions", yields_suspensions)
                 .field("aggregate_count", &aggregates.len_u32())
                 .field("units", units)
                 .finish(),
@@ -707,6 +713,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 aggregates,
                 limits,
                 resident_frames,
+                yields_suspensions,
                 work,
                 units: _,
             } => f
@@ -716,6 +723,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("aggregate_count", &aggregates.len_u32())
                 .field("limits", limits)
                 .field("resident_frames", resident_frames)
+                .field("yields_suspensions", yields_suspensions)
                 .field("work", work)
                 .finish(),
             Self::HostCall {
@@ -827,10 +835,10 @@ impl core::fmt::Debug for ValueEvent<'_> {
 /// A trace sink that can receive VM events.
 ///
 /// `Rc<RefCell<S>>` forwards all callbacks and filtering to a shared sink. This supports owned
-/// observers whose evidence outlives an invocation. Release `RefCell` borrows before executing
-/// or retiring the invocation; cancellation also emits observations.
+/// observers whose evidence outlives a turn. Release `RefCell` borrows before executing
+/// or retiring the turn; cancellation also emits observations.
 pub trait TraceSink {
-    /// Reports the actual event subscription once before any events for a traced invocation.
+    /// Reports the actual event subscription once before any events for a traced turn.
     /// This is independent of [`TraceMask::RUN`]; [`TraceMask::NONE`] emits no callbacks.
     /// The recommended [`Self::mask`] does not prove which mask the caller passed to the VM.
     fn run_mask(&mut self, _program: &Program, _mask: TraceMask) {}
@@ -902,7 +910,7 @@ pub trait TraceSink {
     /// embedding-requested callbacks execute: completions nest, rather than forming pairs of
     /// adjacent events. The original host instruction is not admitted or executed twice.
     /// A call completes its dispatch when control enters the callee; the call-frame scope's exit
-    /// reports whether that invocation eventually returned or trapped.
+    /// reports whether that turn eventually returned or trapped.
     fn instr_end(
         &mut self,
         _program: &Program,
@@ -981,7 +989,7 @@ pub trait TraceSink {
     fn attach(&mut self, _program: &Program, _attachment: Attachment<'_>) {}
 
     /// Called instead of [`Self::run_end`] when the observer stops observing a computation that
-    /// keeps running: one saved with [`crate::vm::Invocation::save`].
+    /// keeps running: one saved with [`crate::vm::Turn::finish`].
     ///
     /// The last event, under any mask but [`TraceMask::NONE`]. Every scope and instruction
     /// attempt the observer saw open is still open in the computation, and no exit follows for
@@ -991,7 +999,7 @@ pub trait TraceSink {
     fn release(&mut self, _program: &Program) {}
 }
 
-// Shared ownership keeps observations available after the invocations that fed them end.
+// Shared ownership keeps observations available after the turns that fed them end.
 // Borrow only between execution calls: reentrant RefCell borrows intentionally panic.
 impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> {
     fn run_mask(&mut self, program: &Program, mask: TraceMask) {

@@ -9,8 +9,8 @@
 //! and throw site. Exceptions carry a VM [`TagRef`]: each frame's clauses compare the tags their
 //! own unit binds, so units that import one tag catch each other's exceptions, while a tag that
 //! a unit neither defines nor imports reaches only its `catch_all`/`catch_all_ref` clauses. An
-//! exception no clause catches leaves the invocation as [`Trap::Uncaught`];
-//! its payload is detached into an owned [`ValueSnapshot`] before the failed invocation rolls
+//! exception no clause catches leaves the turn as [`Trap::Uncaught`];
+//! its payload is detached into an owned [`ValueSnapshot`] before the failed turn rolls
 //! back its aggregates, so the embedding can inspect it.
 
 use super::*;
@@ -20,10 +20,10 @@ use crate::program::TagId;
 use crate::typed::ExecCatch;
 use crate::value::TagRef;
 
-/// A guest exception that no protected region caught before it left the invocation.
+/// A guest exception that no protected region caught before it left the turn.
 ///
 /// The payload is an independent snapshot: aggregate handles refer to
-/// [`ValueSnapshot::aggregates`], not to the VM heap, which discards the failed invocation's
+/// [`ValueSnapshot::aggregates`], not to the VM heap, which discards the failed turn's
 /// allocations. Host objects remain host-owned handles; function references keep their units.
 #[derive(Clone, Debug)]
 pub struct UncaughtException {
@@ -89,7 +89,7 @@ pub(crate) struct Exception {
     tag: TagRef,
     payload: Vec<Value>,
     origin: TraceLocation,
-    /// Invocation-local raise ordinal, linking rethrows to the original in evidence.
+    /// Turn-local raise ordinal, linking rethrows to the original in evidence.
     ordinal: usize,
 }
 
@@ -278,7 +278,7 @@ impl<H: Host> Vm<H> {
                     self.memory.aggs(),
                     value,
                     contract,
-                    self.limits.max_contract_work,
+                    budget.contract_limit,
                 ) {
                     let position = ContractPosition::Payload {
                         tag: local,
@@ -290,6 +290,7 @@ impl<H: Host> Vm<H> {
                             FuncRef::new(location.unit, location.func),
                             position,
                             error,
+                            budget.contract_limit,
                         ),
                     ));
                 }
@@ -339,7 +340,7 @@ impl<H: Host> Vm<H> {
     ///
     /// The search starts at the raising activation and continues outward. A catch abandons the
     /// activations and pending host requests it passes through, and execution continues at the
-    /// handler: `Ok(())`. With no catching clause, the returned trap ends the invocation with a
+    /// handler: `Ok(())`. With no catching clause, the returned trap ends the turn with a
     /// detached payload snapshot.
     #[allow(
         clippy::too_many_arguments,

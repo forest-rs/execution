@@ -10,7 +10,7 @@
 //! Share a prepared program in `Arc`, construct [`Recorder::new`], and pass [`TraceSink::mask`]
 //! and `Some(&mut recorder)` to ordinary VM execution. Execution may enter any installed unit:
 //! the recording snapshots the VM's units, tags and link targets at entry, records installs and
-//! relinks made while the invocation waits at a host request or suspension, and keeps the VM's
+//! relinks made while the turn waits at a host request or suspension, and keeps the VM's
 //! unit and tag identities in every location and value. Replay points each link where it
 //! pointed at entry, repeats those installs, tag definitions and relinks in order, and checks
 //! the identities. Consume it with [`Recorder::finish`]
@@ -18,27 +18,27 @@
 //! again in a fresh VM, checks host arguments and the final values/trap, and returns the actual
 //! replay result. It invokes no live host or resource-access sink.
 //!
-//! A recording follows one computation from its entry to its outcome, across invocations when
-//! the computation is saved ([`crate::vm::Invocation::save`]) and resumed
-//! ([`crate::vm::Vm::resume`]): pass the same recorder to each invocation that runs it. It notes
-//! where each invocation saved the computation, the limits each resuming invocation's allowance
+//! A recording follows one computation from its entry to its outcome, across turns when
+//! the computation is saved ([`crate::vm::Turn::finish`]) and resumed
+//! ([`crate::vm::Vm::resume`]): pass the same recorder to each turn that runs it. It notes
+//! where each turn saved the computation, the limits each resuming turn's allowance
 //! came from, and the installs, tag definitions and relinks made while it was saved; replay
 //! saves and resumes its own run at the same points, so fuel and work limits apply as they did.
 //! Nothing else may change the heap while the computation is saved, neither another
-//! invocation or run nor a collection, or the capture reports
+//! turn or run nor a collection, or the capture reports
 //! [`CaptureFault::Interleaved`]: replay identifies guest-created aggregates by their order.
-//! An invocation of the computation the recorder did not observe makes it report
+//! A turn of the computation the recorder did not observe makes it report
 //! [`CaptureFault::Unrecorded`], and a recorder that joins a computation it did not see start
 //! reports [`CaptureFault::MissingEntry`].
 //!
 //! Embedding-requested guest callbacks through `PendingHostCall::call_guest` are retained as
-//! [`ControlCommand`]s. Replay issues those commands into the same invocation and executes the
+//! [`ControlCommand`]s. Replay issues those commands into the same turn and executes the
 //! guest bodies again; it checks actual callback results rather than supplying saved guest results.
 //! Commands, callback returns and native host outcomes carry a shared observation sequence.
 //! A callback return does not complete its parent host request or publish the root result.
 //!
 //! Suspensions yielded to the embedding (see
-//! [`InvocationOptions::yield_suspensions`](crate::vm::InvocationOptions::yield_suspensions))
+//! [`TurnOptions::yield_suspensions`](crate::vm::TurnOptions::yield_suspensions))
 //! are retained as [`YieldedSuspension`]s: the guest's payload, which replay checks, and the
 //! embedding's answer, which replay delivers again instead of asking an embedding.
 //!
@@ -104,7 +104,7 @@
 //! Exceeding a budget stops value/graph retention while live execution continues. The final VM
 //! trap is still retained when its payload budget permits. Missing entry/completion,
 //! invalid aggregate references, program mismatch and recorder reuse mark a capture incomplete.
-//! The original invocation can still return or trap normally. Partial captures remain inspectable;
+//! The original turn can still return or trap normally. Partial captures remain inspectable;
 //! replay rejects them before running guest code.
 //!
 //! These recordings are in-memory artifacts. Custom errors retain their typed owned payloads;
@@ -235,16 +235,16 @@ pub enum CaptureResource {
     PayloadBytes,
 }
 
-/// Why a recording cannot be replayed as a complete invocation.
+/// Why a recording cannot be replayed as a complete turn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CaptureFault {
-    /// The sink did not observe invocation values, or was handed a computation it did not see
+    /// The sink did not observe turn values, or was handed a computation it did not see
     /// enter.
     MissingEntry,
-    /// The invocation never returned or trapped: completion was missing or execution was cancelled.
+    /// The turn never returned or trapped: completion was missing or execution was cancelled.
     MissingCompletion,
-    /// One recorder was used for more than one invocation.
+    /// One recorder observed the entry of more than one computation.
     MultipleRuns,
     /// The VM ran a different prepared program from the recorder's source.
     ProgramMismatch,
@@ -257,34 +257,34 @@ pub enum CaptureFault {
     },
     /// An observed aggregate reference could not be retained.
     InvalidAggregate {
-        /// Raw source handle, valid only in the observed invocation's heap domain.
+        /// Raw source handle, valid only in the observed turn's heap domain.
         handle: AggHandle,
     },
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,
     /// Execution named a unit whose installation the recording never observed, so replay could
-    /// not rebuild it. Installs while the invocation is suspended must go through
-    /// [`crate::vm::Invocation::install`] or [`crate::vm::PendingHostCall::install`].
+    /// not rebuild it. Installs while the turn is suspended must go through
+    /// [`crate::vm::Turn::install`] or [`crate::vm::PendingHostCall::install`].
     ForeignUnit,
-    /// An explicit collection moved the invocation's aggregates while it waited
-    /// ([`crate::vm::Invocation::collect`]).
+    /// An explicit collection moved the turn's aggregates while it waited
+    /// ([`crate::vm::Turn::collect`]).
     ///
     /// Replay identifies guest-created aggregates by their order in an append-only heap, which
     /// a moving collection does not preserve. Collect between recorded runs instead, with
     /// [`crate::vm::Vm::collect`]: each recording captures the aggregates it observes at entry.
     Relocated,
     /// While the recorded computation was saved, something changed the heap: another
-    /// invocation or run allocated, a collection moved aggregates, or the embedding built or
+    /// turn or run allocated, a collection moved aggregates, or the embedding built or
     /// released some.
     ///
     /// Replay identifies guest-created aggregates by their order in an append-only heap, which
     /// such a change breaks. Run nothing else on the VM, and collect, only after the recorded
     /// computation finishes.
     Interleaved,
-    /// An invocation ran the recorded computation without the recorder, between two it
+    /// A turn ran the recorded computation without the recorder, between two it
     /// recorded.
     ///
-    /// Pass the same recorder to every invocation that runs the computation.
+    /// Pass the same recorder to every turn that runs the computation.
     Unrecorded,
 }
 
@@ -305,11 +305,11 @@ pub struct RecordedUnit<'a> {
     /// The VM tag of each program tag, in [`crate::program::TagId`] order; imports are among them.
     pub tags: &'a [TagRef],
     /// The function each link of the program named when the unit was recorded, in
-    /// [`crate::program::LinkId`] order: at entry for a unit installed before the invocation,
+    /// [`crate::program::LinkId`] order: at entry for a unit installed before the turn,
     /// and at installation otherwise.
     pub links: &'a [FuncRef],
-    /// The observation sequence before which the unit was installed while the invocation was
-    /// suspended, or `None` for a unit installed before the invocation started.
+    /// The observation sequence before which the unit was installed while the turn was
+    /// suspended, or `None` for a unit installed before the turn started.
     pub installed: Option<usize>,
 }
 
@@ -326,10 +326,10 @@ pub struct RecordedTag<'a> {
     pub results: &'a [ValueType],
 }
 
-/// A link the embedding repointed while the recorded invocation waited at a host request or
+/// A link the embedding repointed while the recorded turn waited at a host request or
 /// suspension.
 ///
-/// Relinks before the invocation are not listed: [`RecordedUnit::links`] holds where every link
+/// Relinks before the turn are not listed: [`RecordedUnit::links`] holds where every link
 /// pointed at entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -344,20 +344,22 @@ pub struct RecordedRelink {
     pub relinked: usize,
 }
 
-/// Where a recorded computation was saved and then resumed in a new invocation.
+/// Where a recorded computation was saved and then resumed in a new turn.
 #[derive(Debug)]
 struct Resumption {
     /// The observation sequence when it was saved; nothing is observed while it is saved.
     sequence: usize,
-    /// Fuel the saving invocation spent, which replay reaches before it saves too.
+    /// Fuel the saving turn spent, which replay reaches before it saves too.
     fuel: u64,
     /// Store records repeated before resuming: installs, tags and relinks up to here happened
-    /// before the resuming invocation ran.
+    /// before the resuming turn ran.
     stored: usize,
-    /// Limits the resuming invocation's allowance came from.
+    /// Limits the resuming turn's allowance came from.
     limits: Limits,
     /// Frames the recorded VM's other computations held when it resumed.
     resident_frames: usize,
+    /// Whether the resuming turn yielded unhandled suspensions.
+    yields_suspensions: bool,
 }
 
 /// One install, tag definition or relink of the recorded VM, in the order it happened.
@@ -368,7 +370,7 @@ pub enum StoreRecord<'a> {
     Installed(RecordedUnit<'a>),
     /// The embedding defined a tag.
     DefinedTag(RecordedTag<'a>),
-    /// The embedding repointed a link while the invocation waited.
+    /// The embedding repointed a link while the turn waited.
     Relinked(RecordedRelink),
 }
 
@@ -399,7 +401,7 @@ enum Store {
 }
 
 impl Store {
-    /// The observation sequence before which this change happened during the invocation, or
+    /// The observation sequence before which this change happened during the turn, or
     /// `None` when it happened before entry.
     fn during(&self, units: &[UnitRecord]) -> Option<usize> {
         match self {
@@ -410,15 +412,18 @@ impl Store {
     }
 }
 
-/// Invocation inputs, borrowed from a recording.
+/// The recorded computation's entry: its function, arguments and first turn's limits,
+/// borrowed from a recording.
 #[derive(Debug)]
-pub struct Invocation<'a> {
+pub struct RecordedEntry<'a> {
     /// Requested entry function and its unit, including rejected entries.
     pub entry: FuncRef,
     /// Captured entry values in argument order.
     pub args: &'a [RecordedValue],
-    /// Execution limits used by the original invocation.
+    /// Limits the computation's first turn ran under.
     pub limits: &'a Limits,
+    /// Whether the first turn yielded unhandled suspensions to the embedding.
+    pub yields_suspensions: bool,
     /// Input preparation already debited before guest execution began.
     pub work: crate::vm::DataWork,
 }
@@ -479,7 +484,7 @@ pub struct YieldedSuspension<'a> {
     pub tag: TagRef,
     /// Captured payload values, which replay checks against the re-executed guest.
     pub payload: &'a [RecordedValue],
-    /// The embedding's raw answer, or `None` when the invocation ended while it waited.
+    /// The embedding's raw answer, or `None` when the turn ended while it waited.
     pub answer: Option<RecordedAnswer<'a>>,
     /// Suspended guest frames, innermost first, when call-frame callbacks were captured.
     pub stack: Option<CallStack<'a>>,
@@ -498,11 +503,11 @@ pub enum RecordedAnswer<'a> {
         /// Captured payload values.
         payload: &'a [RecordedValue],
     },
-    /// Discarded the suspension, ending the invocation.
+    /// Discarded the suspension, ending the turn.
     Discarded,
 }
 
-/// Authoritative final VM outcome of the original invocation.
+/// Authoritative final VM outcome of the original turn.
 #[derive(Debug)]
 pub enum Outcome<'a> {
     /// Committed return values, interpreted through this recording's graph IDs.
@@ -539,6 +544,8 @@ struct Entry {
     limits: Limits,
     /// Frames the recorded VM's other computations held at entry.
     resident_frames: usize,
+    /// Whether the first turn yielded unhandled suspensions.
+    yields_suspensions: bool,
     work: crate::vm::DataWork,
 }
 #[derive(Debug)]
@@ -604,7 +611,7 @@ struct Caught {
     unwound_callbacks: usize,
 }
 
-/// Immutable observations of one invocation, including an explicit completeness result.
+/// Immutable observations of one turn, including an explicit completeness result.
 ///
 /// Construction indexes are discarded when the recorder finishes. Aggregate IDs belong to
 /// this recording, not to a VM heap. Incomplete recordings remain inspectable, but replay rejects
@@ -696,7 +703,7 @@ impl Recording {
     }
 
     /// Returns the instruction where capture first failed, when one was available.
-    /// Entry and invocation-protocol failures have no instruction location.
+    /// Entry and turn-protocol failures have no instruction location.
     pub fn fault_location(&self) -> Option<TraceLocation> {
         self.fault_location
     }
@@ -716,7 +723,7 @@ impl Recording {
     }
 
     /// Iterates the recorded VM's units in installation order, including units installed while
-    /// the invocation was suspended.
+    /// the turn was suspended.
     pub fn units(&self) -> impl ExactSizeIterator<Item = RecordedUnit<'_>> {
         self.units.iter().map(UnitRecord::view)
     }
@@ -740,7 +747,7 @@ impl Recording {
             })
     }
 
-    /// Iterates the recorded VM's installs, tag definitions and relinks during the invocation,
+    /// Iterates the recorded VM's installs, tag definitions and relinks during the turn,
     /// in the order they happened.
     ///
     /// Replay repeats them in a fresh VM and checks that every unit and tag gets its recorded
@@ -758,12 +765,20 @@ impl Recording {
         })
     }
 
-    /// Borrows invocation values and limits, if captured.
-    pub fn invocation(&self) -> Option<Invocation<'_>> {
-        self.entry.as_ref().map(|entry| Invocation {
+    /// Temporary forward to [`Self::entry`], removed later in this change.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn invocation(&self) -> Option<RecordedEntry<'_>> {
+        self.entry()
+    }
+
+    /// Borrows the computation's entry, arguments and first turn's limits, if captured.
+    pub fn entry(&self) -> Option<RecordedEntry<'_>> {
+        self.entry.as_ref().map(|entry| RecordedEntry {
             entry: entry.func,
             args: self.arena.slice(&entry.args),
             limits: &entry.limits,
+            yields_suspensions: entry.yields_suspensions,
             work: entry.work,
         })
     }
@@ -849,7 +864,7 @@ impl Recording {
 
     /// Returns the final return/trap instruction when the VM outcome was captured.
     ///
-    /// Rejected invocations can report the VM's synthetic entry location. A root return's
+    /// Rejected turns can report the VM's synthetic entry location. A root return's
     /// location refers to its precommit candidate, before aggregate handles are compacted.
     pub fn outcome_location(&self) -> Option<TraceLocation> {
         match self.end.as_ref()? {
@@ -864,7 +879,7 @@ impl Recording {
 
     /// Borrows the guest call stack at the captured final return or trap, innermost first.
     ///
-    /// `None` means no stack was observed: call callbacks may have been omitted, invocation
+    /// `None` means no stack was observed: call callbacks may have been omitted, turn
     /// validation may have rejected entry, completion may be missing, or capture may have failed.
     /// Trap stacks are retained before VM unwinding removes activations. No inactive callee
     /// is synthesized for a rejected call. This contains guest frames only.

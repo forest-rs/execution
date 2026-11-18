@@ -195,7 +195,7 @@
 //! # }
 //! ```
 //!
-//! The VM holds no reference to a host between runs, and an invocation borrows the VM, so the
+//! The VM holds no reference to a host between runs, and a turn borrows the VM, so the
 //! host can only change between runs. Object handles belong to the hosts: an
 //! [`Obj`](value::Obj) that outlives a call, inside a retained aggregate or a value the
 //! embedding kept, keeps its bits under the next host. Do not let handles that mean something
@@ -296,7 +296,7 @@
 //! Facts distinguish unreachable code, uninitialized registers, opaque kinds, and nested
 //! contracts. IDs belong to the analysis's shared contract table. Origins identify arguments,
 //! local defining instructions or incoming block facts. Incoming edges expose simultaneous
-//! parameter bindings before their meet; external invocation seeds are separate from CFG edges.
+//! parameter bindings before their meet; external turn seeds are separate from CFG edges.
 //! “After” means local source dataflow: calls assume successful callee return, while branches
 //! precede their outgoing edge transfers. These facts are not runtime observations.
 //! Ordinary verification, preparation and execution retain none of these facts.
@@ -311,7 +311,7 @@
 //! - `vm`: bounded interpreter for verified programs.
 //! - `host`: host-call trait, borrowed argument views, aggregate readers, and access recording
 //!   hooks.
-//! - `trace`: profiling events and opt-in borrowed invocation, host outcome and return-candidate
+//! - `trace`: profiling events and opt-in borrowed entry, host outcome and return-candidate
 //!   values for recording and diagnostics.
 //! - `recording`: owned bounded observations, instruction histories and checked replay.
 //! - `disasm`: human-readable disassembly for verified programs.
@@ -332,41 +332,48 @@
 //!
 //! ## Resumable execution
 //!
-//! `Vm::start` validates an invocation and returns a handle that borrows its VM, inputs and
-//! optional observers, and retains its entry unit's program. `Invocation::resume` executes a scheduling quantum at complete
-//! instruction boundaries. Hard fuel and data-work budgets accumulate across resumes; a quantum
-//! is separate from these limits. Host calls run synchronously by default.
+//! `Vm::start` validates an entry and returns a [`vm::Turn`]: a lease on the VM, driving one
+//! computation, that borrows its VM, inputs and optional observers. `Turn::drive` executes a
+//! scheduling quantum at complete instruction boundaries. Fuel and data-work budgets accumulate
+//! across quanta within a turn; a quantum is separate from these limits. Host calls run
+//! synchronously by default. [`vm::Turn::finish`] ends the turn and publishes how it ended:
 //!
 //! ```
 //! use execution_tape::{host::Host, value::{FuncRef, Value},
-//!     vm::{InvocationOptions, RunStatus, TrapInfo, Vm}};
+//!     vm::{RunStatus, TrapInfo, TurnOptions, TurnOutcome, Vm}};
 //! fn scheduled<H: Host>(vm: &mut Vm<H>, entry: FuncRef, args: &[Value])
 //!     -> Result<Vec<Value>, TrapInfo> {
-//!     let mut invocation = vm.start(entry, args, InvocationOptions::default())?;
-//!     while invocation.resume(1024)? == RunStatus::Suspended {
+//!     let mut turn = vm.start(entry, args, TurnOptions::default())?;
+//!     while turn.drive(1024)? == RunStatus::Suspended {
 //!         // Return control to the application's scheduler between quanta.
 //!     }
-//!     Ok(invocation.take_outputs().expect("successful root return"))
+//!     match turn.finish() {
+//!         Ok(TurnOutcome::Returned(values)) => Ok(values),
+//!         Ok(TurnOutcome::Trapped(trap)) => Err(trap),
+//!         _ => unreachable!("a computation that stopped suspending returned or trapped"),
+//!     }
 //! }
 //! ```
 //!
-//! Dropping an unfinished invocation cancels it and rolls back its new aggregates. Host effects
-//! remain performed. Trace scopes close with `TraceOutcome::Cancelled`; a cancelled recording is
-//! incomplete and cannot be replayed as a finished invocation. Logical profiling scopes include
-//! suspension time. Ordinary `run` and `run_into` remain run-to-completion conveniences and
-//! use the unbounded dispatch specialization without scheduling checks.
+//! `finish` is the only way to keep what a computation returned. Dropping a turn, even one whose
+//! computation returned, discards everything it allocated; an unfinished computation is
+//! cancelled. Host effects remain performed. Trace scopes close with `TraceOutcome::Cancelled`;
+//! a cancelled recording is incomplete and cannot be replayed as a finished computation.
+//! Logical profiling scopes include suspension time. Ordinary `run` and `run_into` remain
+//! run-to-completion conveniences and use the unbounded dispatch specialization without
+//! scheduling checks.
 //!
-//! A stored task instead owns its VM and keeps its computation there between polls: save the
-//! waiting invocation with [`vm::Invocation::save`] and continue it with [`vm::Vm::resume`],
-//! each invocation borrowing the VM only while it runs. [`vm::Vm::spawn`] saves a computation
-//! before it runs and [`vm::Vm::discard`] ends one; [`vm::Limits`] bounds the frames and
-//! computations they keep. Observers can be owned, including shared collectors that follow
-//! the computation across invocations:
+//! A computation still running or waiting when its turn finishes is saved in the VM, and
+//! [`vm::Vm::resume`] continues it in a later turn, with a fresh allowance. A stored task owns its
+//! VM and keeps the computation there between polls, each turn borrowing the VM only while it
+//! runs. [`vm::Vm::spawn`] saves a computation before it runs and [`vm::Vm::discard`] ends one;
+//! [`vm::Limits`] bounds the frames and computations they keep. Shared collectors follow a
+//! computation across the turns they are lent to:
 //!
 //! ```
 //! use std::{cell::RefCell, rc::Rc};
 //! use execution_tape::{host::Host, recording::Recorder, trace::TraceSink, value::Value,
-//!     vm::{ComputationId, InvocationOptions, RunStatus, TrapInfo, Vm}};
+//!     vm::{ComputationId, RunStatus, TrapInfo, TurnOptions, TurnOutcome, Vm}};
 //!
 //! /// A guest task: its VM, its saved computation and the evidence it collects.
 //! struct Task<H: Host> {
@@ -378,26 +385,31 @@
 //! impl<H: Host> Task<H> {
 //!     /// Runs one quantum; returns the outputs once the computation returns.
 //!     fn poll(&mut self) -> Result<Option<Vec<Value>>, TrapInfo> {
-//!         let mask = self.capture.mask();
-//!         let options = InvocationOptions::default()
+//!         let mut capture = Rc::clone(&self.capture);
+//!         let options = TurnOptions::default()
 //!             .yield_host_calls()
-//!             .trace_owned(mask, Rc::clone(&self.capture));
-//!         let mut invocation = self
+//!             .trace(capture.mask(), &mut capture);
+//!         let mut turn = self
 //!             .vm
 //!             .resume(self.computation, options)
 //!             .expect("each poll resumes what the last one saved");
-//!         if invocation.resume(1024)? == RunStatus::Complete {
-//!             return Ok(invocation.take_outputs());
+//!         turn.drive(1024)?;
+//!         match turn.finish() {
+//!             Ok(TurnOutcome::Returned(values)) => Ok(Some(values)),
+//!             Ok(TurnOutcome::Trapped(trap)) => Err(trap),
+//!             // Waiting: it stays in the VM for the next poll.
+//!             Ok(TurnOutcome::Saved(id)) => {
+//!                 self.computation = id;
+//!                 Ok(None)
+//!             }
+//!             _ => unreachable!("a computation waiting between quanta saves"),
 //!         }
-//!         // Waiting: keep it in the VM for the next poll.
-//!         self.computation = invocation.save().expect("a waiting invocation");
-//!         Ok(None)
 //!     }
 //! }
 //! ```
 //!
 //! Shared trace/access collectors forward normal callbacks and filtering. Borrow them only
-//! between execution calls, releasing all borrows before resuming or retiring the invocation.
+//! between execution calls, releasing all borrows before driving or finishing the turn.
 //! Dropping a task drops its VM and the computations saved there; external collector handles
 //! can retain the evidence. Raw aggregate/callable result IDs still need that VM/code owner:
 //! explicitly snapshot or retain values before dropping it. A task does not make raw handles
@@ -423,20 +435,20 @@
 //! installation. Errors and cancellation discard staging. Native effects remain performed.
 //! A yielded request that reenters guest code first promotes all previous staging with unchanged
 //! handles; unused promoted nodes remain until root commit/rollback, as described below.
-//! Handles and nominal IDs belong to this invocation and program; these constructors do not
+//! Handles and nominal IDs belong to this computation and program; these constructors do not
 //! make foreign handles portable. Use `retain` for results needed outside the host call.
-//! After successful execution, `Invocation::into_snapshot` consumes the invocation and copies
-//! its reachable results, keeping the VM's existing raw handles valid; `Vm::into_snapshot`
-//! consumes a VM instead and moves the graph its values reach without copying payloads. Clone `Invocation::program`
-//! before consumption to retain the exact code domain for nominal/callable snapshot IDs, even
-//! after the original lookup handle has been dropped.
+//! After a turn finishes with returned values, `Vm::snapshot` copies them and what they reach,
+//! keeping the VM's existing raw handles valid; `Vm::into_snapshot` consumes a VM instead and
+//! moves the graph its values reach without copying payloads. Clone the entry program
+//! (`Turn::program`) before finishing to retain the exact code domain for nominal/callable
+//! snapshot IDs, even after the original lookup handle has been dropped.
 //! Recordings preserve adopted node identities and all successful construction debits, so
 //! replay restores rich results without repeating native work or replenishing guest budgets.
 //!
 //! ## Yielded host requests
 //!
-//! Opt into `InvocationOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
-//! a host instruction is admitted. `pending_host_call()` exclusively borrows that invocation:
+//! Opt into `TurnOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
+//! a host instruction is admitted. `pending_host_call()` exclusively borrows that turn:
 //! query its import, source location, borrowed arguments and aggregate context, then `dispatch`
 //! through the existing host or `complete` with return slots and a fuel/error outcome. Stack
 //! return arrays and reusable buffers work with the same ABI as `Host::call`.
@@ -448,10 +460,10 @@
 //! extern crate alloc;
 //! use alloc::{string::String, vec};
 //! use execution_tape::{host::{Host, HostError, ValueRef}, value::Value,
-//!     vm::{Invocation, TrapInfo}};
-//! async fn answer<H: Host>(invocation: &mut Invocation<'_, H>,
+//!     vm::{Turn, TrapInfo}};
+//! async fn answer<H: Host>(turn: &mut Turn<'_, H>,
 //!     service: impl AsyncFnOnce(&str) -> Result<String, HostError>) -> Result<(), TrapInfo> {
-//!     invocation.pending_host_call().expect("AwaitingHost")
+//!     turn.pending_host_call().expect("AwaitingHost")
 //!         .complete_with(async move |request| {
 //!             let Some(ValueRef::Str(text)) = request.arguments().next() else {
 //!                 return Err(HostError::SignatureMismatch);
@@ -466,27 +478,27 @@
 //! Waiting spends no additional fuel or host-call count; completion validates the raw outcome
 //! before continuing and does not execute the next guest instruction. Match every run status in
 //! a yielding driver. A polled producer abandoned before completion cannot be
-//! redispatched: resumption reports `HostCallAbandoned` and recording remains incomplete.
+//! redispatched: driving reports `HostCallAbandoned` and recording remains incomplete.
 //! Ordinary runs and `Host` implementations keep their existing signatures and behavior.
 //!
 //! ### Guest callbacks from a pending host request
 //!
-//! `PendingHostCall::call_guest` enters a function or closure in this invocation's original
+//! `PendingHostCall::call_guest` enters a function or closure in this computation's original
 //! program/heap while retaining the admitted host instruction and its callers. Drive the same
-//! invocation with `resume`: the callback can yield further host requests, which can reenter
-//! guest code in turn. When it returns, `resume` reports `RunStatus::CallbackReturned`: the
+//! turn with `drive`: the callback can yield further host requests, which can reenter
+//! guest code in turn. When it returns, `drive` reports `RunStatus::CallbackReturned`: the
 //! original request is pending again, with result slots available through
 //! `callback_results`/`take_callback_results`. The embedding still chooses and supplies the
 //! final host outcome. Callback and host result signatures are independent.
 //!
 //! ```no_run
-//! use execution_tape::{host::Host, value::Value, vm::{Invocation, TrapInfo}};
-//! fn start_handler<H: Host>(run: &mut Invocation<'_, H>, handler: Value,
+//! use execution_tape::{host::Host, value::Value, vm::{Turn, TrapInfo}};
+//! fn start_handler<H: Host>(run: &mut Turn<'_, H>, handler: Value,
 //!     args: Vec<Value>) -> Result<(), TrapInfo> {
 //!     run.pending_host_call().expect("AwaitingHost").call_guest(handler, args)
 //! }
-//! // Resume and handle nested host requests normally. Once `resume` reports `CallbackReturned`:
-//! fn accept_handler<H: Host>(run: &mut Invocation<'_, H>) -> Result<(), TrapInfo> {
+//! // Drive and handle nested host requests normally. Once `drive` reports `CallbackReturned`:
+//! fn accept_handler<H: Host>(run: &mut Turn<'_, H>) -> Result<(), TrapInfo> {
 //!     let mut request = run.pending_host_call().expect("original request restored");
 //!     let mut results = request.take_callback_results().expect("handler returned");
 //!     request.complete(&mut results, Ok(0)) // this example uses matching host/handler results
@@ -499,12 +511,12 @@
 //! Previously staged host aggregates are promoted with unchanged handles before reentry, so
 //! callbacks and later host construction cannot reuse their staged identities. Even unused
 //! promoted nodes remain until root commit/rollback; their existing work stays charged.
-//! Aggregate, closure and function handles read from any request of an invocation (arguments,
+//! Aggregate, closure and function handles read from any request of a computation (arguments,
 //! callback results and the values they reach) stay valid until the root commits or the
-//! invocation rolls back, so an embedding can keep them and pass them to later `call_guest` or
-//! `complete` calls of the same invocation.
+//! computation rolls back, so an embedding can keep them and pass them to later `call_guest` or
+//! `complete` calls of the same computation.
 //!
-//! Invalid callback admission or return traps the whole invocation. Dropping it cancels every
+//! Invalid callback admission or return traps the whole computation. Dropping its turn cancels every
 //! pending level without running guest code. Guest reentry does not capture a native Rust
 //! stack or import another program's function, closure or nominal IDs. Synchronous `Host::call`
 //! retains its existing interface; reentry uses the explicit yielded-request protocol.
@@ -525,7 +537,7 @@
 //! `catch_all_ref` also bind the exception as an `Exn` register, which `throw_ref` rethrows with
 //! its original tag, payload and throw site, so cleanup is ordinary guest code that rethrows.
 //! Traps, limits and cancellation are never caught and run no guest code. An exception nothing
-//! catches ends the invocation as `Trap::Uncaught` with a detached payload snapshot. Language
+//! catches ends the computation as `Trap::Uncaught` with a detached payload snapshot. Language
 //! condition classes, handler selection and restart policy remain above the core VM.
 //!
 //! ### Stack switching
@@ -537,24 +549,24 @@
 //! continuation, which a later `resume` continues with the tag's results. `resume_throw` raises
 //! an exception at the suspension point instead, and `cont.bind` binds leading inputs.
 //! Continuations are typed by call signatures, checked across units, consumed by use, and live
-//! until resumed, released with `cont.drop`, or the invocation ends; their frames count against
+//! until resumed, released with `cont.drop`, or the computation ends; their frames count against
 //! the call-depth limit meanwhile.
 //! Generators, coroutines and resumable conditions are guest code on these primitives.
 //!
 //! A suspension that no `on` clause handles traps with `UnhandledSuspension`, unless the
-//! invocation opts into `InvocationOptions::yield_suspensions()`. Then the embedding is the
-//! handler of last resort: `resume` reports `RunStatus::AwaitingHandler`, and
+//! turn opts into `TurnOptions::yield_suspensions()`. Then the embedding is the
+//! handler of last resort: `drive` reports `RunStatus::AwaitingHandler`, and
 //! `pending_suspension()` borrows the tag and payload. The embedding answers once, by resuming
 //! with the tag's results, raising an exception at the `suspend`, or discarding the suspension,
-//! which ends the invocation with `UnhandledSuspension`. A REPL can answer a condition with a
+//! which ends the computation with `UnhandledSuspension`. A REPL can answer a condition with a
 //! restart this way, as often as the guest signals one:
 //!
 //! ```no_run
-//! use execution_tape::{host::Host, value::Value, vm::{Invocation, RunStatus, TrapInfo}};
-//! fn drive<H: Host>(run: &mut Invocation<'_, H>,
+//! use execution_tape::{host::Host, value::Value, vm::{Turn, RunStatus, TrapInfo}};
+//! fn drive<H: Host>(run: &mut Turn<'_, H>,
 //!     choose: impl Fn(&str) -> Value) -> Result<(), TrapInfo> {
 //!     loop {
-//!         match run.resume(u64::MAX)? {
+//!         match run.drive(u64::MAX)? {
 //!             RunStatus::Complete => return Ok(()),
 //!             RunStatus::AwaitingHandler => {
 //!                 let condition = run.pending_suspension().expect("waiting suspension");
@@ -575,20 +587,23 @@
 //!
 //! [`callable::Callable`] retains an exact prepared program and an optional independent closure
 //! environment. Callable entry retains its code and arguments independently of the lookup
-//! handle. Retain a returned closure directly from the
-//! successful invocation. That returned callable survives its creator's frames and VM:
+//! handle. Retain a closure a turn returned with `Vm::retain_callable`. That returned callable
+//! survives its creator's frames and VM:
 //!
 //! ```no_run
 //! use std::sync::Arc;
 //! use execution_tape::{callable::Callable, host::Host, value::{FuncId, Value},
-//!     verifier::VerifiedProgram, vm::{InvocationOptions, RunStatus, Vm}};
+//!     verifier::VerifiedProgram, vm::{RunStatus, TurnOptions, TurnOutcome, Vm}};
 //! fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory: FuncId,
 //!     args: Vec<Value>) -> Result<Callable, Box<dyn std::error::Error>> {
 //!     let unit = vm.install(Arc::clone(&program))?;
 //!     let factory = Callable::function(program, factory)?;
-//!     let mut invocation = factory.start(vm, unit, args, InvocationOptions::default())?;
-//!     while invocation.resume(1024)? == RunStatus::Suspended {}
-//!     Ok(invocation.retain_callable(0)?)
+//!     let mut turn = vm.start(factory.at(unit), args, TurnOptions::default())?;
+//!     while turn.drive(1024)? == RunStatus::Suspended {}
+//!     let Ok(TurnOutcome::Returned(values)) = turn.finish() else {
+//!         return Err("the factory did not return".into());
+//!     };
+//!     Ok(vm.retain_callable(&values[0])?)
 //! }
 //! ```
 //!
@@ -609,7 +624,7 @@
 //!
 //! ## Units and live replacement
 //!
-//! Independently compiled programs call each other in one invocation through function values.
+//! Independently compiled programs call each other in one computation through function values.
 //! A [`FuncRef`](value::FuncRef) names a unit and a function of its program; `call.indirect` runs
 //! the target's own unit, checking its exact contract signature, which every unit of a VM interns
 //! the same way. Struct and array types are interned as heap shapes, so values keep their meaning
@@ -623,7 +638,7 @@
 //! points it at a function of any unit with exactly the link's signature. A language that has
 //! selected a method statically calls it directly, at about the cost of `call`, and repoints the
 //! link when new code replaces the method; callers are not verified again, and activations that
-//! already entered the old method keep it. While an invocation waits at a host request or a
+//! already entered the old method keep it. While a computation waits at a host request or a
 //! suspension, `relink` on the pending request does the same, so code installed mid-run takes
 //! over the links of older units, including ones whose frames are suspended.
 //! [`Units::links`](vm::Units::links) shows every unit's current targets.
@@ -643,8 +658,8 @@
 //! ```no_run
 //! use std::sync::Arc;
 //! use execution_tape::{host::Host, value::{FuncId, FuncRef, Value}, verifier::VerifiedProgram,
-//!     vm::Invocation};
-//! fn answer_with_edit<H: Host>(run: &mut Invocation<'_, H>, edited: Arc<VerifiedProgram>,
+//!     vm::Turn};
+//! fn answer_with_edit<H: Host>(run: &mut Turn<'_, H>, edited: Arc<VerifiedProgram>,
 //!     method: FuncId) -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut request = run.pending_host_call().expect("a yielded method lookup");
 //!     // Frames already running the old method keep it; this lookup answers with the new one.
@@ -661,13 +676,13 @@
 //! tag the program cannot name reaches only `catch_all`.
 //!
 //! A recording follows execution into every unit. It snapshots the VM's installs and tag
-//! definitions at entry and records installs made while the invocation is suspended; replay
+//! definitions at entry and records installs made while the computation is suspended; replay
 //! repeats them in a fresh VM and checks that each unit and tag keeps its `UnitId` or `TagRef`.
 //!
 //! ## Paused frames and host-object roots
 //!
-//! `Invocation::inspect` borrows live state at a safe instruction boundary. Frames have
-//! invocation-scoped `ActivationId`s that remain stable across resumes and reject foreign or
+//! `Turn::inspect` borrows live state at a safe instruction boundary. Frames have
+//! computation-scoped `ActivationId`s that remain stable across turns and reject foreign or
 //! retired identities. Waiting callers point at their pending call instruction; their results
 //! are not reported before the callee returns. Register queries retain declared kinds and
 //! return explicit unavailability when initialization is not established. Source maps resolve
@@ -726,8 +741,8 @@
 //! # }
 //! ```
 //!
-//! An invocation can be collected while it waits, between quanta or at a host request or
-//! suspension, with [`Invocation::collect`](vm::Invocation::collect). Its arguments, outputs,
+//! A computation can be collected while it waits, between quanta or at a host request or
+//! suspension, with [`Turn::collect`](vm::Turn::collect). Its arguments, outputs,
 //! callback results and the reference registers of its active and held frames are roots, read
 //! where verification establishes they hold values, as inspection reads them. A host request
 //! holding aggregates its host built refuses a collection that would move them, since only the

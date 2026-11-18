@@ -3,9 +3,9 @@
 
 //! Computations a VM keeps between leases.
 //!
-//! An invocation that is waiting, whether between quanta, at a host request or at a yielded
-//! suspension, can be saved: its stack moves into the VM and the invocation ends without
-//! cancelling it. [`Vm::resume`](super::Vm::resume) later starts a new invocation on it, with a
+//! A turn that is waiting, whether between quanta, at a host request or at a yielded
+//! suspension, can be saved: its stack moves into the VM and the turn ends without
+//! cancelling it. [`Vm::resume`](super::Vm::resume) later starts a new turn on it, with a
 //! fresh work allowance. Saved computations are explicit resources: each stays until resumed
 //! or until the VM is dropped. Each is named by a [`ComputationId`] whose generation changes
 //! when it is resumed, so an ID can be used once.
@@ -19,7 +19,7 @@ use continuation::Stack;
 /// IDs are generation-checked: once the computation is resumed, its ID names nothing, even after
 /// the VM reuses its storage for another. An ID also names its VM, by a number no other VM in
 /// the process has, kept across [`Vm::replace_host`](super::Vm::replace_host): every other VM
-/// refuses it with [`ResumeError::ForeignVm`], including one created after its VM was dropped.
+/// refuses it with [`ComputationError::ForeignVm`], including one created after its VM was dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ComputationId {
     vm: u64,
@@ -31,7 +31,7 @@ pub struct ComputationId {
 /// [`Vm::inspect`](super::Vm::inspect) refused a computation ID, leaving any computation saved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ResumeError {
+pub enum ComputationError {
     /// The VM holds no saved computation by that ID: it was already resumed.
     Unknown,
     /// The ID names a computation another VM saved.
@@ -44,7 +44,7 @@ pub enum ResumeError {
     Observed,
 }
 
-impl fmt::Display for ResumeError {
+impl fmt::Display for ComputationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown => f.write_str("no saved computation has this ID"),
@@ -56,7 +56,7 @@ impl fmt::Display for ResumeError {
     }
 }
 
-impl core::error::Error for ResumeError {}
+impl core::error::Error for ComputationError {}
 
 /// A saved computation: its stack and the inputs it owns.
 pub(super) struct Saved {
@@ -99,7 +99,7 @@ impl<H: Host> Vm<H> {
     /// name aggregates the heap holds, and refused with its trap; so is a VM that already keeps
     /// [`Limits::max_saved_computations`] computations
     /// ([`Trap::SavedComputationLimitExceeded`]). Nothing observes it until its first resume,
-    /// which enters it under that invocation's observers, as `start` would, so a recorder
+    /// which enters it under that turn's observers, as `start` would, so a recorder
     /// passed to every resume records it whole.
     pub fn spawn(&mut self, entry: FuncRef, args: Vec<Value>) -> Result<ComputationId, TrapInfo> {
         self.entry_program(entry.unit)?;
@@ -115,26 +115,26 @@ impl<H: Host> Vm<H> {
         }
         self.settle();
         let checkpoint = self.memory.checkpoint();
-        let mut invocation = self.start_with_inputs(
+        let mut turn = self.start_with_inputs(
             entry,
             Cow::Owned(args),
-            InvocationOptions::default(),
+            TurnOptions::default(),
             checkpoint,
             DataWork::default(),
         )?;
-        invocation.mark_spawned();
-        Ok(invocation
+        turn.mark_spawned();
+        Ok(turn
             .save()
             .unwrap_or_else(|_| unreachable!("an unrun computation within the limit saves")))
     }
 
     /// Ends a saved computation without running it further, releasing its frames.
     ///
-    /// Like dropping an invocation that runs it, this runs no guest code and undoes no host
+    /// Like dropping a turn that runs it, this runs no guest code and undoes no host
     /// effect; unlike it, nothing is reported, as a saved computation has no observer
     /// attached. The aggregates only it reached are reclaimed by the next collection. Refuses
     /// an ID this VM holds no computation for, or another VM's.
-    pub fn discard(&mut self, id: ComputationId) -> Result<(), ResumeError> {
+    pub fn discard(&mut self, id: ComputationId) -> Result<(), ComputationError> {
         self.saved.get(id)?;
         self.settle();
         drop(self.saved.take(id));
@@ -143,7 +143,7 @@ impl<H: Host> Vm<H> {
         Ok(())
     }
 
-    /// Counts `frames` as held by other computations in every later invocation, as a recorded
+    /// Counts `frames` as held by other computations in every later turn, as a recorded
     /// VM's saved computations were, so replay refuses frames where the original did.
     pub(crate) fn reserve_frames(&mut self, frames: usize) {
         self.saved.reserved = frames;
@@ -199,15 +199,15 @@ impl Store {
     }
 
     /// The computation `id` names, if this store holds it.
-    pub(super) fn get(&self, id: ComputationId) -> Result<&Saved, ResumeError> {
+    pub(super) fn get(&self, id: ComputationId) -> Result<&Saved, ComputationError> {
         if id.vm != self.vm {
-            return Err(ResumeError::ForeignVm);
+            return Err(ComputationError::ForeignVm);
         }
         self.slots
             .get(id.slot as usize)
             .filter(|entry| entry.generation == id.generation)
             .and_then(|entry| entry.saved.as_deref())
-            .ok_or(ResumeError::Unknown)
+            .ok_or(ComputationError::Unknown)
     }
 
     /// Removes the computation `id` names, so the ID names nothing afterwards.
@@ -235,7 +235,7 @@ impl Store {
         self.frames
     }
 
-    /// Frames held besides a starting or resuming invocation's own: the saved computations'
+    /// Frames held besides a starting or resuming turn's own: the saved computations'
     /// and any a replay reserves.
     pub(super) fn resident_frames(&self) -> usize {
         self.frames + self.reserved

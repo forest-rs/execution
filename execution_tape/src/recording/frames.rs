@@ -47,14 +47,14 @@ impl Frame {
 
 /// One entered guest activation, in entry order.
 ///
-/// Recordings retain every activation the invocation entered, including ones that made no host
+/// Recordings retain every activation the turn entered, including ones that made no host
 /// call, without instruction history. Sequences use the observation order shared by
 /// [`HostCall::sequence`](super::HostCall::sequence), control commands and callback returns:
 /// an activation consumes no sequence number, and observations numbered below its `entered`
 /// happened before it was entered, while the rest happened after.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Activation {
-    /// Entry order, counting the root as zero. This is the live invocation's
+    /// Entry order, counting the root as zero. This is the live turn's
     /// [`ActivationId::ordinal`](crate::vm::ActivationId::ordinal) for the same activation.
     pub ordinal: usize,
     /// Entered function and the unit that ran it.
@@ -100,7 +100,7 @@ pub enum ActivationOutcome {
     Suspended,
     /// It was unwound by a trap. The trap itself is the recording's outcome.
     Trapped,
-    /// The invocation was cancelled while it was active.
+    /// The turn was cancelled while it was active.
     Cancelled,
 }
 

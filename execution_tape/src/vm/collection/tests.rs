@@ -75,22 +75,22 @@ fn shared_exception() -> VerifiedProgram {
     b.build_verified().unwrap()
 }
 
-fn paused(vm: &mut Vm<NoHost>) -> Invocation<'_, NoHost> {
+fn paused(vm: &mut Vm<NoHost>) -> Turn<'_, NoHost> {
     let unit = vm.install(shared_exception()).unwrap();
     vm.aggregates_mut().tuple_new(vec![]).unwrap();
     let mut run = vm
         .start(
             FuncRef::new(unit, FuncId(0)),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run
 }
 
 /// The active frame's exception reference registers, in register order.
-fn exceptions(run: &Invocation<'_, NoHost>) -> Vec<Arc<Exception>> {
+fn exceptions(run: &Turn<'_, NoHost>) -> Vec<Arc<Exception>> {
     run.continuation
         .stack
         .ctx
@@ -136,7 +136,7 @@ fn registers_that_shared_an_exception_still_share_its_relocated_copy() {
     );
     let request = run.pending_host_call().unwrap();
     request.complete(&mut [], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(7)]);
 }
 
@@ -216,12 +216,11 @@ fn held_continuations_that_shared_an_exception_still_share_its_relocated_copy() 
         .start(
             FuncRef::new(unit, FuncId(0)),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    let held =
-        |run: &Invocation<'_, NoHost>| run.continuation.stack.ctx.continuations.held_exceptions();
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let held = |run: &Turn<'_, NoHost>| run.continuation.stack.ctx.continuations.held_exceptions();
     assert_eq!(
         shared_payload(held(&run), run.aggregates()),
         (true, Value::I64(7))
@@ -235,7 +234,7 @@ fn held_continuations_that_shared_an_exception_still_share_its_relocated_copy() 
     );
     let request = run.pending_host_call().unwrap();
     request.complete(&mut [], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(7)]);
 }
 
@@ -271,7 +270,7 @@ fn a_dangling_register_refuses_collection_without_moving_anything() {
     assert_eq!(run.continuation.stack.ctx.aggs[1], AggHandle(99));
     let request = run.pending_host_call().unwrap();
     request.complete(&mut [], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(7)]);
 }
 
@@ -339,10 +338,10 @@ fn tick_through_a_wrap(build: bool) -> (Value, Vec<Result<u32, CollectError>>) {
         .start(
             FuncRef::new(unit, FuncId(0)),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     let mine = build.then(|| request.context().tuple_new(vec![Value::I64(7)]).unwrap());
     request
@@ -350,12 +349,12 @@ fn tick_through_a_wrap(build: bool) -> (Value, Vec<Result<u32, CollectError>>) {
         .unwrap();
     let mut windows = Vec::new();
     for _ in 0..3 {
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
         windows.push(run.collect().map(|_| run.aggregates().handle_end()));
         let request = run.pending_host_call().unwrap();
         request.complete(&mut [], Ok(0)).unwrap();
     }
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let returned = request.take_callback_results().unwrap();
     let mut answer = match mine {
@@ -363,7 +362,7 @@ fn tick_through_a_wrap(build: bool) -> (Value, Vec<Result<u32, CollectError>>) {
         None => returned,
     };
     request.complete(&mut answer, Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     let Value::Agg(result) = run.result().unwrap().unwrap()[0] else {
         panic!("tuple result")
     };
@@ -454,10 +453,10 @@ fn an_abandoned_continuation_keeps_no_exception_alive_once_its_run_ends() {
         .start(
             FuncRef::new(unit, FuncId(0)),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let held = run.continuation.stack.ctx.continuations.held_exceptions();
     let [exception] = held.as_slice() else {
         panic!("one held exception, not {}", held.len());
@@ -466,7 +465,7 @@ fn an_abandoned_continuation_keeps_no_exception_alive_once_its_run_ends() {
     drop(held);
     let request = run.pending_host_call().unwrap();
     request.complete(&mut [], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(1)]);
     drop(run);
     assert_eq!(
