@@ -1560,6 +1560,7 @@ impl<H: Host> Vm<H> {
         self.settle();
         let checkpoint = self.memory.checkpoint();
         let mut exec = self.lend(checkpoint);
+        exec.fill();
         let Exec {
             ctx,
             control,

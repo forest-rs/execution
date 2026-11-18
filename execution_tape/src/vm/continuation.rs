@@ -20,8 +20,8 @@ pub(super) struct Stack {
     pub(super) unit: UnitId,
     pub(super) entry: FuncId,
     /// The register file and control this stack runs on, lent by its VM.
-    pub(super) ctx: Registers,
-    pub(super) control: ExecutionControl,
+    pub(super) ctx: exec::Held<Registers>,
+    pub(super) control: exec::Held<ExecutionControl>,
     pub(super) host_results: Option<crate::host::HostResults>,
     pub(super) outputs: Vec<Value>,
     pub(super) outcome: Option<Result<(), TrapInfo>>,
@@ -33,14 +33,15 @@ pub(super) struct Stack {
 }
 
 impl Stack {
-    /// Moves this stack out, leaving an empty one of the same code in its place.
+    /// Moves this stack out, leaving one of the same code without a register file or control
+    /// in its place.
     pub(super) fn take(&mut self) -> Self {
         let empty = Self {
             program: Arc::clone(&self.program),
             unit: self.unit,
             entry: self.entry,
-            ctx: Registers::default(),
-            control: ExecutionControl::default(),
+            ctx: exec::Held::empty(),
+            control: exec::Held::empty(),
             host_results: None,
             outputs: Vec::new(),
             outcome: None,
@@ -70,11 +71,11 @@ impl<'a> Continuation<'a> {
         args: Cow<'a, [Value]>,
         options: TurnOptions<'a>,
     ) -> Self {
-        let mut control = core::mem::take(&mut exec.control);
+        let mut control = exec.control.take_or_default();
         control.start(stack, options.yield_host_calls, options.yield_suspensions);
         // A trap before the entry frame exists, such as a refused capture import, releases what
         // the stack holds; that must be nothing from an earlier lease.
-        let mut ctx = core::mem::take(&mut exec.ctx);
+        let mut ctx = exec.ctx.take_or_default();
         ctx.clear();
         Self {
             stack: Stack {
@@ -99,8 +100,8 @@ impl<'a> Continuation<'a> {
     /// Returns the register file and control to the execution state they were taken from.
     pub(super) fn give_back(&mut self, exec: &mut Exec) {
         self.stack.ctx.release_payloads();
-        exec.ctx = core::mem::take(&mut self.stack.ctx);
-        exec.control = core::mem::take(&mut self.stack.control);
+        exec.ctx = self.stack.ctx.take();
+        exec.control = self.stack.control.take();
     }
 
     pub(super) fn initialize<H: Host>(

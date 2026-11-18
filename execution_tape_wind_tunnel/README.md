@@ -263,6 +263,13 @@ claiming free synchronous execution. Ordinary execution still compiles without a
 in its instruction loop; shared admission and code layout can affect generated machine code.
 These probes exclude preparation, allocation counts, retained memory, and real host work.
 
+`turn_round_trip` measures one whole short turn on a parked VM, as an embedding that yields
+host calls runs each guest call: `Vm::start`, drive to a host request, answer it, drive to the
+end and `Turn::finish`. `complete` answers through `PendingHostCall::complete`, `dispatch`
+through `PendingHostCall::dispatch`, and `no_call` is the same turn without a request; the
+difference is the round trip of one yielded call. `resume` saves the computation at the request
+and answers it in a second turn, which adds one save and `Vm::resume`.
+
 ```sh
 cargo bench -p execution_tape_wind_tunnel --bench host_requests -- --noplot
 cargo bench -p execution_tape_wind_tunnel --bench vm -- \
