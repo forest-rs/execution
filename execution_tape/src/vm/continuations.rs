@@ -3,9 +3,9 @@
 
 //! One-shot continuations: guest control captured from, and reinstated onto, the stack.
 //!
-//! The interpreter keeps one contiguous stack of frames and register banks per invocation. A
+//! The interpreter keeps one contiguous stack of frames and register banks per turn. A
 //! continuation is a *segment* of it: the frames from a resumed root up to a `suspend`, with
-//! their registers rebased to zero, owned by an entry of the invocation's continuation table.
+//! their registers rebased to zero, owned by an entry of the turn's continuation table.
 //! `suspend` moves that segment off the stack and `resume` moves it back on top of the
 //! resumer, so the active stack stays contiguous and every depth-keyed mechanism (unwinding,
 //! callbacks, profiling scopes) sees one ordinary stack. `cont.new` builds a segment holding
@@ -13,9 +13,9 @@
 //!
 //! Registers name continuations by [`ContRef`]: a table slot and a generation. Consuming a
 //! continuation bumps its slot's generation, so every copy of the reference goes stale and
-//! one-shot use is a single comparison. The table is invocation-scoped: unresumed
-//! continuations are released by `cont.drop` or when the invocation ends. Their frames stay
-//! charged to the invocation's frame budget meanwhile, so abandoned continuations cannot grow
+//! one-shot use is a single comparison. The table is computation-scoped: unresumed
+//! continuations are released by `cont.drop` or when the computation ends. Their frames stay
+//! charged to the turn's frame budget meanwhile, so abandoned continuations cannot grow
 //! without bound.
 //!
 //! The switch points are explicit instructions (`resume`, `resume_throw`, `suspend`), and the
@@ -30,7 +30,7 @@ use crate::value::TagRef;
 use inspection::FrameRegisters;
 use units::ListId;
 
-/// A continuation register value: an invocation table slot and its generation.
+/// A continuation register value: a turn table slot and its generation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ContRef {
     slot: u32,
@@ -88,7 +88,7 @@ struct Slot {
     ty: (ListId, ListId),
 }
 
-/// An invocation's suspended and unstarted continuations.
+/// A turn's suspended and unstarted continuations.
 ///
 /// Slots are reused, keeping their segment buffers, so steady suspend/resume cycles do not
 /// allocate.
@@ -115,7 +115,7 @@ macro_rules! for_each_bank {
 impl Continuations {
     /// Releases every continuation and its registers, keeping buffer capacity.
     ///
-    /// Continuation references never outlive their invocation, so generations restart.
+    /// Continuation references never outlive their turn, so generations restart.
     #[inline]
     pub(super) fn clear(&mut self) {
         if self.used {
@@ -160,7 +160,7 @@ impl Continuations {
 
     /// Returns a consumed slot for reuse, unless its generations are exhausted.
     ///
-    /// A slot whose generation reached `u32::MAX` is retired for the rest of the invocation, so
+    /// A slot whose generation reached `u32::MAX` is retired for the rest of the turn, so
     /// a stale reference can never match a later continuation in it.
     fn release(&mut self, slot: u32) {
         if self.slots[slot as usize].generation != u32::MAX {
@@ -357,7 +357,7 @@ impl Registers {
         }
     }
 
-    /// Frames retained by this invocation: the active stack and every live continuation.
+    /// Frames retained by this turn: the active stack and every live continuation.
     pub(super) fn held_frames(&self) -> usize {
         self.frames.len() + self.continuations.frames()
     }
@@ -629,7 +629,7 @@ impl<H: Host> Vm<H> {
     /// Re-enters the scopes of the activations from depth index `root` up, outermost first.
     ///
     /// Each re-enters under the instruction that entered it: the root under `resumer` (`None`
-    /// for the invocation's root), the others under their caller's waiting call.
+    /// for the computation's root), the others under their caller's waiting call.
     pub(super) fn reenter_scopes(
         &self,
         ctx: &Registers,
@@ -672,7 +672,7 @@ impl<H: Host> Vm<H> {
     ///
     /// The payload of the current frame is written to the handler's parameters, the frames
     /// above the resumer become a new continuation, and the clause's last parameter receives it.
-    /// Returns the handler's location, or `None` when no clause handles it and the invocation
+    /// Returns the handler's location, or `None` when no clause handles it and the turn
     /// yields it to the embedding instead.
     #[allow(
         clippy::too_many_arguments,
@@ -707,7 +707,7 @@ impl<H: Host> Vm<H> {
             .expect("active verified function");
         let args = suspending.vregs(payload);
         // The payload is checked whoever handles it, so its trap never depends on whether the
-        // invocation yields suspensions.
+        // turn yields suspensions.
         self.check_payload(ctx, budget, location, tag, base, args)?;
         let Some(handler) = found else {
             if !control.yield_suspensions {
@@ -780,7 +780,7 @@ impl<H: Host> Vm<H> {
         Ok(Some(target))
     }
 
-    /// Yields a suspension that reached the invocation's root to the embedding.
+    /// Yields a suspension that reached the computation's root to the embedding.
     ///
     /// The frames stay in place, waiting at the `suspend` like a frame waiting at a yielded host
     /// call, so inspection still sees them. Their scopes close as suspended, exactly as when a
@@ -802,8 +802,8 @@ impl<H: Host> Vm<H> {
         rets: VRegSlice,
     ) {
         // Until the observers below return, the suspension is abandoned: an observer that panics
-        // must not leave the invocation resumable after a `suspend` with unwritten results.
-        control.pending_suspension = Some(invocation::PendingSuspend {
+        // must not leave the turn resumable after a `suspend` with unwritten results.
+        control.pending_suspension = Some(turn::PendingSuspend {
             location,
             span: span_id,
             tag,
@@ -825,7 +825,7 @@ impl<H: Host> Vm<H> {
                 .expect("active verified function");
             let base = &ctx.frames[ctx.frames.len() - 1].base;
             let values: Vec<_> =
-                invocation::read_registers(ctx, sources, base, body.vregs(payload)).collect();
+                turn::read_registers(ctx, sources, base, body.vregs(payload)).collect();
             P::values(trace, program, || ValueEvent::SuspensionYielded {
                 location,
                 tag: raised,
@@ -914,14 +914,19 @@ impl<H: Host> Vm<H> {
                     self.memory.aggs(),
                     &value,
                     contract,
-                    self.limits.max_contract_work,
+                    budget.contract_limit,
                 )
                 .map_err(|error| {
                     let position = ContractPosition::Payload {
                         tag,
                         index: u32::try_from(index).expect("verified payload arity"),
                     };
-                    self.contract_trap(FuncRef::new(location.unit, location.func), position, error)
+                    self.contract_trap(
+                        FuncRef::new(location.unit, location.func),
+                        position,
+                        error,
+                        budget.contract_limit,
+                    )
                 })?;
         }
         Ok(())
@@ -956,7 +961,7 @@ impl<H: Host> Vm<H> {
                     self.memory.aggs(),
                     &value,
                     contract,
-                    self.limits.max_contract_work,
+                    budget.contract_limit,
                 )
                 .map_err(|error| {
                     let position = ContractPosition::IndirectArgument {
@@ -964,7 +969,7 @@ impl<H: Host> Vm<H> {
                         index: u32::try_from(index).expect("verified signature arity"),
                     };
                     let function = FuncRef::new(unit, location.func);
-                    self.contract_trap(function, position, error)
+                    self.contract_trap(function, position, error, budget.contract_limit)
                 })?;
         }
         Ok(())
@@ -1013,7 +1018,7 @@ mod tests {
         table.release(fresh);
         table.release(exhausted);
         assert_eq!(table.free, [fresh]);
-        // A new invocation restarts generations, so the slot serves again.
+        // A new turn restarts generations, so the slot serves again.
         table.clear();
         assert_eq!(table.slots[exhausted as usize].generation, 0);
         assert_eq!(table.free.len(), 2);

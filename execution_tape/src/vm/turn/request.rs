@@ -1,16 +1,16 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Names for the requests a computation waits at, stable across the invocations that run it.
+//! Names for the requests a computation waits at, stable across the turns that run it.
 
 use super::*;
 
 /// Names one host request or yielded suspension of one computation.
 ///
 /// Read it with [`PendingHostCall::id`] or [`PendingSuspension::id`]. It stays valid while the
-/// computation waits there, across [`Invocation::save`] and [`Vm::resume`], so an embedding that
-/// answers later can find the request again with [`Invocation::host_request`] or
-/// [`Invocation::suspension`] and be refused if the computation has moved on. Each admission is
+/// computation waits there, across [`Turn::finish`] and [`Vm::resume`], so an embedding that
+/// answers later can find the request again with [`Turn::host_request`] or
+/// [`Turn::suspension`] and be refused if the computation has moved on. Each admission is
 /// a new request, even of the same instruction; a host request that a guest callback returned
 /// to keeps its ID. It names its computation's VM by a number no other VM in the process has,
 /// so no other VM accepts it, including one created after its VM was dropped.
@@ -47,7 +47,7 @@ impl RequestId {
     }
 }
 
-/// Why [`Invocation::host_request`] or [`Invocation::suspension`] found no request by an ID.
+/// Why [`Turn::host_request`] or [`Turn::suspension`] found no request by an ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestError {
@@ -72,8 +72,8 @@ impl fmt::Display for RequestError {
 
 impl core::error::Error for RequestError {}
 
-impl<'vm, H: Host> Invocation<'vm, H> {
-    /// Checks that `id` names a request of this invocation's computation, of `kind`.
+impl<'vm, H: Host> Turn<'vm, H> {
+    /// Checks that `id` names a request of this turn's computation, of `kind`.
     fn check_request(&mut self, id: RequestId, kind: RequestKind) -> Result<(), RequestError> {
         let running = self.running();
         let mine = RequestId::new(&running, id.admission, id.kind);
@@ -86,7 +86,7 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         Ok(())
     }
 
-    /// Borrows the host request `id` names, if this invocation's computation still waits at it.
+    /// Borrows the host request `id` names, if this turn's computation still waits at it.
     ///
     /// Like [`Self::pending_host_call`], but refuses a request the computation has moved past,
     /// which an embedding answering a saved computation later would otherwise answer in its
@@ -101,7 +101,7 @@ impl<'vm, H: Host> Invocation<'vm, H> {
             .ok_or(RequestError::NotWaiting)
     }
 
-    /// Borrows the suspension `id` names, if this invocation's computation still waits at it.
+    /// Borrows the suspension `id` names, if this turn's computation still waits at it.
     ///
     /// Like [`Self::pending_suspension`], but refuses a suspension the computation has moved
     /// past.

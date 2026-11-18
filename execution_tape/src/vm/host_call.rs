@@ -10,7 +10,7 @@ use crate::typed::VRegSlice;
 
 /// An admitted host instruction waiting for the embedding, decoded once at admission.
 ///
-/// Holds no borrows, so a request view keeps a copy beside its exclusive invocation borrow and
+/// Holds no borrows, so a request view keeps a copy beside its exclusive turn borrow and
 /// borrows code-owned slices on demand.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingHost {

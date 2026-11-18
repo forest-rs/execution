@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! One owner shape for borrowed entry points and independently stored invocations.
+//! One owner shape for borrowed entry points and independently stored turns.
 
 use alloc::boxed::Box;
 use core::ops::{Deref, DerefMut};

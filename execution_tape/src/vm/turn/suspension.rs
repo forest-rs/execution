@@ -12,7 +12,7 @@ use crate::value::TagRef;
 
 /// A `suspend` yielded to the embedding, decoded once when it was yielded.
 ///
-/// Holds no borrows, so a view keeps a copy beside its exclusive invocation borrow and borrows
+/// Holds no borrows, so a view keeps a copy beside its exclusive turn borrow and borrows
 /// code-owned slices on demand.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::vm) struct PendingSuspend {
@@ -37,34 +37,34 @@ enum Answer {
     Discard,
 }
 
-/// Exclusive view of one yielded suspension, borrowed from its invocation.
+/// Exclusive view of one yielded suspension, borrowed from its turn.
 ///
-/// An invocation started with [`InvocationOptions::yield_suspensions`] yields a `suspend` that
-/// no guest `on` clause handles: [`Invocation::resume`] reports [`RunStatus::AwaitingHandler`]
-/// and [`Invocation::pending_suspension`] returns this view. The embedding is the handler of
+/// A turn started with [`TurnOptions::yield_suspensions`] yields a `suspend` that
+/// no guest `on` clause handles: [`Turn::drive`] reports [`RunStatus::AwaitingHandler`]
+/// and [`Turn::pending_suspension`] returns this view. The embedding is the handler of
 /// last resort. It reads the tag and payload, and may inspect the suspended frames, use its
 /// host, or install code. It then answers exactly once:
 ///
 /// - [`Self::resume`] continues after the `suspend` with values for the tag's results;
 /// - [`Self::resume_throw`] raises an exception at the `suspend`, where the guest's protected
 ///   regions can catch it;
-/// - [`Self::discard`] abandons the suspension and ends the invocation with
+/// - [`Self::discard`] abandons the suspension and ends the turn with
 ///   [`Trap::UnhandledSuspension`], releasing its frames.
 ///
 /// Each answer consumes the view and executes no guest instruction; the next
-/// [`Invocation::resume`] continues. Dropping the view without answering leaves the suspension
-/// pending. Dropping the invocation cancels it and releases its frames, as for any invocation.
-/// If an observer panics while an answer is delivered, the invocation cannot continue: it
+/// [`Turn::drive`] continues. Dropping the view without answering leaves the suspension
+/// pending. Dropping the turn cancels it and releases its frames, as for any turn.
+/// If an observer panics while an answer is delivered, the turn cannot continue: it
 /// reports [`Trap::HostCallAbandoned`] on resumption, or cancels when dropped.
 ///
-/// The view borrows its invocation exclusively, so a suspension can be answered only while it
+/// The view borrows its turn exclusively, so a suspension can be answered only while it
 /// is pending and only once: there is no handle to keep, reuse or confuse with another one.
-/// Its frames stay on the invocation's stack while it waits and count against
+/// Its frames stay on the turn's stack while it waits and count against
 /// [`Limits::max_call_depth`] as before. Their trace scopes closed with
 /// [`TraceOutcome::Suspended`] when it was yielded and re-enter when it is resumed.
 ///
 /// Answer values follow the ordinary host ABI: scalars, and handles that already belong to this
-/// invocation (for example from its payload or entry arguments), as for
+/// turn (for example from its payload or entry arguments), as for
 /// [`PendingHostCall::complete`].
 pub struct PendingSuspension<'request, 'vm, H: Host> {
     running: Running<'request, 'vm, H>,
@@ -90,7 +90,7 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
             .program
     }
 
-    /// Names this suspension for [`Invocation::suspension`], across the invocations that run
+    /// Names this suspension for [`Turn::suspension`], across the turns that run
     /// its computation.
     #[must_use]
     pub fn id(&self) -> RequestId {
@@ -156,7 +156,7 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
 
     /// Borrows the payload in tag order, without copying byte/string contents.
     ///
-    /// Aggregate, closure and function handles among them belong to this invocation and stay
+    /// Aggregate, closure and function handles among them belong to this turn and stay
     /// valid until it commits its root or rolls back, so they may be passed back in an answer.
     pub fn payload(&self) -> impl ExactSizeIterator<Item = ValueRef<'_>> {
         let continuation = &*self.running.continuation;
@@ -182,16 +182,16 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
         self.running.vm.memory.aggs()
     }
 
-    /// Inspects the units installed in this invocation's VM.
+    /// Inspects the units installed in this turn's VM.
     #[must_use]
     pub fn units(&self) -> Units<'_> {
         self.running.vm.units()
     }
 
-    /// Installs `program` in this invocation's VM while the suspension waits.
+    /// Installs `program` in this turn's VM while the suspension waits.
     ///
     /// The suspended frames keep their units. Answer with a [`FuncRef`] of the new unit, or
-    /// pass one later, to run its code in this invocation.
+    /// pass one later, to run its code in this turn.
     pub fn install(
         &mut self,
         program: impl Into<Arc<VerifiedProgram>>,
@@ -202,7 +202,7 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
     /// Points `link` of `unit` at `target` while the suspension waits, returning the previous
     /// target.
     ///
-    /// This is [`Vm::relink`] during an invocation. The suspended frames keep the functions they
+    /// This is [`Vm::relink`] during a turn. The suspended frames keep the functions they
     /// entered; once resumed, their unit's `call.link` through `link` calls `target`. A language
     /// that installs replacement code here repoints the links of older units at it.
     pub fn relink(
@@ -239,7 +239,7 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
     /// results are not yet initialized. Activation identities are those the frames had before
     /// the suspension and keep after it is resumed.
     #[must_use]
-    pub fn inspect(&self) -> InvocationInspection<'_> {
+    pub fn inspect(&self) -> ComputationInspection<'_> {
         self.running.inspect()
     }
 
@@ -248,7 +248,7 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
     pub fn inspect_saved(
         &self,
         id: ComputationId,
-    ) -> Result<InvocationInspection<'_>, ResumeError> {
+    ) -> Result<ComputationInspection<'_>, ComputationError> {
         self.running.inspect_saved(id)
     }
 
@@ -256,11 +256,11 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
     ///
     /// The values must match the tag's [`result kinds`](Self::result_types) and its refined
     /// result contracts in the suspending program; their byte and string contents are charged
-    /// as payload work. The raw values are observed first. A mismatch ends the invocation with a
+    /// as payload work. The raw values are observed first. A mismatch ends the turn with a
     /// trap at the `suspend` and rolls back its aggregates, as an invalid host return does: a
     /// wrong count with [`Trap::ArityMismatch`], a wrong kind with [`Trap::TypeMismatch`], and a
     /// violated contract with [`Trap::ContractMismatch`].
-    /// Executes no guest instruction; [`Invocation::resume`] continues after the `suspend`.
+    /// Executes no guest instruction; [`Turn::drive`] continues after the `suspend`.
     pub fn resume(mut self, values: Vec<Value>) -> Result<(), TrapInfo> {
         self.running.answer(self.pending, Answer::Resume(values))
     }
@@ -268,7 +268,7 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
     /// Resumes the suspension by raising `tag` with `payload` at the `suspend`.
     ///
     /// Protected regions around the `suspend` can catch the exception; one nothing catches ends
-    /// the invocation with [`Trap::Uncaught`]. The tag, payload kinds and refined payload
+    /// the turn with [`Trap::Uncaught`]. The tag, payload kinds and refined payload
     /// contracts are checked as for [`PendingHostCall::throw`], through the suspending unit's
     /// binding of the tag or else the unit that declared it.
     pub fn resume_throw(mut self, tag: TagRef, payload: Vec<Value>) -> Result<(), TrapInfo> {
@@ -278,22 +278,22 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
 
     /// Abandons the suspension without resuming it.
     ///
-    /// The invocation ends with [`Trap::UnhandledSuspension`] at the `suspend`, the outcome it
-    /// would have had without [`InvocationOptions::yield_suspensions`]: its frames are released
+    /// The computation ends with [`Trap::UnhandledSuspension`] at the `suspend`, the outcome it
+    /// would have had without [`TurnOptions::yield_suspensions`]: its frames are released
     /// and its new aggregates rolled back. No guest code runs, so the suspended activations'
     /// protected regions do not; use [`Self::resume_throw`] to unwind through them instead.
-    /// Returns that trap, which the invocation also reports from now on.
+    /// Returns that trap, which the turn also reports from now on.
     pub fn discard(mut self) -> TrapInfo {
         self.running
             .answer(self.pending, Answer::Discard)
-            .expect_err("a discarded suspension ends the invocation")
+            .expect_err("a discarded suspension ends the computation")
     }
 }
 
-impl<'vm, H: Host> Invocation<'vm, H> {
-    /// Borrows the suspension this invocation yielded, if one is waiting.
+impl<'vm, H: Host> Turn<'vm, H> {
+    /// Borrows the suspension this turn yielded, if one is waiting.
     ///
-    /// Only invocations started with [`InvocationOptions::yield_suspensions`] yield suspensions.
+    /// Only turns started with [`TurnOptions::yield_suspensions`] yield suspensions.
     /// Repeated queries and dropped views neither execute guest code nor answer it.
     pub fn pending_suspension(&mut self) -> Option<PendingSuspension<'_, 'vm, H>> {
         if self.continuation.stack.outcome.is_some() {
@@ -313,10 +313,10 @@ impl<'vm, H: Host> Invocation<'vm, H> {
 }
 
 impl<H: Host> Running<'_, '_, H> {
-    /// Delivers the embedding's answer to `pending`, then finishes the invocation on a trap.
+    /// Delivers the embedding's answer to `pending`, then finishes the turn on a trap.
     ///
     /// The suspension stays recorded as abandoned until delivery returns, so an observer that
-    /// panics part way leaves the invocation terminal instead of resumable after a `suspend`
+    /// panics part way leaves the turn terminal instead of resumable after a `suspend`
     /// whose results were never written.
     fn answer(&mut self, pending: PendingSuspend, answer: Answer) -> Result<(), TrapInfo> {
         self.continuation.stack.control.pending_suspension = Some(PendingSuspend {
@@ -447,14 +447,19 @@ impl<H: Host> Vm<H> {
                     self.memory.aggs(),
                     &value,
                     contract,
-                    self.limits.max_contract_work,
+                    budget.contract_limit,
                 )
                 .map_err(|error| {
                     let position = ContractPosition::Resumption {
                         tag: pending.tag,
                         index: u32::try_from(index).expect("verified result arity"),
                     };
-                    self.contract_trap(FuncRef::new(location.unit, location.func), position, error)
+                    self.contract_trap(
+                        FuncRef::new(location.unit, location.func),
+                        position,
+                        error,
+                        budget.contract_limit,
+                    )
                 })?;
         }
         Ok(())

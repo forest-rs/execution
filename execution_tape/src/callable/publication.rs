@@ -188,16 +188,16 @@ pub enum CodeUpdate {
 ///
 /// ```no_run
 /// # use execution_tape::{callable::{Callable, CodeSlot}, host::Host,
-/// #     vm::{InvocationOptions, RunStatus, Vm}};
+/// #     vm::{TurnOptions, RunStatus, Vm}};
 /// # fn update<H: Host>(slot: &mut CodeSlot, replacement: Callable, vm: &mut Vm<H>)
 /// #     -> Result<(), Box<dyn std::error::Error>> {
 /// let current = slot.current();
 /// let unit = vm.install(current.callable().program().clone())?;
-/// let mut old_call = current.callable().start(vm, unit, vec![], InvocationOptions::default())?;
-/// old_call.resume(1)?;
+/// let mut old_call = vm.start(current.callable().at(unit), vec![], TurnOptions::default())?;
+/// old_call.drive(1)?;
 /// slot.replace(replacement)?;
 /// // Future lookups use the new publication; this active call owns its old code.
-/// while old_call.resume(1024)? == RunStatus::Suspended {}
+/// while old_call.drive(1024)? == RunStatus::Suspended {}
 /// # Ok(()) }
 /// ```
 #[derive(Debug)]

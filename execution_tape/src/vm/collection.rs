@@ -4,10 +4,10 @@
 //! Explicit, planned, moving collection of a VM's value storage.
 //!
 //! A collection runs only when the embedding asks for one: [`Vm::collect`] between runs, or
-//! [`Invocation::collect`] while an invocation waits. It has two phases.
+//! [`Turn::collect`] while a turn waits. It has two phases.
 //!
 //! **Planning** reads everything that can hold a value and mutates nothing. It finds the roots:
-//! registered groups and, for an invocation, its inputs, outputs, callback results and the
+//! registered groups and, for a turn, its inputs, outputs, callback results and the
 //! reference registers of its active frames and of the frames its unresumed continuations hold.
 //! A register counts only where the verifier's initialization facts establish it at the point
 //! its frame stopped: a register not yet written there retains nothing, whatever stale handle
@@ -71,7 +71,7 @@ pub enum CollectError {
     /// A saved computation waits at a host request whose host built aggregates and called back,
     /// and the collection would move aggregates.
     ///
-    /// This is [`Self::HostHandles`] for a computation [`Invocation::save`] kept: it refuses
+    /// This is [`Self::HostHandles`] for a computation [`Turn::finish`] kept: it refuses
     /// every collection that would move anything until [`Vm::resume`] continues it and its
     /// request completes.
     SavedHostHandles {
@@ -80,7 +80,7 @@ pub enum CollectError {
     },
     /// A saved computation reaches an aggregate the heap does not hold.
     ///
-    /// This is [`Self::DanglingHandle`] for a computation [`Invocation::save`] kept: the heap
+    /// This is [`Self::DanglingHandle`] for a computation [`Turn::finish`] kept: the heap
     /// was changed behind the VM while it was saved.
     SavedDanglingHandle {
         /// The saved computation.
@@ -89,7 +89,7 @@ pub enum CollectError {
         handle: AggHandle,
     },
     /// Delivering a host outcome or a suspension answer was interrupted, for example by a
-    /// panicking observer. The invocation can only report its trap or be dropped.
+    /// panicking observer. The turn can only report its trap or be dropped.
     Abandoned,
     /// The surviving aggregates cannot be addressed.
     Aggregate(AggError),
@@ -131,7 +131,7 @@ impl fmt::Display for CollectError {
                  the heap does not hold",
                 handle.0
             ),
-            Self::Abandoned => f.write_str("cannot collect an abandoned invocation"),
+            Self::Abandoned => f.write_str("cannot collect an abandoned turn"),
             Self::Aggregate(error) => write!(f, "cannot collect: {error}"),
         }
     }
@@ -199,7 +199,7 @@ pub struct CollectionReport {
     pub aggregate_bytes: Retention,
     /// Surviving aggregates whose handle changed.
     pub moved: u64,
-    /// String and byte descriptors of the registers of the waiting invocation, if any, and of
+    /// String and byte descriptors of the registers of the waiting turn, if any, and of
     /// saved computations.
     pub payloads: Retention,
     /// Owned bytes of those descriptors. Borrowed constants, arguments and aggregate fields
@@ -209,7 +209,7 @@ pub struct CollectionReport {
     pub root_groups: u64,
     /// Groups whose handle was dropped, unregistered by this collection.
     pub released_groups: u64,
-    /// Root references traced: registered values, invocation inputs, outputs and callback
+    /// Root references traced: registered values, turn inputs, outputs and callback
     /// results, and live reference registers.
     pub roots: u64,
 }
@@ -225,8 +225,8 @@ pub struct HeapStats {
     /// Retained aggregate nodes that survived the most recent collection, or zero before the
     /// first.
     ///
-    /// Between runs that is every survivor. A collection while an invocation waits counts only
-    /// survivors older than the invocation, which its commit or rollback leaves in place; its own
+    /// Between runs that is every survivor. A collection while a turn waits counts only
+    /// survivors older than the turn, which its commit or rollback leaves in place; its own
     /// aggregates count as growth. So `aggregates.saturating_sub(live_after_collection)` is what
     /// was allocated since, less what runs discarded, until the heap is cleared directly.
     pub live_after_collection: u32,
@@ -239,9 +239,9 @@ pub struct HeapStats {
     ///
     /// Runs reuse these buffers rather than allocating them again, so they stay at the largest
     /// size a run needed. This counts capacities, not allocator overhead, and is zero while an
-    /// invocation has the state on loan. [`Vm::shrink_scratch`] releases them.
+    /// turn has the state on loan. [`Vm::shrink_scratch`] releases them.
     pub scratch_bytes: usize,
-    /// Computations saved with [`crate::vm::Invocation::save`] and not yet resumed.
+    /// Computations saved with [`crate::vm::Turn::finish`] and not yet resumed.
     pub saved_computations: usize,
     /// Bytes of register, frame and argument capacity those computations hold, beyond the
     /// aggregates they reach. Counts capacities, not payloads or allocator overhead.
@@ -565,8 +565,8 @@ impl<H: Host> Vm<H> {
     /// Reclaims every aggregate no registered group reaches, moving the survivors together.
     ///
     /// Between runs, registered groups ([`Self::root`]) and saved computations
-    /// ([`Invocation::save`]) are the roots: a saved computation keeps what an invocation waiting
-    /// at the same point would (see [`Invocation::collect`]) and is relocated with it. Group
+    /// ([`Turn::finish`]) are the roots: a saved computation keeps what a turn waiting
+    /// at the same point would (see [`Turn::collect`]) and is relocated with it. Group
     /// values are updated where aggregates move; read them with [`Self::resolve`]. Every other aggregate
     /// handle copied out of the VM before the call, including a previous run's outputs and an
     /// earlier resolution, is invalid afterwards. Groups whose handle was dropped are
@@ -575,7 +575,7 @@ impl<H: Host> Vm<H> {
     /// Nothing collects implicitly: runs only append aggregates and keep what their outputs
     /// reach. Call this when [`Self::heap_stats`] shows enough growth. The work is explicit
     /// embedding work outside every guest budget, proportional to the heap; it has no latency
-    /// bound. To collect while an invocation waits, use [`Invocation::collect`].
+    /// bound. To collect while a turn waits, use [`Turn::collect`].
     ///
     /// A saved computation waiting at a host request whose host built aggregates and called back
     /// pins them: every collection that would move anything is refused with
@@ -583,7 +583,7 @@ impl<H: Host> Vm<H> {
     ///
     /// A refused collection moves and reclaims nothing, not even dropped groups. Separately, and
     /// whether or not the collection then succeeds, it first discards what a forgotten
-    /// invocation or a run interrupted by a host panic allocated, as any run would.
+    /// turn or a run interrupted by a host panic allocated, as any run would.
     pub fn collect(&mut self) -> Result<CollectionReport, CollectError> {
         self.settle();
         let mut handles = Vec::new();
@@ -675,7 +675,7 @@ impl<H: Host> Vm<H> {
     ///
     /// Stacks planned with the heap relocate themselves afterwards.
     ///
-    /// `checkpoint` is where a waiting invocation's own aggregates begin, if one is collected.
+    /// `checkpoint` is where a waiting turn's own aggregates begin, if one is collected.
     pub(super) fn apply_collection(
         &mut self,
         plan: &HeapPlan,
@@ -708,7 +708,7 @@ impl<H: Host> Vm<H> {
 
     /// Reports the heap's size and collection history without walking it.
     ///
-    /// Aggregates a forgotten invocation or a run interrupted by a host panic allocated are
+    /// Aggregates a forgotten turn or a run interrupted by a host panic allocated are
     /// counted until the VM next runs, starts, collects, registers or releases a group, or hands
     /// out [`Self::aggregates_mut`], which discards them first.
     #[must_use]

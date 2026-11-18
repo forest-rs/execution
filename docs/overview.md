@@ -298,27 +298,30 @@ cargo run -p execution_tape_examples --bin bound_host
 - Recursion via `call` and frames.
 - Typed block parameters express joins directly; edge transfers are simultaneous preparation details.
 
-A task owns its VM and keeps its computation there between polls: `Invocation::save` keeps a
-waiting computation and `Vm::resume` continues it, so the task stores no self-references.
+Execution happens in turns. `Vm::start` and `Vm::resume` open a `Turn`, a lease on the VM that
+drives one computation; `Turn::drive` runs bounded quanta and `Turn::finish` publishes how the
+turn ended: returned values, a trap, or the computation saved in the VM for a later turn.
+Dropping an unfinished turn discards what it allocated. A task owns its VM and keeps its
+computation there between polls, so the task stores no self-references.
 `Vm::spawn` saves one before it runs and `Vm::discard` ends one; `Limits::max_frames` and
 `Limits::max_saved_computations` bound what saved computations keep.
-Owned trace/access observers can follow it across polls; shared collectors remain inspectable
-after retirement. Limits, capture import, cancellation, host completion and checked replay
+Shared trace/access collectors can follow it across the turns they are lent to and remain
+inspectable after retirement. Limits, capture import, cancellation, host completion and checked replay
 are shared. Raw aggregate/function/closure IDs still need their original ownership domain;
 retention or snapshots are explicit. Observatory borrows local sources separately from the
-invocation, then returns the same owned handle to its scheduler after inspection.
+turn, then returns it to its scheduler after inspection.
 
-`InvocationOptions::yield_host_calls()` admits a host instruction and returns `AwaitingHost`.
+`TurnOptions::yield_host_calls()` admits a host instruction and returns `AwaitingHost`.
 The pending request exposes exact code/import/source identity and borrowed arguments, while
 inspection shows the call awaiting a return and excludes uninitialized destinations. Request
 completion uses the ordinary return ABI, fuel debit and payload checks, recording the raw outcome
-before rejection. It finishes that one instruction; the next `resume` admits further guest work.
+before rejection. It finishes that one instruction; the next `drive` admits further guest work.
 Waiting and repeated queries neither execute effects nor refill budgets. Trace scopes describe
 logical latency, including the external wait; they do not measure active host CPU time.
 
 An embedding may complete reusable return slots directly, dispatch through its existing host,
 or use `complete_with` for an asynchronous producer borrowing the request. Abandoning a polled
-producer or unwinding during delivery prevents retry: subsequent resumption reports
+producer or unwinding during delivery prevents retry: driving afterwards reports
 `HostCallAbandoned`, and recording is cancelled/incomplete. Unpolled futures and unused request
 views leave the call pending. Completed callbacks remain ordinary recorded host outcomes, so
 checked replay reproduces rejected arities, kinds and budgets without calling a live host.
@@ -327,18 +330,18 @@ value of any installed unit, including one installed while the request waits.
 
 An admitted host request can explicitly reenter a guest function or closure of any unit with
 `call_guest`. It retains the host instruction, original frames, heap, activation identities and
-all hard budgets. The same invocation driver handles nested host waits and further callbacks.
+all hard budgets. The same turn driver handles nested host waits and further callbacks.
 When a callback returns, `CallbackReturned` identifies the original request again; its callback
 result slots are available separately from the host operation's eventual return. The callback
 may have a different result signature. Arguments, closure environments and results undergo the
-ordinary boundary checks. Bad admission or a guest trap terminates the whole invocation.
+ordinary boundary checks. Bad admission or a guest trap terminates the whole computation.
 
 Reentry first promotes all previous host staging with unchanged handles, avoiding collisions
 with callback allocations. Previously spent work stays charged and future contexts use the
 updated heap/budgets. Unused promoted nodes survive until root commit/rollback.
 
-Handles read from any request of an invocation (aggregate, closure and function values among its
-arguments and callback results, and what they reach) stay valid until that invocation commits its
+Handles read from any request of a computation (aggregate, closure and function values among its
+arguments and callback results, and what they reach) stay valid until that computation commits its
 root or rolls back, so the embedding can keep them and pass them to later `call_guest` or
 `complete` calls. Guest work, callbacks, completions and caught exceptions only append to the
 heap; only root commit compacts it, and a trap or cancellation truncates it. The embedding
@@ -517,7 +520,7 @@ guest control. Generators, coroutines and resumable conditions are guest code on
 primitives.
 
 A suspension that no `on` clause handles traps with `UnhandledSuspension` unless the invocation
-opts into `InvocationOptions::yield_suspensions()`. Then the embedding is the handler of last
+opts into `TurnOptions::yield_suspensions()`. Then the embedding is the handler of last
 resort: `resume` reports `AwaitingHandler`, and `pending_suspension()` borrows the tag, payload
 and result kinds. The embedding answers once: `resume` writes values for the tag's results,
 checked for count, kind and payload work like a host return (a wrong count traps

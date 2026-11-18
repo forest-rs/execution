@@ -194,7 +194,7 @@ impl HostContext<'_, '_> {
     /// or cancellation discards staging. Guest reentry through a yielded request first promotes
     /// all staging with unchanged handles; unused promoted nodes live until root commit/rollback.
     /// One node plus each field and immediate payload bytes
-    /// share the invocation's aggregate/payload work limits. Native allocations before this call
+    /// share the turn's aggregate/payload work limits. Native allocations before this call
     /// are outside those limits. A denial allocates no node and can be handled by the host.
     /// Errors preserve an `AggError` or VM `Trap` as the typed `HostError` source.
     pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, HostError> {

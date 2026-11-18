@@ -56,10 +56,12 @@ impl TraceSink for Observe {
                 aggregates,
                 limits,
                 resident_frames,
+                yields_suspensions,
                 work,
                 units,
             } => {
                 assert_eq!(resident_frames, 0, "no other computation holds frames");
+                assert!(!yields_suspensions, "an ordinary run yields nothing");
                 assert!(
                     units.program(entry.unit).is_some(),
                     "the entry unit is installed"

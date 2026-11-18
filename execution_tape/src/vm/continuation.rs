@@ -25,10 +25,10 @@ pub(super) struct Stack {
     pub(super) host_results: Option<crate::host::HostResults>,
     pub(super) outputs: Vec<Value>,
     pub(super) outcome: Option<Result<(), TrapInfo>>,
-    /// Invocations that ran this computation before the current one.
-    pub(super) invocations: u64,
+    /// Turns that ran this computation before the current one.
+    pub(super) turns: u64,
     /// Created by [`Vm::spawn`] and not yet resumed: its entry was checked, but no observer
-    /// saw it enter, so the first resume enters it again under that invocation's observers.
+    /// saw it enter, so the first resume enters it again under that turn's observers.
     pub(super) spawned: bool,
 }
 
@@ -44,7 +44,7 @@ impl Stack {
             host_results: None,
             outputs: Vec::new(),
             outcome: None,
-            invocations: self.invocations,
+            turns: self.turns,
             spawned: self.spawned,
         };
         core::mem::replace(self, empty)
@@ -68,7 +68,7 @@ impl<'a> Continuation<'a> {
         program: Arc<VerifiedProgram>,
         entry: FuncRef,
         args: Cow<'a, [Value]>,
-        options: InvocationOptions<'a>,
+        options: TurnOptions<'a>,
     ) -> Self {
         let mut control = core::mem::take(&mut exec.control);
         control.start(stack, options.yield_host_calls, options.yield_suspensions);
@@ -86,7 +86,7 @@ impl<'a> Continuation<'a> {
                 host_results: None,
                 outputs: Vec::new(),
                 outcome: None,
-                invocations: 0,
+                turns: 0,
                 spawned: false,
             },
             args,
@@ -107,6 +107,7 @@ impl<'a> Continuation<'a> {
         &mut self,
         vm: &mut Vm<H>,
         budget: &mut Budget,
+        limits: &Limits,
         work: DataWork,
     ) -> Result<(), TrapInfo> {
         budget.select(&self.stack.control);
@@ -120,8 +121,9 @@ impl<'a> Continuation<'a> {
                 entry: FuncRef::new(self.stack.unit, self.stack.entry),
                 args: &self.args,
                 aggregates: vm.memory.aggs(),
-                limits: &vm.limits,
+                limits,
                 resident_frames: vm.saved.resident_frames(),
+                yields_suspensions: self.stack.control.yield_suspensions,
                 work,
                 units: vm.units(),
             });
@@ -272,10 +274,10 @@ mod tests {
             program,
             entry,
             Cow::Owned(vec![]),
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         );
         continuation
-            .initialize(vm, budget, DataWork::default())
+            .initialize(vm, budget, &vm.limits.clone(), DataWork::default())
             .unwrap();
         continuation
     }
@@ -360,8 +362,8 @@ mod tests {
     }
 
     #[test]
-    fn pending_protocol_borrows_control_and_store_without_an_owning_invocation() {
-        use super::super::invocation::Running;
+    fn pending_protocol_borrows_control_and_store_without_an_owning_turn() {
+        use super::super::turn::Running;
         use crate::host::HostSig;
 
         let mut builder = ProgramBuilder::new();
@@ -504,10 +506,15 @@ mod tests {
             second_program,
             second_entry,
             Cow::Owned(vec![]),
-            InvocationOptions::default(),
+            TurnOptions::default(),
         );
         let error = second
-            .initialize(&mut vm, &mut budget, DataWork::default())
+            .initialize(
+                &mut vm,
+                &mut budget,
+                &Limits::default(),
+                DataWork::default(),
+            )
             .unwrap_err();
         assert!(matches!(error.trap, Trap::CallDepthExceeded));
         assert_eq!(budget.frames, 1);
@@ -554,11 +561,16 @@ mod tests {
                     program,
                     entry,
                     Cow::Owned(vec![Value::Agg(tuple)]),
-                    InvocationOptions::default(),
+                    TurnOptions::default(),
                 )
             };
             first
-                .initialize(&mut vm, &mut budget, DataWork::default())
+                .initialize(
+                    &mut vm,
+                    &mut budget,
+                    &Limits::default(),
+                    DataWork::default(),
+                )
                 .unwrap();
             let before = budget.contract_scratch.work_used();
             assert_eq!(before, 3);
@@ -571,11 +583,16 @@ mod tests {
                     program,
                     entry,
                     Cow::Owned(vec![Value::Agg(tuple)]),
-                    InvocationOptions::default(),
+                    TurnOptions::default(),
                 )
             };
             let error = second
-                .initialize(&mut vm, &mut budget, DataWork::default())
+                .initialize(
+                    &mut vm,
+                    &mut budget,
+                    &Limits::default(),
+                    DataWork::default(),
+                )
                 .unwrap_err();
             if limit == 3 {
                 assert!(matches!(error.trap, Trap::ContractWorkExceeded { .. }));

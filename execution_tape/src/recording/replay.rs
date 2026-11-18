@@ -25,7 +25,7 @@ use core::cell::RefCell;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Divergence {
-    /// Host invocation occurred at another guest instruction.
+    /// Host turn occurred at another guest instruction.
     Location {
         /// Recorded instruction.
         expected: TraceLocation,
@@ -142,7 +142,7 @@ pub enum ReplayBoundary {
         /// Zero-based ordinal, also indexing [`Recording::store`].
         index: usize,
     },
-    /// Checking one host invocation in execution order.
+    /// Checking one host turn in execution order.
     HostCall {
         /// Zero-based ordinal, also indexing [`Recording::host_calls`].
         index: usize,
@@ -183,7 +183,7 @@ pub enum ReplayBoundary {
     Completion,
 }
 
-/// Replay could not establish the captured invocation's result.
+/// Replay could not establish the captured turn's result.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ReplayError {
@@ -641,7 +641,7 @@ trait Installs {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError>;
     fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError>;
     fn units(&self) -> Units<'_>;
-    /// Defines a recorded tag; only the VM between invocations can.
+    /// Defines a recorded tag; only the VM between turns can.
     fn define_tag(&mut self, _tag: &TagRecord) -> Option<TagRef> {
         None
     }
@@ -772,7 +772,7 @@ impl RecordedHost<'_> {
                     check_relink(&state, relink, request.units())?;
                 }
                 Store::Tag(tag) => {
-                    // Tags are defined between invocations, where replay repeats them.
+                    // Tags are defined between turns, where replay repeats them.
                     let state = self.state.borrow();
                     check_tag(&state, tag, request.define_tag(tag))?;
                 }
@@ -1149,7 +1149,7 @@ impl TraceSink for Check<'_> {
                 ValueEvent::Entry { .. }
                 | ValueEvent::Installed { .. }
                 | ValueEvent::Relinked { .. } => {}
-                // Replay drives its own invocation and never collects it. It saves and resumes
+                // Replay drives its own turn and never collects it. It saves and resumes
                 // it where the recording did, and checks that in the driver.
                 ValueEvent::Collected { .. }
                 | ValueEvent::Saved { .. }
@@ -1585,35 +1585,35 @@ impl Recording {
             } else {
                 TraceMask::CALL
             };
-        // The original yielded suspensions if it recorded any, so it opted in; replay answers
-        // them again. A function, not a closure, so each invocation's options borrow anew.
-        fn options<'a>(yields: bool) -> crate::vm::InvocationOptions<'a> {
-            let options = crate::vm::InvocationOptions::default().yield_host_calls();
+        // Each turn yields unhandled suspensions as its original did; replay answers them again.
+        // A function, not a closure, so each turn's options borrow anew.
+        fn options<'a>(yields: bool) -> crate::vm::TurnOptions<'a> {
+            let options = crate::vm::TurnOptions::default().yield_host_calls();
             if yields {
                 options.yield_suspensions()
             } else {
                 options
             }
         }
-        let yields = !self.suspensions.is_empty();
+        let mut yields = entry.yields_suspensions;
         let mut resumptions = self.resumptions.iter();
         let mut next = resumptions.next();
         let mut saved = None;
-        // One pass per invocation of the recorded computation: replay saves and resumes it
-        // where the recording did, so each invocation gets the allowance the original had.
+        // One pass per turn of the recorded computation: replay saves and resumes it
+        // where the recording did, so each turn gets the allowance the original had.
         let result = loop {
-            let mut invocation = match saved.take() {
+            let mut turn = match saved.take() {
                 None => match vm.start_prepaid(
                     entry.func,
                     &args,
                     options(yields).trace(mask, &mut check),
                     entry.work,
                 ) {
-                    Ok(invocation) => invocation,
+                    Ok(turn) => turn,
                     Err(error) => break Err(error),
                 },
                 Some(id) => match vm.resume(id, options(yields).trace(mask, &mut check)) {
-                    Ok(invocation) => invocation,
+                    Ok(turn) => turn,
                     Err(_) => return Err(state.borrow().mismatch(Divergence::Outcome)),
                 },
             };
@@ -1624,7 +1624,7 @@ impl Recording {
                 if let Some(resumption) = next
                     && state.borrow().sequence == resumption.sequence
                 {
-                    let fuel = invocation.work().fuel;
+                    let fuel = turn.work().fuel;
                     if fuel == resumption.fuel {
                         break None;
                     }
@@ -1633,7 +1633,7 @@ impl Recording {
                     }
                     quantum = resumption.fuel - fuel;
                 }
-                let status = match invocation.resume(quantum) {
+                let status = match turn.drive(quantum) {
                     Err(error) => break Some(Err(error)),
                     Ok(status) => status,
                 };
@@ -1642,7 +1642,7 @@ impl Recording {
                     && status != crate::vm::RunStatus::Complete
                     && next.is_some_and(|resumption| {
                         state.borrow().sequence == resumption.sequence
-                            && invocation.work().fuel == resumption.fuel
+                            && turn.work().fuel == resumption.fuel
                     })
                 {
                     break None;
@@ -1650,7 +1650,7 @@ impl Recording {
                 match status {
                     crate::vm::RunStatus::Suspended => {}
                     crate::vm::RunStatus::AwaitingHandler => {
-                        let mut pending = invocation
+                        let mut pending = turn
                             .pending_suspension()
                             .expect("yielded replay suspension");
                         let delivered = match recorded_host.answer(&mut pending)? {
@@ -1662,15 +1662,9 @@ impl Recording {
                             break Some(Err(error));
                         }
                     }
-                    crate::vm::RunStatus::Complete => {
-                        break Some(Ok(invocation
-                            .take_outputs()
-                            .expect("completed replay outputs")));
-                    }
+                    crate::vm::RunStatus::Complete => break Some(Ok(())),
                     crate::vm::RunStatus::AwaitingHost | crate::vm::RunStatus::CallbackReturned => {
-                        let mut request = invocation
-                            .pending_host_call()
-                            .expect("yielded replay request");
+                        let mut request = turn.pending_host_call().expect("yielded replay request");
                         let outcome = recorded_host.invoke(&mut request)?;
                         let outcome = match outcome {
                             Delivery::CallGuest { callee, args } => {
@@ -1696,13 +1690,16 @@ impl Recording {
                 if next.is_some() {
                     return Err(state.borrow().mismatch(Divergence::Outcome));
                 }
-                break result;
+                break result.map(|()| match turn.finish() {
+                    Ok(crate::vm::TurnOutcome::Returned(values)) => values,
+                    _ => unreachable!("a completed replay returned"),
+                });
             }
             let resumption = next.expect("replay saves only at a recorded resumption");
-            let Ok(id) = invocation.save() else {
+            let Ok(crate::vm::TurnOutcome::Saved(id)) = turn.finish() else {
                 return Err(state.borrow().mismatch(Divergence::Outcome));
             };
-            // Installs, tags and relinks made while it was saved come before the next invocation.
+            // Installs, tags and relinks made while it was saved come before the next turn.
             {
                 let mut state = state.borrow_mut();
                 while state.stored < resumption.stored {
@@ -1716,6 +1713,7 @@ impl Recording {
             }
             vm.set_limits(resumption.limits.clone());
             vm.reserve_frames(resumption.resident_frames);
+            yields = resumption.yields_suspensions;
             saved = Some(id);
             next = resumptions.next();
         };
@@ -2089,7 +2087,7 @@ mod tests {
 
     fn callback_recording() -> Recording {
         use crate::trace::TraceSink;
-        use crate::vm::{InvocationOptions, RunStatus};
+        use crate::vm::{RunStatus, TurnOptions};
         let mut b = ProgramBuilder::new();
         let sig = FunctionSig {
             arg_types: vec![ValueType::I64],
@@ -2128,21 +2126,21 @@ mod tests {
             .start(
                 FuncRef::new(unit, root),
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .trace_owned(recorder.mask(), recorder.clone()),
             )
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert_eq!(run.drive(100).unwrap(), RunStatus::AwaitingHost);
         run.pending_host_call()
             .unwrap()
             .call_guest(Value::Func(FuncRef::new(unit, handler)), args.to_vec())
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::CallbackReturned);
+        assert_eq!(run.drive(100).unwrap(), RunStatus::CallbackReturned);
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
         request.complete(&mut results, Ok(0)).unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
+        assert_eq!(run.drive(100).unwrap(), RunStatus::Complete);
         drop(run);
         let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
         record.replay().unwrap();
@@ -2632,7 +2630,7 @@ mod tests {
             panic!("aggregate root")
         };
         // A second root node has equal contents but is a different identity. It was not
-        // supplied by the guest: the invocation still binds the original root.
+        // supplied by the guest: the turn still binds the original root.
         let node = &record.arena.nodes[original.0 as usize];
         let duplicate = AggregateId(u32::try_from(record.arena.nodes.len()).unwrap());
         record.arena.nodes.push(crate::recording::values::Node {
@@ -2727,7 +2725,7 @@ mod tests {
     /// `f(x)` suspends `ask(x) -> i64` with no handler and returns the answer; the embedding
     /// answers `x + 1`.
     fn yielded_record() -> Recording {
-        use crate::vm::{InvocationOptions, RunStatus};
+        use crate::vm::{RunStatus, TurnOptions};
         let mut b = ProgramBuilder::new();
         let ask = b
             .declare_tag_with_results("ask", &[ValueType::I64.into()], &[ValueType::I64.into()])
@@ -2754,17 +2752,17 @@ mod tests {
             .start(
                 FuncRef::new(unit, f),
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_suspensions()
                     .trace(mask, &mut recorder),
             )
             .unwrap();
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
         run.pending_suspension()
             .unwrap()
             .resume(vec![Value::I64(5)])
             .unwrap();
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
         drop(run);
         recorder.finish()
     }

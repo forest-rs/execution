@@ -28,7 +28,7 @@ use crate::value::Value;
 /// Sink for recording resource accesses during execution.
 ///
 /// `Rc<RefCell<S>>` forwards reads and writes to a shared collector. Drain or inspect it between
-/// execution calls, releasing all `RefCell` borrows before executing or retiring an invocation.
+/// execution calls, releasing all `RefCell` borrows before executing or retiring a turn.
 ///
 /// This is an optional integration point intended for incremental execution systems (e.g.
 /// `execution_graph`). A sink is provided to host calls via [`HostContext`].
@@ -230,7 +230,7 @@ pub trait AccessSink {
     fn write(&mut self, key: ResourceKeyRef<'_>);
 }
 
-// Shared collectors can be owned by an invocation and drained between graph task polls.
+// Shared collectors can be owned by a turn and drained between graph task polls.
 impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>> {
     fn read(&mut self, key: ResourceKeyRef<'_>) {
         self.as_ref().borrow_mut().read(key);
@@ -633,7 +633,7 @@ pub enum HostError {
 /// A guest exception raised by a host call: a VM tag and its payload, in tag order.
 ///
 /// Aggregate payload values may be built with the call's [`HostContext`]; they are adopted
-/// like returned values. Other handles must belong to the calling invocation.
+/// like returned values. Other handles must belong to the calling turn.
 #[derive(Clone, Debug)]
 pub struct HostThrow {
     /// The raised VM tag: one the host defined with [`crate::vm::Vm::define_tag`], or a

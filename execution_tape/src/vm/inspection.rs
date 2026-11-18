@@ -13,7 +13,7 @@ use crate::value::Obj;
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::hash::{Hash, Hasher};
 
-/// Identifies one computation for its whole life: the same in every invocation that runs it,
+/// Identifies one computation for its whole life: the same in every turn that runs it,
 /// whichever [`ComputationId`] each of its saves receives.
 ///
 /// It names the computation's stack and, like a [`ComputationId`], its VM by a number no other
@@ -33,11 +33,11 @@ impl StackId {
     }
 }
 
-/// An activation identity valid only in its originating invocation.
+/// An activation identity valid only in its originating turn.
 ///
 /// It names its VM, which cloning retains so address reuse cannot make an old ID refer to
-/// another VM, and the invocation within that VM. Inspection rejects IDs from other
-/// invocations, even when their local ordinals match. IDs are process-local handles, not
+/// another VM, and the turn within that VM. Inspection rejects IDs from other
+/// turns, even when their local ordinals match. IDs are process-local handles, not
 /// persistent archive identities.
 #[derive(Clone)]
 pub struct ActivationId {
@@ -46,7 +46,7 @@ pub struct ActivationId {
     ordinal: u64,
 }
 impl ActivationId {
-    /// Local display ordinal; it is unique within one invocation, not across invocations.
+    /// Local display ordinal; it is unique within one turn, not across turns.
     #[must_use]
     pub const fn ordinal(&self) -> u64 {
         self.ordinal
@@ -71,7 +71,7 @@ impl fmt::Debug for ActivationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActivationId")
             .field("vm", &Arc::as_ptr(&self.vm))
-            .field("invocation", &self.stack)
+            .field("stack", &self.stack)
             .field("ordinal", &self.ordinal)
             .finish()
     }
@@ -90,8 +90,12 @@ pub(super) struct ExecutionControl {
     pub(super) yield_host_calls: bool,
     pub(super) yield_suspensions: bool,
     pub(super) pending_host: Option<host_call::PendingHost>,
-    pub(super) pending_suspension: Option<invocation::PendingSuspend>,
-    pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
+    pub(super) pending_suspension: Option<turn::PendingSuspend>,
+    pub(super) callbacks: Option<Box<turn::callback::Callbacks>>,
+    /// A synchronous host call this stack started and has not yet admitted the outcome of: set
+    /// while the host runs, so a turn that a panicking host left behind can neither be saved
+    /// nor continue past an instruction whose results were never written.
+    pub(super) delivering: Option<TraceLocation>,
     /// The VM-assigned identity of the stack this control drives; zero for synchronous runs,
     /// which hand out no activation identities and hold no proofs across stacks.
     owner: u64,
@@ -153,6 +157,7 @@ impl ExecutionControl {
         self.pending_host = None;
         self.pending_suspension = None;
         self.callbacks = None;
+        self.delivering = None;
         self.owner = owner;
         self.frames.clear();
         self.last = 0;
@@ -183,7 +188,7 @@ impl ExecutionControl {
         }
     }
     pub(super) fn enter(&mut self, caller: TraceLocation) {
-        // Every call consumes hard fuel, which cannot be replenished in an invocation.
+        // Every call consumes hard fuel, which cannot be replenished in a turn.
         // Even u64::MAX fuel therefore cannot exhaust ordinals before it is exhausted.
         self.last += 1;
         self.frames.push(Activation {
@@ -260,7 +265,7 @@ pub enum ObjectRootOrigin {
         /// Source register number.
         register: Reg,
     },
-    /// One of the invocation's borrowed entry arguments.
+    /// One of the turn's borrowed entry arguments.
     Argument {
         /// Argument position.
         index: usize,
@@ -278,7 +283,7 @@ pub enum ObjectRootOrigin {
     /// An initialized register of a frame held by an unresumed in-guest continuation.
     ///
     /// `cont.new`, `cont.bind` and a `suspend` handled by a guest `on` clause move frames off the
-    /// active stack, so [`InvocationInspection::frames`] does not list them, but resuming the
+    /// active stack, so [`ComputationInspection::frames`] does not list them, but resuming the
     /// continuation can still read these registers. An unstarted frame's only initialized
     /// registers are the arguments bound to it. As for [`Self::Register`], an exception reference
     /// register contributes the objects in its exception's payload.
@@ -300,7 +305,7 @@ pub enum ObjectRootOrigin {
     },
 }
 
-/// A host-owned object handle referenced by invocation or VM storage.
+/// A host-owned object handle referenced by turn or VM storage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObjectRoot {
     /// Opaque object token; its host type and heap validity remain the embedder's responsibility.
@@ -465,9 +470,9 @@ impl<'a> LiveRegisters<'a> {
 /// Only queried functions and locations allocate mapping data; the initialization facts behind
 /// it are retained by verification. Holding this view prevents resumption or mutation of the
 /// host. Reuse it for multiple queries at one suspension; discard it before resuming. Terminal
-/// invocations expose no live frames, but retained heaps and outputs can still contribute object
+/// turns expose no live frames, but retained heaps and outputs can still contribute object
 /// roots. Source connections use each frame's exact `location`.
-pub struct InvocationInspection<'a> {
+pub struct ComputationInspection<'a> {
     vm: &'a Arc<()>,
     units: &'a UnitTable,
     ctx: &'a Registers,
@@ -478,9 +483,9 @@ pub struct InvocationInspection<'a> {
     active: bool,
     facts: FrameFacts<'a>,
 }
-impl fmt::Debug for InvocationInspection<'_> {
+impl fmt::Debug for ComputationInspection<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InvocationInspection")
+        f.debug_struct("ComputationInspection")
             .field("active", &self.active)
             .field("indexed_functions", &self.facts.functions.len())
             .field("indexed_locations", &self.facts.locations.len())
@@ -488,19 +493,19 @@ impl fmt::Debug for InvocationInspection<'_> {
     }
 }
 
-impl<H: Host> Invocation<'_, H> {
+impl<H: Host> Turn<'_, H> {
     /// Borrows paused state. Register indexes are built only for queried functions.
     #[must_use]
-    pub fn inspect(&self) -> InvocationInspection<'_> {
+    pub fn inspect(&self) -> ComputationInspection<'_> {
         inspection(self.vm, &self.continuation.stack, &self.continuation.args)
     }
 
-    /// Borrows the paused state of a computation saved in this invocation's VM, as
-    /// [`Vm::inspect`] does, while this invocation's computation waits between quanta.
+    /// Borrows the paused state of a computation saved in this turn's VM, as
+    /// [`Vm::inspect`] does, while this turn's computation waits between quanta.
     pub fn inspect_saved(
         &self,
         id: ComputationId,
-    ) -> Result<InvocationInspection<'_>, ResumeError> {
+    ) -> Result<ComputationInspection<'_>, ComputationError> {
         self.vm.inspect(id)
     }
 
@@ -512,15 +517,15 @@ impl<H: Host> Invocation<'_, H> {
     }
 }
 
-impl<H: Host> invocation::Running<'_, '_, H> {
-    pub(super) fn inspect(&self) -> InvocationInspection<'_> {
+impl<H: Host> turn::Running<'_, '_, H> {
+    pub(super) fn inspect(&self) -> ComputationInspection<'_> {
         inspection(self.vm, &self.continuation.stack, &self.continuation.args)
     }
 
     pub(super) fn inspect_saved(
         &self,
         id: ComputationId,
-    ) -> Result<InvocationInspection<'_>, ResumeError> {
+    ) -> Result<ComputationInspection<'_>, ComputationError> {
         self.vm.inspect(id)
     }
 }
@@ -528,16 +533,19 @@ impl<H: Host> invocation::Running<'_, '_, H> {
 impl<H: Host> Vm<H> {
     /// Borrows the paused state of the saved computation `id` without resuming it.
     ///
-    /// The view is the one [`Invocation::inspect`] gives for that computation once resumed:
+    /// The view is the one [`Turn::inspect`] gives for that computation once resumed:
     /// its frames, initialized registers and object roots, with the activation IDs it keeps when
     /// resumed. A computation saved at a host request or suspension shows the waiting frame as
     /// that request's views do. Refuses an ID this VM holds no computation for, or another VM's.
     ///
     /// Its registers are the computation's own, but
-    /// [`visit_objects`](InvocationInspection::visit_objects) also lists every aggregate field in
+    /// [`visit_objects`](ComputationInspection::visit_objects) also lists every aggregate field in
     /// the VM's heap, which is shared: other saved computations' aggregates, and, through
-    /// `inspect_saved` while an invocation runs, that invocation's uncommitted temporaries.
-    pub fn inspect(&self, id: ComputationId) -> Result<InvocationInspection<'_>, ResumeError> {
+    /// `inspect_saved` while a turn runs, that turn's uncommitted temporaries.
+    pub fn inspect(
+        &self,
+        id: ComputationId,
+    ) -> Result<ComputationInspection<'_>, ComputationError> {
         let saved = self.saved.get(id)?;
         Ok(inspection(self, &saved.stack, &saved.args))
     }
@@ -547,9 +555,9 @@ fn inspection<'a, H: Host>(
     vm: &'a Vm<H>,
     stack: &'a continuation::Stack,
     args: &'a [Value],
-) -> InvocationInspection<'a> {
+) -> ComputationInspection<'a> {
     let units = &vm.units;
-    InvocationInspection {
+    ComputationInspection {
         vm: &vm.identity,
         units,
         ctx: &stack.ctx,
@@ -566,7 +574,7 @@ fn inspection<'a, H: Host>(
     }
 }
 
-impl<'a> InvocationInspection<'a> {
+impl<'a> ComputationInspection<'a> {
     fn frame_at(&self, index: usize) -> PausedFrame {
         let frame = &self.ctx.frames[index];
         let activation = self.control.frames[index];
@@ -698,7 +706,7 @@ impl<'a> InvocationInspection<'a> {
     /// roots. Object identity, relocation and reclamation belong to that collector. This method
     /// performs no collection or host-state mutation.
     ///
-    /// The registers it reads are those [`Invocation::collect`] treats as roots. Aggregate fields
+    /// The registers it reads are those [`Turn::collect`] treats as roots. Aggregate fields
     /// are listed for every node, reachable or not; collecting first leaves only the nodes the
     /// VM's roots reach, which narrows this inventory to their objects.
     pub fn visit_objects(&mut self, mut visit: impl FnMut(ObjectRoot)) {

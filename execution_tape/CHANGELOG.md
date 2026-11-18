@@ -634,6 +634,45 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- **Breaking:** a `Turn` replaces `Invocation` as the lease that drives a computation, and
+  publishing what it produced is now explicit.
+  - `Vm::start(callee, args, TurnOptions)` returns a `Turn`. The callee is a `FuncRef` or a
+    retained callable in a unit (`callable.at(unit)`, a `Callee`), and arguments are borrowed or
+    owned (`Arguments`); `Callable::start(vm, unit, args, options)` becomes
+    `vm.start(callable.at(unit), args, options)`.
+  - `Turn::drive(quantum)` replaces `Invocation::resume(quantum)`.
+  - `Turn::finish(self) -> Result<TurnOutcome, Turn>` is the only way to publish:
+    `TurnOutcome::Returned(values)`, `Trapped(trap)`, or `Saved(id)` for a computation still
+    running or waiting, which `Vm::resume` continues. It hands the turn back unchanged where
+    saving is refused (the saved-computation limit, staged host aggregates, an interrupted
+    delivery). `Invocation::save` and `take_outputs` are removed.
+  - **Behaviour change:** dropping a turn that has not finished discards everything it
+    allocated, even after its computation returned. A completed `Invocation` used to keep its
+    committed outputs when dropped. Forgetting a turn does the same at the VM's next entry
+    point. Code that read outputs and then dropped the invocation calls `finish` instead.
+  - `TurnOptions` replaces `InvocationOptions`. `TurnOptions::allowance(Allowance)` gives a
+    turn its own fuel, host-call and contract, aggregate and payload work in place of the VM's
+    `Limits`, and `Limits::allowance()` gives the default. Recordings note the limits each turn
+    ran under. The owned observers `trace_owned` and `access_owned` are removed: a task lends a
+    shared `Rc<RefCell<_>>` collector to each turn instead.
+  - `Vm::snapshot(&values)` and `Vm::retain_callable(&value)` replace
+    `Invocation::into_snapshot` and `Invocation::retain_callable(index)`, so
+    `CallableError::NoSuccessfulResult` and `OutputIndex` are removed. Both take `&mut self`
+    and first discard what a forgotten turn allocated, like the VM's other entry points, so they
+    cannot export values a turn never published. Values peeked with `Turn::result` last only as
+    long as the turn: once it is dropped or forgotten, later allocations reuse their handles.
+  - `Allowance` is `#[non_exhaustive]`: start from `Limits::allowance()` and set its fields.
+  - Recordings: `Recording::invocation()` becomes `Recording::entry()`, returning a
+    `RecordedEntry` (was `recording::Invocation`), which also reports whether the first turn
+    yielded suspensions. `ValueEvent::Saved` and `Resumed` name their count `turn` (was
+    `invocation`), and `ValueEvent::Entry` and `Resumed` report `yields_suspensions`. Code that
+    matches every field of these events names the new ones.
+  - `ComputationInspection` replaces `InvocationInspection`, and `ComputationError` replaces
+    `ResumeError`.
+  - Migration: rename the types, call `drive` for `resume(quantum)` and `finish` where
+    outputs were taken or the invocation saved, and start callables with
+    `vm.start(callable.at(unit), ..)`.
+
 - Instructions cost less. The interpreter keeps the running frame's unit, function, register
   base and verified body between instructions and looks them up again only when the frame
   stack changes, instead of on every instruction; the frame stack counts its changes so none is
@@ -933,6 +972,17 @@ This release has an [MSRV][] of 1.88.
   scopes. Migration: handle the new variant in exhaustive trace-outcome matches.
   Recordings of cancelled runs report `MissingCompletion` and reject checked replay.
   Existing `run`/`run_with_ctx` signatures, normal outcomes, and wire version are unchanged. ([#205][] by [@waywardmonkeys][])
+
+### Fixed
+
+- A computation whose host delivery was interrupted is no longer saveable. A polled
+  `complete_with` producer that was forgotten, or a host that panicked inside a synchronous call
+  while a turn drove it, used to leave the computation able to save and resume, re-dispatching
+  the request or reading unwritten results; `Turn::finish` now hands the turn back and driving
+  it reports `Trap::HostCallAbandoned`.
+- Replay gives each turn the suspension policy it ran under. It used to yield unhandled
+  suspensions in every turn whenever the recording held any, so a computation that yielded in
+  one turn and trapped on an unhandled suspension in a later one diverged on replay.
 
 ## [0.1.0][] (2026-10-27)
 

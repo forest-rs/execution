@@ -19,8 +19,11 @@ pub(super) struct Budget {
     /// The VM's frame limit and the frames saved computations hold.
     max_frames: usize,
     resident_elsewhere: usize,
-    /// Number of host calls performed so far in the current run.
+    /// Number of host calls performed so far in the current run, and how many it may make.
     pub(super) host_calls: u64,
+    pub(super) host_call_limit: u64,
+    /// The contract work the current run may do.
+    pub(super) contract_limit: u64,
     /// Successfully charged logical byte/string work and the current run's limit.
     pub(super) payload_work: u64,
     pub(super) payload_limit: u64,
@@ -56,6 +59,8 @@ impl Budget {
     pub(super) fn reset(&mut self, limits: &Limits) {
         self.clear();
         self.fuel = limits.fuel;
+        self.host_call_limit = limits.max_host_calls;
+        self.contract_limit = limits.max_contract_work;
         self.call_depth = limits.max_call_depth;
         self.max_frames = limits.max_frames;
         self.limit_frames(0);

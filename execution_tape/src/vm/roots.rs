@@ -214,7 +214,7 @@ impl<H: Host> Vm<H> {
     /// Register values between runs, for example a run's outputs, which are valid until the
     /// next collection. Read them back with [`Self::resolve`].
     pub fn root(&mut self, values: Vec<Value>) -> Result<RootedValues, RootError> {
-        // A forgotten invocation's aggregates go first, so no group can keep them.
+        // A forgotten turn's aggregates go first, so no group can keep them.
         self.settle();
         for (index, value) in values.iter().enumerate() {
             if let Some(handle) = crate::aggregates::aggregate_handle(value)
@@ -244,7 +244,7 @@ impl<H: Host> Vm<H> {
     ///
     /// Aggregate handles in them are valid until the next collection, which may move them;
     /// resolve again afterwards rather than keeping copies. The borrow does not depend on the
-    /// handle, only on the VM. A group never reaches what a forgotten invocation allocated:
+    /// handle, only on the VM. A group never reaches what a forgotten turn allocated:
     /// registering one discards those aggregates first.
     pub fn resolve(&self, root: &RootedValues) -> Result<&[Value], RootError> {
         Ok(&self.roots.group(&self.identity, root)?.values)
