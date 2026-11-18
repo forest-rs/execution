@@ -65,8 +65,8 @@ pub struct TurnOptions<'a> {
     pub(super) yield_host_calls: bool,
     pub(super) yield_suspensions: bool,
     pub(super) mask: Option<TraceMask>,
-    pub(super) trace: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
-    pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
+    pub(super) trace: Option<&'a mut (dyn TraceSink + 'a)>,
+    pub(super) access: Option<&'a mut (dyn AccessSink + 'a)>,
     pub(super) allowance: Option<Allowance>,
 }
 
@@ -128,31 +128,14 @@ impl<'a> TurnOptions<'a> {
     #[must_use]
     pub fn trace(mut self, mask: TraceMask, sink: &'a mut dyn TraceSink) -> Self {
         self.mask = Some(mask);
-        self.trace = Some(BorrowedOrOwned::Borrowed(sink));
+        self.trace = Some(sink);
         self
     }
 
     /// Records host resource accesses across all scheduling quanta.
     #[must_use]
     pub fn access(mut self, sink: &'a mut dyn AccessSink) -> Self {
-        self.access = Some(BorrowedOrOwned::Borrowed(sink));
-        self
-    }
-
-    /// Owns a trace observer for an independently stored turn.
-    /// Shared `Rc<RefCell<S>>` sinks can retain captured evidence after turn retirement.
-    #[must_use]
-    pub fn trace_owned(mut self, mask: TraceMask, sink: impl TraceSink + 'a) -> Self {
-        self.mask = Some(mask);
-        self.trace = Some(BorrowedOrOwned::Owned(Box::new(sink)));
-        self
-    }
-
-    /// Owns an access observer across suspension. No graph access borrow is retained.
-    /// Shared `Rc<RefCell<S>>` sinks can collect accesses for a task's next graph poll.
-    #[must_use]
-    pub fn access_owned(mut self, sink: impl AccessSink + 'a) -> Self {
-        self.access = Some(BorrowedOrOwned::Owned(Box::new(sink)));
+        self.access = Some(sink);
         self
     }
 }
@@ -249,8 +232,6 @@ pub struct Turn<'a, H: Host> {
     /// The limits this turn runs under: the VM's, with its options' allowance in place of their
     /// work limits.
     limits: Limits,
-    /// Whether [`Self::finish`] published the returned outputs, which dropping must keep.
-    published: bool,
     /// The VM's execution state while this turn has it on loan. Its register file,
     /// control and budget are moved out into the fields above, and back before it is returned.
     exec: Option<Box<Exec>>,
@@ -392,7 +373,6 @@ impl<'a, H: Host> Turn<'a, H> {
             budget,
             checkpoint,
             limits,
-            published: false,
             continuation,
             exec: Some(exec),
         };
@@ -505,62 +485,6 @@ impl<H: Host> Turn<'_, H> {
                 .as_ref()
                 .map(|()| self.continuation.stack.outputs.as_slice())
         })
-    }
-
-    /// Takes committed owned outputs, leaving an empty result buffer. Returns `None` before a
-    /// successful return. Aggregate handles remain owned by this turn's VM heap.
-    /// These are raw ABI values: function and closure references name units of this VM.
-    /// Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
-    /// turn to keep them independently of the VM.
-    pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
-        let returned = matches!(self.continuation.stack.outcome, Some(Ok(())));
-        if returned && !self.published {
-            self.published = true;
-            self.vm.close_lease();
-        }
-        returned.then(|| core::mem::take(&mut self.continuation.stack.outputs))
-    }
-
-    /// Temporary forward to [`Self::drive`], removed later in this change.
-    #[doc(hidden)]
-    pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
-        self.drive(quantum)
-    }
-
-    /// Consumes a successful turn and retains its result independently of the VM.
-    ///
-    /// Copies the reachable aggregates, leaving the VM's existing retained handles valid; root
-    /// payloads move, sharing is preserved and unreachable nodes are left behind. To move a VM's
-    /// whole graph without copying instead, take the outputs and use [`Vm::into_snapshot`].
-    /// Function/closure/nominal IDs still need their original program; clone [`Self::program`]
-    /// before consumption to retain that exact owner. Host objects stay host-owned. Snapshot work
-    /// is explicit embedding work outside guest budgets.
-    ///
-    /// Returns `None` after a trap or before successful completion; consuming an unfinished
-    /// turn cancels it. Inspect [`Self::result`] first to preserve a trap diagnostic.
-    /// If outputs were already taken, the snapshot is empty.
-    pub fn into_snapshot(mut self) -> Result<Option<crate::aggregates::ValueSnapshot>, AggError> {
-        let Some(outputs) = self.take_outputs() else {
-            return Ok(None);
-        };
-        Ok(Some(self.vm.memory.aggs().snapshot_owned(outputs)?))
-    }
-
-    /// Retains one successful function/closure result with its exact code and captures.
-    ///
-    /// The result remains in the turn; retention explicitly copies its reachable immutable
-    /// captures outside guest work budgets. The retained callable survives this turn and
-    /// VM.
-    pub fn retain_callable(&self, index: usize) -> Result<Callable, CallableError> {
-        let outputs = self
-            .result()
-            .and_then(Result::ok)
-            .ok_or(CallableError::NoSuccessfulResult)?;
-        let value = outputs.get(index).ok_or(CallableError::OutputIndex {
-            index,
-            count: outputs.len(),
-        })?;
-        self.vm.retained_callable(value)
     }
 }
 
@@ -925,10 +849,8 @@ impl<H: Host> Drop for Turn<'_, H> {
         if matches!(self.continuation.stack.outcome, Some(Ok(()))) {
             // Returned but not published: discard what it allocated, outputs included, as
             // settling a forgotten turn would.
-            if !self.published {
-                self.vm.memory.rollback(self.checkpoint);
-                self.vm.close_lease();
-            }
+            self.vm.memory.rollback(self.checkpoint);
+            self.vm.close_lease();
         } else {
             self.running().cancel();
         }
@@ -984,10 +906,7 @@ impl<H: Host> Turn<'_, H> {
         match &self.continuation.stack.outcome {
             Some(Ok(())) => {
                 let values = core::mem::take(&mut self.continuation.stack.outputs);
-                if !self.published {
-                    self.published = true;
-                    self.vm.close_lease();
-                }
+                self.vm.close_lease();
                 self.release();
                 Ok(TurnOutcome::Returned(values))
             }
@@ -1008,12 +927,11 @@ impl<'a, H: Host> Turn<'a, H> {
     }
 
     /// Saves this turn's computation in its VM; [`Self::finish`] describes when and how.
-    #[doc(hidden)]
     #[expect(
         clippy::result_large_err,
         reason = "a refused save hands back the turn it was given, which is moved in anyway"
     )]
-    pub fn save(mut self) -> Result<ComputationId, Self> {
+    pub(super) fn save(mut self) -> Result<ComputationId, Self> {
         let stack = &self.continuation.stack;
         let staging = stack
             .host_results
@@ -1148,7 +1066,6 @@ impl<H: Host> Vm<H> {
             checkpoint,
             budget,
             limits,
-            published: false,
             exec: Some(exec),
         };
         if spawned {
@@ -1203,41 +1120,6 @@ impl Callable {
             callable: self,
             unit,
         }
-    }
-
-    /// Starts this exact retained target in a VM, without executing a guest instruction.
-    ///
-    /// `unit` must be a unit of `vm` installed from this callable's exact program (the same
-    /// [`Arc`]); otherwise entry traps with [`Trap::UnitProgramMismatch`] before any work.
-    /// Takes ownership of the supplied arguments, excluding the hidden environment, without
-    /// cloning their byte/string payloads. Raw argument handles must belong to the destination
-    /// VM and this program's identity domain. A closure imports its retained graph and prepends
-    /// its hidden environment. Capture copy work is admitted before import and debited against
-    /// the turn's normal
-    /// aggregate/payload limits. Preparation rejection emits no run observations or host effects.
-    ///
-    /// Dropping, trapping, or rejecting entry rolls back imported captures as well as guest
-    /// allocations. Success retains only captures reachable from returned values. Recordings
-    /// include the hidden environment and the entry-work debit, so checked replay uses the
-    /// ordinary body signature with the same budgets. Host object validity remains the host's
-    /// responsibility; use `visit_objects` to enumerate retained capture references. The returned
-    /// turn owns its code and inputs, so the lookup/callable handle can be dropped at once.
-    pub fn start<'a, H: Host>(
-        &self,
-        vm: &'a mut Vm<H>,
-        unit: UnitId,
-        args: Vec<Value>,
-        options: TurnOptions<'a>,
-    ) -> Result<Turn<'a, H>, TrapInfo> {
-        let limits = options.limits(&vm.limits);
-        let (checkpoint, args, work) = self.prepare_inputs(vm, unit, args, &limits)?;
-        vm.start_with_inputs(
-            FuncRef::new(unit, self.function_id()),
-            Cow::Owned(args),
-            options,
-            checkpoint,
-            work,
-        )
     }
 
     fn prepare_inputs<H: Host>(
