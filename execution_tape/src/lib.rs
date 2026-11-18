@@ -453,6 +453,11 @@
 //! through the existing host or `complete` with return slots and a fuel/error outcome. Stack
 //! return arrays and reusable buffers work with the same ABI as `Host::call`.
 //!
+//! A host can keep imports it would only ever dispatch out of that round trip:
+//! `Host::is_synchronous(symbol, sig_hash)` marks them, and the turn calls them inline through
+//! `Host::call` without stopping. They spend and record exactly what a dispatched call does, and
+//! cannot suspend or call back into the guest.
+//!
 //! For asynchronous producers, `complete_with` keeps borrowed inputs alive across `await` and
 //! tracks cancellation. This example delegates a one-string request to an embedding service:
 //!

@@ -218,9 +218,10 @@ fn host_aggregate_results(c: &mut Criterion) {
 // the host request, answer it, drive to the end and finish. `no_call` is the same turn without
 // the request; subtract it for the round trip of one yielded call. `resume` saves the
 // computation at the request and answers it in a second turn, as a driver that parks a waiting
-// computation does.
-struct Increment;
-impl Host for Increment {
+// computation does. `synchronous` makes the same call to an import its host declares
+// synchronous, which the turn answers inline.
+struct Increment<const SYNC: bool>;
+impl<const SYNC: bool> Host for Increment<SYNC> {
     fn call(
         &mut self,
         _: &str,
@@ -234,6 +235,9 @@ impl Host for Increment {
         };
         rets[0] = Value::I64(n + 1);
         Ok(0)
+    }
+    fn is_synchronous(&self, _: &str, _: SigHash) -> bool {
+        SYNC
     }
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -249,6 +253,7 @@ fn turn_round_trip(c: &mut Criterion) {
         ("complete", 1, Answer::Complete),
         ("dispatch", 1, Answer::Dispatch),
         ("resume", 1, Answer::SaveThenComplete),
+        ("synchronous", 1, Answer::Complete),
     ] {
         let mut builder = ProgramBuilder::new();
         let entry = builder
@@ -272,11 +277,19 @@ fn turn_round_trip(c: &mut Criterion) {
         builder.define_function(entry, asm).unwrap();
         let program = builder.build_verified().unwrap();
         let expected = Value::I64(1 + calls);
-        let mut vm = Vm::new(Increment, Limits::default());
-        let unit = vm.install(program).unwrap();
-        group.bench_function(name, |b| {
-            b.iter(|| one_turn(&mut vm, FuncRef::new(unit, entry), answer, &expected));
-        });
+        if name == "synchronous" {
+            let mut vm = Vm::new(Increment::<true>, Limits::default());
+            let unit = vm.install(program).unwrap();
+            group.bench_function(name, |b| {
+                b.iter(|| one_turn(&mut vm, FuncRef::new(unit, entry), answer, &expected));
+            });
+        } else {
+            let mut vm = Vm::new(Increment::<false>, Limits::default());
+            let unit = vm.install(program).unwrap();
+            group.bench_function(name, |b| {
+                b.iter(|| one_turn(&mut vm, FuncRef::new(unit, entry), answer, &expected));
+            });
+        }
     }
     group.finish();
 }

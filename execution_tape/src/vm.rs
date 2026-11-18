@@ -3794,7 +3794,11 @@ impl<H: Host> Vm<H> {
                         span_id,
                     );
 
-                    if YIELD && control.yield_host_calls {
+                    // A synchronous import is answered here even when the turn yields host calls.
+                    if YIELD
+                        && control.yield_host_calls
+                        && !self.host.is_synchronous(sym, hs.sig_hash)
+                    {
                         control.pending_host = Some(host_call::PendingHost {
                             location: TraceLocation {
                                 unit: unit_id,

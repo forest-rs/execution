@@ -16,6 +16,17 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Synchronous host imports. `Host::is_synchronous(symbol, sig_hash)`, false by default, marks
+  imports that a turn yielding host calls still calls inline through `Host::call` instead of
+  stopping with `RunStatus::AwaitingHost`, so an embedding whose driver handles a few control
+  requests no longer pays a yield and dispatch round trip for every leaf call. A synchronous
+  call spends the same fuel, host-call allowance and work and produces the same observations
+  as the call yielded and dispatched, so recordings replay it like any other; it cannot
+  suspend or call back into the guest. The VM asks its current host at each call, so the
+  answer follows `Vm::replace_host`; `HostFunctions::mark_synchronous(import)` marks imports
+  of a `BoundHost`. In the `turn_round_trip` bench a synchronous call costs about 45 ns against 100 ns
+  dispatched.
+
 - Inspect saved computations without resuming them. `Vm::inspect(id)` returns the
   `InvocationInspection` the computation will have once resumed: frames, initialized
   registers, object roots and the same activation IDs. `inspect_saved(id)` on `Invocation`,

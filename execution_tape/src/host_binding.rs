@@ -217,6 +217,7 @@ pub type HostCallback<S> =
 struct Operation<S> {
     signature: HostSig,
     callback: HostCallback<S>,
+    synchronous: bool,
 }
 
 type Overloads<S> = BTreeMap<SigHash, Operation<S>>;
@@ -274,6 +275,26 @@ impl<S> HostFunctions<S> {
         self.register(import.symbol, import.signature(), callback)
     }
 
+    /// Marks the registered implementation of `import` synchronous: a turn that yields host
+    /// calls still calls it inline through a [`BoundHost`] ([`Host::is_synchronous`]).
+    ///
+    /// Returns whether `import` is registered. Bindings made earlier keep their marks.
+    pub fn mark_synchronous(&mut self, import: HostImport) -> bool {
+        let signature = import.signature();
+        let operation = self
+            .operations
+            .get_mut(import.symbol)
+            .and_then(|overloads| overloads.get_mut(&sig_hash(&signature)))
+            .filter(|operation| operation.signature == signature);
+        match operation {
+            Some(operation) => {
+                operation.synchronous = true;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn insert(
         &mut self,
         symbol: Box<str>,
@@ -303,6 +324,7 @@ impl<S> HostFunctions<S> {
             Operation {
                 signature,
                 callback,
+                synchronous: false,
             },
         );
         Ok(())
@@ -401,9 +423,21 @@ impl<S> HostFunctions<S> {
                 _ => Err(overloads.map(|s| s.values().map(|op| op.signature.clone()).collect())),
             }
         })?;
+        // Already ordered by symbol and signature hash, as the registry is.
+        let synchronous = self
+            .operations
+            .iter()
+            .flat_map(|(symbol, overloads)| {
+                overloads
+                    .iter()
+                    .filter(|(_, operation)| operation.synchronous)
+                    .map(|(&hash, _)| (symbol.clone(), hash))
+            })
+            .collect();
         Ok(Table {
             program: Arc::clone(program),
             callbacks: callbacks.into_boxed_slice(),
+            synchronous,
         })
     }
 }
@@ -553,6 +587,8 @@ fn check_calls<E: fmt::Display>(
 struct Table<S> {
     program: Arc<VerifiedProgram>,
     callbacks: Box<[HostCallback<S>]>,
+    /// Operations marked synchronous when this table was bound, ordered.
+    synchronous: Box<[(Box<str>, SigHash)]>,
 }
 
 impl<S> Clone for Table<S> {
@@ -560,6 +596,7 @@ impl<S> Clone for Table<S> {
         Self {
             program: Arc::clone(&self.program),
             callbacks: self.callbacks.clone(),
+            synchronous: self.synchronous.clone(),
         }
     }
 }
@@ -691,6 +728,17 @@ impl<S> Host for BoundHost<S> {
             .get(ctx.host_sig_id().0 as usize)
             .ok_or(HostError::UnknownSymbol)?;
         callback(&mut self.state, args, rets, ctx)
+    }
+
+    /// Whether the registry this host's bindings came from marked the operation synchronous
+    /// ([`HostFunctions::mark_synchronous`]) when any of its programs was bound.
+    fn is_synchronous(&self, symbol: &str, sig_hash: SigHash) -> bool {
+        self.tables.iter().any(|table| {
+            table
+                .synchronous
+                .binary_search_by(|(marked, hash)| (&**marked, *hash).cmp(&(symbol, sig_hash)))
+                .is_ok()
+        })
     }
 }
 
