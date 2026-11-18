@@ -33,7 +33,7 @@ bounds, so the caption node is cut off; geometry identity still changes.
 
 Coordinates stay in a packed native `Vec<i64>`. The host constructs a small, contract-checked guest
 record containing an opaque object token, vertex count, first-point preview and source name.
-`Invocation::into_snapshot` moves the reachable guest result out of its VM; the graph value owns
+`Turn::into_snapshot` moves the reachable guest result out of its VM; the graph value owns
 both its retained `TapeValue` metadata and the native buffer. Removing the node and dropping the
 returned `RemovedNode` releases the newest buffer. Explicit viewport and undo roots keep the older
 one valid until those roots drop. Recordings keep metadata and tokens, never native coordinates.
