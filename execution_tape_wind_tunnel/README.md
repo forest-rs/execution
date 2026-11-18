@@ -268,7 +268,9 @@ host calls runs each guest call: `Vm::start`, drive to a host request, answer it
 end and `Turn::finish`. `complete` answers through `PendingHostCall::complete`, `dispatch`
 through `PendingHostCall::dispatch`, and `no_call` is the same turn without a request; the
 difference is the round trip of one yielded call. `resume` saves the computation at the request
-and answers it in a second turn, which adds one save and `Vm::resume`.
+and answers it in a second turn, which adds one save and `Vm::resume`. `synchronous` makes the
+same call to an import its host declares synchronous (`Host::is_synchronous`), which the turn
+answers inline.
 
 ```sh
 cargo bench -p execution_tape_wind_tunnel --bench host_requests -- --noplot

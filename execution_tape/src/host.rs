@@ -830,6 +830,38 @@ pub trait Host {
         rets: &mut [Value],
         ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError>;
+
+    /// Whether calls to the import `symbol` with `sig_hash` are synchronous: answered by
+    /// [`Self::call`] where they execute, even in a turn that yields host calls.
+    ///
+    /// A turn started with [`TurnOptions::yield_host_calls`] stops at every other host call and
+    /// hands it to the embedding as a [`PendingHostCall`]. A synchronous call does not stop the
+    /// turn. It cannot suspend the computation or call back into the guest, since
+    /// [`Self::call`] has no way to do either; it returns, throws or fails like any call made
+    /// through [`Self::call`]. It spends the same fuel, host-call allowance and aggregate and
+    /// payload work as the same call yielded and dispatched with [`PendingHostCall::dispatch`],
+    /// and observers and recordings see the same events, so replay delivers its recorded
+    /// outcome like any other host call's.
+    ///
+    /// Mark the imports an embedding would only ever dispatch, such as conversions and other
+    /// leaf operations, so they skip the round trip through the embedding's driver.
+    ///
+    /// A yielding turn asks the VM's current host at each host call it makes, before admitting
+    /// it as a request, so the answer may change between calls and follows
+    /// [`crate::vm::Vm::replace_host`]. Either answer runs the same call, so it changes only who
+    /// answers it, never what the guest observes. Turns that do not yield host calls, and
+    /// [`crate::vm::Vm::run`], call every import through [`Self::call`] anyway. A wrapper host
+    /// that forwards [`Self::call`] should forward this too; by default no import is
+    /// synchronous. [`crate::host_binding::HostFunctions::mark_synchronous`] marks imports of a
+    /// [`crate::host_binding::BoundHost`].
+    ///
+    /// [`TurnOptions::yield_host_calls`]: crate::vm::TurnOptions::yield_host_calls
+    /// [`PendingHostCall`]: crate::vm::PendingHostCall
+    /// [`PendingHostCall::dispatch`]: crate::vm::PendingHostCall::dispatch
+    fn is_synchronous(&self, symbol: &str, sig_hash: SigHash) -> bool {
+        let _ = (symbol, sig_hash);
+        false
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

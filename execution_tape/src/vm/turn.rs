@@ -104,6 +104,7 @@ impl<'a> TurnOptions<'a> {
     ///
     /// This preserves the ordinary host ABI and adds no async runtime. A pending request
     /// exclusively borrows its turn; the embedding owns scheduling and external effects.
+    /// Imports the host declares synchronous ([`Host::is_synchronous`]) are still called inline.
     /// Default turns continue to invoke their host synchronously.
     #[must_use]
     pub fn yield_host_calls(mut self) -> Self {
