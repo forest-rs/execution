@@ -726,6 +726,14 @@ This release has an [MSRV][] of 1.88.
   invocation, so starting an invocation allocates nothing for it. Activation IDs and registered
   groups share one identity per VM.
 
+- Starting and finishing a turn costs less. A turn takes the VM's register file, control and
+  work budget by pointer instead of moving them out of the VM and back, and its computation
+  keeps them boxed when it is saved, so a turn no longer copies about 1.4 KB of execution
+  state on every start, return and finish. A turn that starts, makes one yielded host call
+  and finishes drops from about 300 ns to 185 ns, and one with no host call from about 240 ns
+  to 120 ns. Resuming a saved computation no longer makes a register file and control it does
+  not use. The `turn_round_trip` group of the `host_requests` wind-tunnel bench measures these.
+
 - Entering a function from the embedding costs less. Entry checks read the argument kinds and
   guest-only signature kinds resolved at verification instead of walking the signature through
   the contract table, a run resets only the continuation table and contract proofs it used,

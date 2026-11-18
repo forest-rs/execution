@@ -228,12 +228,13 @@ pub struct Turn<'a, H: Host> {
     pub(super) vm: &'a mut Vm<H>,
     pub(super) continuation: continuation::Continuation<'a>,
     checkpoint: Checkpoint,
-    budget: Budget,
+    budget: exec::Held<Budget>,
     /// The limits this turn runs under: the VM's, with its options' allowance in place of their
     /// work limits.
     limits: Limits,
     /// The VM's execution state while this turn has it on loan. Its register file,
-    /// control and budget are moved out into the fields above, and back before it is returned.
+    /// control and budget are taken out by pointer into the fields above, and given back
+    /// before it is returned.
     exec: Option<Box<Exec>>,
 }
 
@@ -362,7 +363,7 @@ impl<'a, H: Host> Turn<'a, H> {
         let program = Arc::clone(vm.entry_program(entry.unit)?);
         let limits = options.limits(&vm.limits);
         let mut exec = vm.lend(checkpoint);
-        let mut budget = core::mem::take(&mut exec.budget);
+        let mut budget = exec.budget.take_or_default();
         budget.reset(&limits);
         budget.limit_frames(vm.saved.resident_frames());
         let stack = vm.next_stack();
@@ -863,7 +864,7 @@ impl<H: Host> Turn<'_, H> {
     fn release(&mut self) {
         if let Some(mut exec) = self.exec.take() {
             self.continuation.give_back(&mut exec);
-            exec.budget = core::mem::take(&mut self.budget);
+            exec.budget = self.budget.take();
             self.vm.restore(exec);
         }
     }
@@ -973,7 +974,7 @@ impl<'a, H: Host> Turn<'a, H> {
             .exec
             .take()
             .expect("a live turn holds the execution state");
-        exec.budget = core::mem::take(&mut self.budget);
+        exec.budget = self.budget.take();
         // The saved stack keeps everything it allocated: nothing is left to discard.
         self.vm.close_lease();
         self.vm.restore(exec);
@@ -1049,7 +1050,7 @@ impl<H: Host> Vm<H> {
         let limits = options.limits(&self.limits);
         let checkpoint = self.memory.checkpoint();
         let mut exec = self.lend(checkpoint);
-        let mut budget = core::mem::take(&mut exec.budget);
+        let mut budget = exec.budget.take_or_default();
         budget.reset(&limits);
         budget.limit_frames(self.saved.resident_frames());
         budget.frames = if spawned { 0 } else { stack.ctx.held_frames() };

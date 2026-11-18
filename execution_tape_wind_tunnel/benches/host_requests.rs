@@ -1,7 +1,8 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Compare identical dependent host work through synchronous and yielded boundaries.
+//! Compare identical dependent host work through synchronous and yielded boundaries, and the
+//! fixed cost of a whole turn that makes one yielded host call.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::value::FuncRef;
@@ -11,7 +12,7 @@ use execution_tape::{
     program::ValueType,
     trace::TraceMask,
     value::{FuncId, Value},
-    vm::{Limits, RunStatus, TurnOptions, Vm},
+    vm::{Limits, RunStatus, TurnOptions, TurnOutcome, Vm},
 };
 use std::{
     future::Future,
@@ -213,9 +214,112 @@ fn host_aggregate_results(c: &mut Criterion) {
     }
     group.finish();
 }
+// One short turn, as an embedding that yields host calls runs each guest call: start, drive to
+// the host request, answer it, drive to the end and finish. `no_call` is the same turn without
+// the request; subtract it for the round trip of one yielded call. `resume` saves the
+// computation at the request and answers it in a second turn, as a driver that parks a waiting
+// computation does.
+struct Increment;
+impl Host for Increment {
+    fn call(
+        &mut self,
+        _: &str,
+        _: SigHash,
+        args: &[ValueRef<'_>],
+        rets: &mut [Value],
+        _: HostContext<'_, '_>,
+    ) -> Result<u64, HostError> {
+        let [ValueRef::I64(n)] = args else {
+            panic!("benchmark ABI");
+        };
+        rets[0] = Value::I64(n + 1);
+        Ok(0)
+    }
+}
+#[derive(Clone, Copy, PartialEq)]
+enum Answer {
+    Complete,
+    Dispatch,
+    SaveThenComplete,
+}
+fn turn_round_trip(c: &mut Criterion) {
+    let mut group = c.benchmark_group("turn_round_trip");
+    for (name, calls, answer) in [
+        ("no_call", 0, Answer::Complete),
+        ("complete", 1, Answer::Complete),
+        ("dispatch", 1, Answer::Dispatch),
+        ("resume", 1, Answer::SaveThenComplete),
+    ] {
+        let mut builder = ProgramBuilder::new();
+        let entry = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let import = builder.host_sig_for(
+            "increment",
+            HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64],
+            },
+        );
+        let mut asm = builder.function_asm(entry).unwrap();
+        for _ in 0..calls {
+            asm.host_call_sig_id(Reg::EFFECT, import, Reg::EFFECT, &[Reg(1)], &[Reg(1)]);
+        }
+        asm.ret(Reg::EFFECT, &[Reg(1)]);
+        builder.define_function(entry, asm).unwrap();
+        let program = builder.build_verified().unwrap();
+        let expected = Value::I64(1 + calls);
+        let mut vm = Vm::new(Increment, Limits::default());
+        let unit = vm.install(program).unwrap();
+        group.bench_function(name, |b| {
+            b.iter(|| one_turn(&mut vm, FuncRef::new(unit, entry), answer, &expected));
+        });
+    }
+    group.finish();
+}
+// A function, not a closure, so each turn's options borrow anew.
+fn yielding<'a>() -> TurnOptions<'a> {
+    TurnOptions::default().yield_host_calls()
+}
+fn one_turn<H: Host>(vm: &mut Vm<H>, entry: FuncRef, answer: Answer, expected: &Value) {
+    let args = [Value::I64(1)];
+    let mut turn = if answer == Answer::SaveThenComplete {
+        let mut first = vm.start(entry, black_box(&args), yielding()).unwrap();
+        assert_eq!(first.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        let Ok(TurnOutcome::Saved(id)) = first.finish() else {
+            unreachable!("the waiting computation saves");
+        };
+        vm.resume(id, yielding()).unwrap()
+    } else {
+        vm.start(entry, black_box(&args), yielding()).unwrap()
+    };
+    loop {
+        match turn.drive(u64::MAX).unwrap() {
+            RunStatus::Complete => break,
+            RunStatus::AwaitingHost => {
+                let request = turn.pending_host_call().unwrap();
+                if answer == Answer::Dispatch {
+                    request.dispatch().unwrap();
+                } else {
+                    assert_eq!(request.symbol(), "increment");
+                    request.complete(&mut [Value::I64(2)], Ok(0)).unwrap();
+                }
+            }
+            status => unreachable!("unexpected run status {status:?}"),
+        }
+    }
+    let Ok(TurnOutcome::Returned(out)) = turn.finish() else {
+        unreachable!("the turn returned");
+    };
+    assert_eq!(&out, std::slice::from_ref(expected));
+    black_box(out);
+}
 criterion_group! {
     name = benches;
     config = Criterion::default().warm_up_time(Duration::from_secs(1)).measurement_time(Duration::from_secs(3)).sample_size(30);
-    targets = host_requests, host_aggregate_results
+    targets = host_requests, host_aggregate_results, turn_round_trip
 }
 criterion_main!(benches);
