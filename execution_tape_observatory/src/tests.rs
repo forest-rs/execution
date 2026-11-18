@@ -664,9 +664,9 @@ fn application_entry_is_separate_from_guest_frames_and_uses_captured_inputs() {
         },
         None,
     );
-    assert!(partial.invocation().is_none());
+    assert!(partial.entry().is_none());
     let shown = render_text(&partial, 80, 24).unwrap();
-    assert!(shown.contains("Invocation inputs unavailable"));
+    assert!(shown.contains("Entry inputs unavailable"));
     assert!(!shown.contains("Application →"));
 }
 
@@ -885,7 +885,7 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
 
 fn callback_recording() -> Recording {
     use execution_tape::recording::InstructionCapture;
-    use execution_tape::vm::{InvocationOptions, RunStatus};
+    use execution_tape::vm::{RunStatus, TurnOptions};
     use std::{cell::RefCell, rc::Rc};
     let mut b = ProgramBuilder::new();
     let sig = FunctionSig {
@@ -923,33 +923,35 @@ fn callback_recording() -> Recording {
     );
     let args = [Value::I64(42)];
     let unit = vm.install(program.clone()).unwrap();
+    let mut sink_932 = recorder.clone();
     let mut run = vm
         .start(
             FuncRef::new(unit, root),
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
-                .trace_owned(recorder.mask(), recorder.clone()),
+                .trace(recorder.mask(), &mut sink_932),
         )
         .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(100).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, handler)), args.to_vec())
         .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(100).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let mut returned = request.take_callback_results().unwrap();
     request.complete(&mut returned, Ok(0)).unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(100).unwrap(), RunStatus::Complete);
     drop(run);
+    drop(sink_932);
     Rc::try_unwrap(recorder).unwrap().into_inner().finish()
 }
 
 #[test]
 fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
     let record = callback_recording();
-    let root = record.invocation().unwrap().entry;
+    let root = record.entry().unwrap().entry;
     let command = record.control_commands().next().unwrap();
     let execution_tape::recording::ControlAction::CallGuest {
         callee: RecordedValue::Func(handler),

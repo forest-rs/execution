@@ -32,7 +32,7 @@ pub struct ObjectView {
 /// or collected. Inspection neither retains external objects nor adds collection roots.
 /// Recordings cannot use this adapter after their original host has disappeared.
 pub trait ObjectInspector<H: Host> {
-    /// Projects an object from the actual invocation host without changing guest state.
+    /// Projects an object from the actual turn host without changing guest state.
     fn inspect(&mut self, host: &H, object: Obj, max_fields: usize) -> Option<ObjectView>;
 }
 
