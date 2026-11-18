@@ -519,7 +519,7 @@ were removed after measurement; there is one direct synchronous interpreter path
 The `stepping` bench adds `callback_free_calls/{ordinary_1000,scheduled_1000}`: a prepared caller
 makes 1,000 direct calls to an identity function. This stresses returns alongside the existing
 1,000-addition scheduling cases. Neither fixture requests a guest callback or captures traces.
-Invocation setup/destruction is included; preparation is excluded. Ordinary execution reuses
+Turn setup/destruction is included; preparation is excluded. Ordinary execution reuses
 its VM, and scheduled execution starts a new invocation on that same VM.
 
 The callback implementation keeps its waiting-host stack behind an optional allocation and adds

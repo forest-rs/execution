@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Explicit collection: reclaiming garbage from flat and shared (DAG) heaps, retracing a heap with
-//! none, and collecting while an invocation waits at a host request with live frames, plain or
+//! none, and collecting while a turn waits at a host request with live frames, plain or
 //! holding strings, exception references and held continuations.
 //!
-//! Heaps and paused invocations are built outside the timed region; only `collect` is timed.
+//! Heaps and paused turns are built outside the timed region; only `collect` is timed.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::asm::{Catch, FunctionAbi, FunctionSig, ProgramBuilder, Reg};
@@ -14,7 +14,7 @@ use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, Value
 use execution_tape::program::ValueType;
 use execution_tape::value::{FuncId, FuncRef, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{Invocation, InvocationOptions, Limits, RootedValues, RunStatus, Vm};
+use execution_tape::vm::{Limits, RootedValues, RunStatus, Turn, TurnOptions, Vm};
 use std::{
     hint::black_box,
     sync::Arc,
@@ -263,11 +263,11 @@ fn waiting<'vm>(
     program: &Arc<VerifiedProgram>,
     entry: FuncId,
     args: &'vm [Value],
-) -> Invocation<'vm, NoHost> {
+) -> Turn<'vm, NoHost> {
     let unit = vm.install(Arc::clone(program)).unwrap();
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm.start(FuncRef::new(unit, entry), args, options).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run
 }
 
@@ -315,11 +315,11 @@ fn paused(c: &mut Criterion) {
                     let unit = vm.install(Arc::clone(&program)).unwrap();
                     let empty = vm.aggregates_mut().tuple_new(vec![]).unwrap();
                     let args = [Value::I64(depth), Value::Agg(empty)];
-                    let options = InvocationOptions::default().yield_host_calls();
+                    let options = TurnOptions::default().yield_host_calls();
                     let mut run = vm
                         .start(FuncRef::new(unit, descend), &args, options)
                         .unwrap();
-                    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+                    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
                     let start = Instant::now();
                     let report = black_box(run.collect().unwrap());
                     elapsed += start.elapsed();
