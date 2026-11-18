@@ -13,7 +13,7 @@ use execution_tape::{
     trace::{TraceLocation, TraceMask, TraceSink},
     value::{FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -194,15 +194,15 @@ fn a_yielded_request_can_complete_by_throwing() {
         .start(
             FuncRef::new(unit, f.protected),
             &args,
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     let tuple = request.context().tuple_new(vec![Value::I64(7)]).unwrap();
     let tag = request.context().tag(f.failed).unwrap();
     request.throw(tag, vec![Value::Agg(tuple)]).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert!(matches!(run.result(), Some(Ok(values)) if values == [Value::I64(107)]));
 }
 

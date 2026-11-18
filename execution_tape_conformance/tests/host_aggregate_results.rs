@@ -12,7 +12,7 @@ use execution_tape::{
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{TraceMask, TraceSink},
     value::{AggHandle, Value},
-    vm::{DataWork, InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{DataWork, Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -171,21 +171,22 @@ fn synchronous_and_yielded_hosts_build_shared_structures_and_replay_identically(
             RecordLimits::default(),
         )));
         let mask = capture.mask();
-        let options = InvocationOptions::default().trace_owned(mask, capture.clone());
+        let mut sink_174 = capture.clone();
+        let options = TurnOptions::default().trace(mask, &mut sink_174);
         let options = if yielded {
             options.yield_host_calls()
         } else {
             options
         };
         let unit = vm.install(Arc::clone(target.program())).unwrap();
-        let mut run = target
-            .start(&mut vm, unit, vec![Value::Agg(input)], options)
+        let mut run = vm
+            .start(target.at(unit), vec![Value::Agg(input)], options)
             .unwrap();
         if yielded {
-            assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+            assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
             run.pending_host_call().unwrap().dispatch().unwrap();
         }
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
         assert_result(run.aggregates(), run.result().unwrap().unwrap());
         assert_eq!(
             run.data_work(),
@@ -200,6 +201,7 @@ fn synchronous_and_yielded_hosts_build_shared_structures_and_replay_identically(
             .unwrap();
         drop(run);
         assert_result(retained.aggregates(), retained.values());
+        drop(sink_174);
         let record = Rc::try_unwrap(capture).ok().unwrap().into_inner().finish();
         assert!(record.status().is_ok(), "{:?}", record.status());
         let call = record.host_calls().next().unwrap();
@@ -224,15 +226,14 @@ fn pending_views_share_staging_and_retention_copies_only_the_reachable_graph() {
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let staged;
     let retained;
     {
@@ -257,11 +258,11 @@ fn pending_views_share_staging_and_retention_copies_only_the_reachable_graph() {
             payload: 1032
         }
     );
-    assert_eq!(run.resume(0).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(0).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.context().tuple_len(staged), Ok(2));
     request.complete(&mut [Value::Agg(staged)], Ok(0)).unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert_eq!(run.aggregates().len_u32(), 2);
     drop(run);
     assert_eq!(retained.aggregates().len_u32(), 2);
@@ -285,16 +286,16 @@ fn host_failure_discards_staging_but_replay_preserves_spent_work_and_original_er
     )));
     let mask = capture.mask();
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut sink_291 = capture.clone();
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default().trace_owned(mask, capture.clone()),
+            TurnOptions::default().trace(mask, &mut sink_291),
         )
         .unwrap();
     assert!(matches!(
-        run.resume(u64::MAX).unwrap_err().trap,
+        run.drive(u64::MAX).unwrap_err().trap,
         Trap::HostCallFailed { .. }
     ));
     assert_eq!(
@@ -306,6 +307,7 @@ fn host_failure_discards_staging_but_replay_preserves_spent_work_and_original_er
     );
     assert_eq!(run.aggregates().len_u32(), 1);
     drop(run);
+    drop(sink_291);
     let record = Rc::try_unwrap(capture).ok().unwrap().into_inner().finish();
     assert!(record.status().is_ok());
     let call = record.host_calls().next().unwrap();
@@ -341,17 +343,17 @@ fn denied_construction_can_fall_back_without_allocating_or_spending_the_denied_d
         )));
         let mask = capture.mask();
         let unit = vm.install(Arc::clone(target.program())).unwrap();
-        let mut run = target
+        let mut sink_348 = capture.clone();
+        let mut run = vm
             .start(
-                &mut vm,
-                unit,
+                target.at(unit),
                 vec![Value::Agg(input)],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
-                    .trace_owned(mask, capture.clone()),
+                    .trace(mask, &mut sink_348),
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         let mut request = run.pending_host_call().unwrap();
         {
             let mut cx = request.context();
@@ -372,10 +374,11 @@ fn denied_construction_can_fall_back_without_allocating_or_spending_the_denied_d
             assert_eq!(cx.tuple_len(input), Ok(1));
         }
         request.complete(&mut [Value::Agg(input)], Ok(0)).unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         assert_eq!(run.data_work(), DataWork::default());
         assert_eq!(run.aggregates().len_u32(), 1);
         drop(run);
+        drop(sink_348);
         let record = Rc::try_unwrap(capture).ok().unwrap().into_inner().finish();
         assert!(matches!(
             record.replay().unwrap(),
@@ -390,15 +393,14 @@ fn construction_rejects_invalid_nominal_shapes_and_dangling_children_before_muta
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut request = run.pending_host_call().unwrap();
     {
         let mut cx = request.context();
@@ -414,7 +416,7 @@ fn construction_rejects_invalid_nominal_shapes_and_dangling_children_before_muta
         assert!(cx.retain(&[ValueRef::Agg(AggHandle(99))]).is_err());
     }
     request.complete(&mut [Value::Agg(input)], Ok(0)).unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert_eq!(run.data_work(), DataWork::default());
     assert_eq!(run.aggregates().len_u32(), 1);
 }
@@ -427,15 +429,14 @@ fn cancelling_staged_results_preserves_only_explicitly_retained_roots() {
     let retained;
     {
         let unit = vm.install(Arc::clone(target.program())).unwrap();
-        let mut run = target
+        let mut run = vm
             .start(
-                &mut vm,
-                unit,
+                target.at(unit),
                 vec![Value::Agg(input)],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         let mut request = run.pending_host_call().unwrap();
         let mut cx = request.context();
         let temporary = cx.tuple_new(vec![Value::Bytes(vec![0; 1024])]).unwrap();
@@ -481,16 +482,16 @@ fn staged_work_uses_the_guest_budget_and_replay_does_not_replenish_it() {
     )));
     let mask = capture.mask();
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut sink_483 = capture.clone();
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default().trace_owned(mask, capture.clone()),
+            TurnOptions::default().trace(mask, &mut sink_483),
         )
         .unwrap();
     assert!(matches!(
-        run.resume(u64::MAX).unwrap_err().trap,
+        run.drive(u64::MAX).unwrap_err().trap,
         Trap::AggregateWorkExceeded {
             limit: 12,
             used: 12,
@@ -503,6 +504,7 @@ fn staged_work_uses_the_guest_budget_and_replay_does_not_replenish_it() {
         "failed guest rolls back adopted host results"
     );
     drop(run);
+    drop(sink_483);
     let record = Rc::try_unwrap(capture).ok().unwrap().into_inner().finish();
     assert!(
         matches!(record.replay().unwrap(), ReplayOutcome::Trapped(trap) if matches!(trap.trap, Trap::AggregateWorkExceeded { limit: 12, used: 12, requested: 2 }))
@@ -521,17 +523,17 @@ fn bad_return_validation_keeps_raw_evidence_and_discards_unreturned_staging() {
         )));
         let mask = capture.mask();
         let unit = vm.install(Arc::clone(target.program())).unwrap();
-        let mut run = target
+        let mut sink_524 = capture.clone();
+        let mut run = vm
             .start(
-                &mut vm,
-                unit,
+                target.at(unit),
                 vec![Value::Agg(input)],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
-                    .trace_owned(mask, capture.clone()),
+                    .trace(mask, &mut sink_524),
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         let mut request = run.pending_host_call().unwrap();
         request.context().tuple_new(vec![Value::I64(1)]).unwrap();
         let error = if bad_arity {
@@ -553,6 +555,7 @@ fn bad_return_validation_keeps_raw_evidence_and_discards_unreturned_staging() {
         );
         assert_eq!(run.aggregates().len_u32(), 1);
         drop(run);
+        drop(sink_524);
         let record = Rc::try_unwrap(capture).ok().unwrap().into_inner().finish();
         assert!(record.status().is_ok());
         assert!(record.host_calls().next().unwrap().constructed.is_empty());
@@ -573,15 +576,14 @@ fn abandoning_an_async_producer_retires_its_staging_and_never_redispatches() {
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut producer = Box::pin(
         run.pending_host_call()
             .unwrap()
@@ -608,7 +610,7 @@ fn abandoning_an_async_producer_retires_its_staging_and_never_redispatches() {
         }
     );
     assert!(matches!(
-        run.resume(u64::MAX).unwrap_err().trap,
+        run.drive(u64::MAX).unwrap_err().trap,
         Trap::HostCallAbandoned
     ));
     assert_eq!(
@@ -672,15 +674,14 @@ fn retiring_a_vm_moves_rich_payloads_into_its_snapshot() {
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let bytes = vec![42; 8192];
     let pointer = bytes.as_ptr();
     let mut request = run.pending_host_call().unwrap();
@@ -689,9 +690,8 @@ fn retiring_a_vm_moves_rich_payloads_into_its_snapshot() {
         .tuple_new(vec![Value::Bytes(bytes)])
         .unwrap();
     request.complete(&mut [Value::Agg(root)], Ok(0)).unwrap();
-    run.resume(u64::MAX).unwrap();
-    let outputs = run.take_outputs().unwrap();
-    drop(run);
+    run.drive(u64::MAX).unwrap();
+    let outputs = returned_values(run);
     let snapshot = vm.into_snapshot(outputs).unwrap();
     let Value::Agg(root) = snapshot.values()[0] else {
         panic!("snapshot root")
@@ -717,17 +717,16 @@ fn consuming_a_borrowed_invocation_preserves_its_vms_existing_raw_handles() {
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
-    let roots = run.result().unwrap().unwrap().to_vec();
-    let snapshot = run.into_snapshot().unwrap().unwrap();
+    run.drive(u64::MAX).unwrap();
+    let roots = returned_values(run);
+    let snapshot = vm.snapshot(&roots).unwrap();
     assert_result(vm.aggregates(), &roots);
     assert_result(snapshot.aggregates(), snapshot.values());
 }
@@ -739,19 +738,19 @@ fn nominal_result_code_owners_survive_dropped_lookup_handles_and_vm_retirement()
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut run = target
+    let mut run = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Agg(input)],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     drop(target);
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let owner = Arc::clone(run.program());
     assert!(Arc::ptr_eq(&owner, &expected.upgrade().unwrap()));
-    let snapshot = run.into_snapshot().unwrap().unwrap();
+    let returned = returned_values(run);
+    let snapshot = vm.snapshot(&returned).unwrap();
     // The VM installed the code; retire it so only the retained result can keep the code.
     drop(vm);
     let values = execution_graph::TapeValue::from_snapshot(snapshot, Some(owner)).unwrap();
@@ -768,4 +767,13 @@ fn nominal_result_code_owners_survive_dropped_lookup_handles_and_vm_retirement()
         expected.upgrade().is_none(),
         "last retained result releases code without keeping a VM"
     );
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }

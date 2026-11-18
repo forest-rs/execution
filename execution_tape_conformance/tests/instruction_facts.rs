@@ -592,6 +592,6 @@ fn block_zero_meets_invocation_seeds_with_backedges_without_fabricating_a_cfg_ed
     let r1 = view.register(Reg(1)).unwrap();
     kind(view.contracts(), r1.before, ValueType::Agg);
     assert_eq!(r1.origin_before, Some(FactOrigin::BlockEntry { pc: Pc(0) }));
-    // There is one real backedge; the external invocation is an additional analysis seed.
+    // There is one real backedge; the external turn is an additional analysis seed.
     assert_eq!(view.incoming_edges().len(), 1);
 }

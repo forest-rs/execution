@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Handles read from a yielded request stay valid until the invocation commits or rolls back.
+//! Handles read from a yielded request stay valid until the turn commits or rolls back.
 
 use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder, Reg},
@@ -9,7 +9,7 @@ use execution_tape::{
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::ValueType,
     value::{FuncId, FuncRef, Value},
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 
 struct NoHost;
@@ -142,11 +142,11 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     let f = fixture();
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(f.program).unwrap();
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm.start(FuncRef::new(unit, f.entry), &[], options).unwrap();
 
     // The outer request's arguments: a guest tuple and a function value.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let request = run.pending_host_call().unwrap();
     let (data, wrap) = match request.arguments().collect::<Vec<_>>()[..] {
         [ValueRef::Agg(data), ValueRef::Func(wrap)] => (data, wrap),
@@ -156,7 +156,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request
         .call_guest(Value::Func(FuncRef::new(unit, f.make)), vec![Value::I64(5)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let [Value::Closure(closure)] = request.take_callback_results().unwrap()[..] else {
         panic!("closure callback result");
@@ -170,7 +170,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
             vec![Value::Agg(data)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let request = run.pending_host_call().unwrap();
     assert_eq!(request.symbol(), "inner");
     assert_eq!(
@@ -180,13 +180,13 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request
         .call_guest(Value::Closure(closure), vec![Value::I64(1)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results(), Some(vec![Value::I64(6)]));
     request
         .call_guest(Value::Func(wrap), vec![Value::Agg(data)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let mut boxed = request.take_callback_results().unwrap();
     let [Value::Agg(boxed_handle)] = boxed[..] else {
@@ -195,7 +195,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request.complete(&mut boxed, Ok(0)).unwrap();
 
     // Back at the outer request: every handle read so far still names the same node.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.symbol(), "ask");
     assert_eq!(
@@ -209,7 +209,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request
         .call_guest(Value::Closure(closure), vec![Value::I64(2)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results(), Some(vec![Value::I64(7)]));
     let before_commit = request.aggregates().len_u32();
@@ -218,7 +218,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
         .unwrap();
 
     // Root commit is the only compaction: unreachable nodes go and the output may be renamed.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     let [Value::Agg(output)] = run.result().unwrap().unwrap()[..] else {
         panic!("tuple output");
     };
@@ -239,14 +239,14 @@ fn rolling_back_discards_every_handle_the_requests_exposed() {
     let f = fixture();
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(f.program).unwrap();
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm.start(FuncRef::new(unit, f.entry), &[], options).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, f.make)), vec![Value::I64(5)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     assert!(
         run.aggregates().len_u32() >= 2,
         "data and closure environment"

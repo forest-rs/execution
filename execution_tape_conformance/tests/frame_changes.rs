@@ -15,7 +15,7 @@ use execution_tape::{
     program::{LinkId, SpanId, ValueType},
     trace::TraceMask,
     value::{FuncId, FuncRef, UnitId, Value},
-    vm::{InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm},
+    vm::{Limits, RunStatus, Trap, TrapInfo, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -231,17 +231,14 @@ fn a_guest_callback_and_its_return_switch_the_running_function() {
     let (program, entry, callback) = asks_and_calls_back();
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(program).unwrap();
-    fn options<'a>() -> InvocationOptions<'a> {
-        InvocationOptions::default().yield_host_calls()
+    fn options<'a>() -> TurnOptions<'a> {
+        TurnOptions::default().yield_host_calls()
     }
     // The callback traps on its first instruction.
     let mut invocation = vm
         .start(FuncRef::new(unit, entry), &[Value::U32(1)], options())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     invocation
         .pending_host_call()
         .unwrap()
@@ -250,17 +247,14 @@ fn a_guest_callback_and_its_return_switch_the_running_function() {
             vec![Value::U32(0)],
         )
         .unwrap();
-    trapped_at(&invocation.resume(u64::MAX).unwrap_err(), unit, callback, 6);
+    trapped_at(&invocation.drive(u64::MAX).unwrap_err(), unit, callback, 6);
     drop(invocation);
 
     // The callback returns, the request completes, and `entry` traps on its next instruction.
     let mut invocation = vm
         .start(FuncRef::new(unit, entry), &[Value::U32(0)], options())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     invocation
         .pending_host_call()
         .unwrap()
@@ -270,13 +264,13 @@ fn a_guest_callback_and_its_return_switch_the_running_function() {
         )
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned
     );
     let mut request = invocation.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results().unwrap(), []);
     request.complete(&mut [], Ok(0)).unwrap();
-    trapped_at(&invocation.resume(u64::MAX).unwrap_err(), unit, entry, 7);
+    trapped_at(&invocation.drive(u64::MAX).unwrap_err(), unit, entry, 7);
 }
 
 /// A unit whose `FuncId(1)` divides by its argument under `span`; `FuncId(0)` links to it.
@@ -323,12 +317,12 @@ fn a_computation_resumed_after_another_ran_continues_in_its_own_function() {
         .start(
             FuncRef::new(first, FuncId(1)),
             &[Value::U32(0)],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     // Stop between the probe's two instructions, then save.
-    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().ok().unwrap();
+    assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
     // Another computation runs the same function ID of another unit to completion.
     vm.run(
         FuncRef::new(second, FuncId(1)),
@@ -337,11 +331,20 @@ fn a_computation_resumed_after_another_ran_continues_in_its_own_function() {
         None,
     )
     .unwrap();
-    let mut invocation = vm.resume(id, InvocationOptions::default()).unwrap();
+    let mut invocation = vm.resume(id, TurnOptions::default()).unwrap();
     trapped_at(
-        &invocation.resume(u64::MAX).unwrap_err(),
+        &invocation.drive(u64::MAX).unwrap_err(),
         first,
         FuncId(1),
         10,
     );
+}
+
+/// Finishes `turn`, whose computation must still be running or waiting, and takes its ID.
+#[track_caller]
+fn saved_id<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> execution_tape::vm::ComputationId {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Saved(id)) => id,
+        other => panic!("the computation was not saved: {other:?}"),
+    }
 }

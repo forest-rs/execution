@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Tasks own their VM and keep their computation there between polls, with the same budgets,
-//! evidence and cancellation boundary as one invocation.
+//! evidence and cancellation boundary as one turn.
 
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
@@ -16,7 +16,7 @@ use execution_tape::{
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     trace::TraceSink,
     value::{Closure, Value},
-    vm::{ComputationId, InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm},
+    vm::{ComputationId, Limits, RunStatus, Trap, TrapInfo, TurnOptions, Vm},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -146,16 +146,15 @@ fn a_task_moves_between_containers_with_its_saved_request_and_input_payload() {
         },
     );
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let mut call = callable
+    let mut call = vm
         .start(
-            &mut vm,
-            unit,
+            callable.at(unit),
             vec![Value::Str(input)],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    let computation = call.save().unwrap();
+    assert_eq!(call.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let computation = saved_id(call);
     let task = Task { vm, computation };
     require_static(&task);
     let mut tasks = vec![task];
@@ -165,10 +164,7 @@ fn a_task_moves_between_containers_with_its_saved_request_and_input_payload() {
     let mut task = *task;
     let mut call = task
         .vm
-        .resume(
-            task.computation,
-            InvocationOptions::default().yield_host_calls(),
-        )
+        .resume(task.computation, TurnOptions::default().yield_host_calls())
         .unwrap();
     assert_eq!(call.host().0.calls.get(), 0);
     {
@@ -179,13 +175,13 @@ fn a_task_moves_between_containers_with_its_saved_request_and_input_payload() {
         assert_eq!(input.as_ptr(), pointer, "moving the task copied nothing");
     }
     call.pending_host_call().unwrap().dispatch().unwrap();
-    assert_eq!(call.resume(1).unwrap(), RunStatus::Complete);
+    assert_eq!(call.drive(1).unwrap(), RunStatus::Complete);
     assert_eq!(
         call.result().unwrap().unwrap(),
         [Value::Str("owned input payload".into())]
     );
     drop(call);
-    // The temporary the first invocation built stays until the task collects.
+    // The temporary the first turn built stays until the task collects.
     assert_eq!(task.vm.aggregates().len_u32(), 1);
     task.vm.collect().unwrap();
     assert_eq!(task.vm.aggregates().len_u32(), 0);
@@ -206,17 +202,19 @@ fn saved_and_unsaved_runs_share_results_resource_observations_and_replay() {
         )));
         let reads = Rc::new(RefCell::new(Reads::default()));
         let mask = recorder.borrow().mask();
-        // A function, not a closure, so each invocation's options borrow the VM anew.
+        // A function, not a closure, so each turn's options borrow the VM anew.
         fn shared<'a>(
             mask: execution_tape::trace::TraceMask,
-            recorder: &Rc<RefCell<Recorder>>,
-            reads: &Rc<RefCell<Reads>>,
-        ) -> InvocationOptions<'a> {
-            InvocationOptions::default()
+            recorder: &'a mut Rc<RefCell<Recorder>>,
+            reads: &'a mut Rc<RefCell<Reads>>,
+        ) -> TurnOptions<'a> {
+            TurnOptions::default()
                 .yield_host_calls()
-                .trace_owned(mask, Rc::clone(recorder))
-                .access_owned(Rc::clone(reads))
+                .trace(mask, recorder)
+                .access(reads)
         }
+        // Each turn borrows a handle of the shared collectors.
+        let (mut recorder_sink, mut reads_sink) = (Rc::clone(&recorder), Rc::clone(&reads));
         let mut vm = Vm::new(
             Echo(Rc::clone(&effects)),
             Limits {
@@ -225,25 +223,25 @@ fn saved_and_unsaved_runs_share_results_resource_observations_and_replay() {
             },
         );
         let unit = vm.install(Arc::clone(callable.program())).unwrap();
-        let mut call = callable
+        let mut call = vm
             .start(
-                &mut vm,
-                unit,
+                callable.at(unit),
                 vec![Value::Str("hello".into())],
-                shared(mask, &recorder, &reads),
+                shared(mask, &mut recorder_sink, &mut reads_sink),
             )
             .unwrap();
-        assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        assert_eq!(call.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
         let mut call = if saved {
-            let id = call.save().unwrap();
-            vm.resume(id, shared(mask, &recorder, &reads)).unwrap()
+            let id = saved_id(call);
+            vm.resume(id, shared(mask, &mut recorder_sink, &mut reads_sink))
+                .unwrap()
         } else {
             call
         };
         call.pending_host_call().unwrap().dispatch().unwrap();
-        assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
-        assert_eq!(call.take_outputs().unwrap(), [Value::Str("hello".into())]);
-        drop(call);
+        assert_eq!(call.drive(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(returned_values(call), [Value::Str("hello".into())]);
+        drop((recorder_sink, reads_sink));
         assert_eq!(reads.borrow().0, ["file"]);
         assert_eq!(reads.borrow().1, ["calls"]);
         let recording = Rc::try_unwrap(recorder)
@@ -273,23 +271,24 @@ fn dropping_a_task_cancels_its_saved_computation_and_leaves_incomplete_evidence(
     let mask = recorder.borrow().mask();
     let mut vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let mut call = callable
+    let mut sink_276 = Rc::clone(&recorder);
+    let mut call = vm
         .start(
-            &mut vm,
-            unit,
+            callable.at(unit),
             vec![Value::Str("cancel".into())],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
-                .trace_owned(mask, Rc::clone(&recorder)),
+                .trace(mask, &mut sink_276),
         )
         .unwrap();
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    let computation = call.save().unwrap();
+    assert_eq!(call.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let computation = saved_id(call);
     let task = Task { vm, computation };
     assert_eq!(task.vm.heap_stats().saved_computations, 1);
     drop(task);
     assert_eq!(effects.drops.get(), 1);
     assert_eq!(effects.calls.get(), 0);
+    drop(sink_276);
     let recording = Rc::try_unwrap(recorder)
         .expect("observer retired")
         .into_inner()
@@ -308,14 +307,9 @@ fn failed_entry_and_failed_capture_admission_have_no_host_effects() {
     let echo = echo();
     let unit = vm.install(Arc::clone(echo.program())).unwrap();
     assert!(matches!(
-        echo.start(
-            &mut vm,
-            unit,
-            vec![Value::I64(7)],
-            InvocationOptions::default()
-        )
-        .unwrap_err()
-        .trap,
+        vm.start(echo.at(unit), vec![Value::I64(7)], TurnOptions::default())
+            .unwrap_err()
+            .trap,
         Trap::TypeMismatch { .. }
     ));
     let closure = retained_closure();
@@ -328,15 +322,13 @@ fn failed_entry_and_failed_capture_admission_have_no_host_effects() {
     );
     let unit = vm.install(Arc::clone(closure.program())).unwrap();
     assert!(matches!(
-        closure
-            .start(
-                &mut vm,
-                unit,
-                vec![Value::I64(2)],
-                InvocationOptions::default()
-            )
-            .unwrap_err()
-            .trap,
+        vm.start(
+            closure.at(unit),
+            vec![Value::I64(2)],
+            TurnOptions::default()
+        )
+        .unwrap_err()
+        .trap,
         Trap::AggregateWorkExceeded { .. }
     ));
     assert_eq!(vm.aggregates().len_u32(), 0, "no capture was imported");
@@ -360,19 +352,20 @@ fn closure_entry_uses_the_same_capture_import_work_and_recording_contract() {
         },
     );
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let mut call = callable
+    let mut sink_353 = Rc::clone(&recorder);
+    let mut call = vm
         .start(
-            &mut vm,
-            unit,
+            callable.at(unit),
             vec![Value::I64(2)],
-            InvocationOptions::default().trace_owned(mask, Rc::clone(&recorder)),
+            TurnOptions::default().trace(mask, &mut sink_353),
         )
         .unwrap();
     drop(callable);
     assert_eq!(call.data_work().aggregate, 2);
-    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(call.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(call.result().unwrap().unwrap(), [Value::I64(42)]);
     drop(call);
+    drop(sink_353);
     let recording = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
     assert!(
         matches!(recording.replay().unwrap(), ReplayOutcome::Returned(result) if result.values() == [Value::I64(42)])
@@ -399,18 +392,15 @@ impl execution_graph::NodeTask<String, TrapInfo> for GraphGuest {
     ) -> Poll<Result<(), TrapInfo>> {
         let mut call = self
             .vm
-            .resume(
-                self.computation,
-                InvocationOptions::default().yield_host_calls(),
-            )
+            .resume(self.computation, TurnOptions::default().yield_host_calls())
             .expect("each poll resumes what the last one saved");
         loop {
-            match call.resume(u64::MAX) {
+            match call.drive(u64::MAX) {
                 Err(error) => return Poll::Ready(Err(error)),
                 Ok(RunStatus::AwaitingHost) => {
                     access.read_host_state(execution_graph::HostOpId::new(1), 0);
                     let Some(reply) = self.reply.borrow_mut().take() else {
-                        self.computation = call.save().expect("waiting at its request");
+                        self.computation = saved_id(call);
                         return Poll::Pending;
                     };
                     call.pending_host_call()
@@ -418,7 +408,7 @@ impl execution_graph::NodeTask<String, TrapInfo> for GraphGuest {
                         .complete(&mut [Value::Str(reply)], Ok(0))?;
                 }
                 Ok(RunStatus::Complete) => {
-                    let Value::Str(result) = call.take_outputs().unwrap().pop().unwrap() else {
+                    let Value::Str(result) = returned_values(call).pop().unwrap() else {
                         panic!("string result")
                     };
                     outputs.push(result);
@@ -447,13 +437,12 @@ fn graph_tasks_own_their_vm_and_cancelled_ones_ignore_late_replies() {
                     replies.borrow_mut().push(Rc::clone(&reply));
                     let mut vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
                     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-                    let call = callable.start(
-                        &mut vm,
-                        unit,
+                    let call = vm.start(
+                        callable.at(unit),
                         vec![Value::Str(inputs[0].clone())],
-                        InvocationOptions::default().yield_host_calls(),
+                        TurnOptions::default().yield_host_calls(),
                     )?;
-                    let computation = call.save().expect("not yet run");
+                    let computation = saved_id(call);
                     Ok(Box::new(GraphGuest {
                         vm,
                         computation,
@@ -585,15 +574,15 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
     let callable = echo();
     let mut vm = Vm::new(Echo(Rc::new(Effects::default())), Limits::default());
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let mut call = callable
+    let mut sink_573 = Rc::clone(&observer);
+    let mut call = vm
         .start(
-            &mut vm,
-            unit,
+            callable.at(unit),
             vec![Value::Str("observed".into())],
-            InvocationOptions::default().trace_owned(mask(), Rc::clone(&observer)),
+            TurnOptions::default().trace(mask(), &mut sink_573),
         )
         .unwrap();
-    call.resume(u64::MAX).unwrap();
+    call.drive(u64::MAX).unwrap();
     drop(call);
     let events = observer.borrow();
     assert_eq!(events.subscribed, Some(mask()));
@@ -627,20 +616,18 @@ fn retiring_a_vm_moves_its_results_without_copying_their_nested_payloads() {
     let effects = Rc::new(Effects::default());
     let mut vm = Vm::new(Echo(effects.clone()), Limits::default());
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut call = target
+    let mut call = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Str("packed".into())],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     drop(target);
-    call.resume(u64::MAX).unwrap();
+    call.drive(u64::MAX).unwrap();
     let owner = Arc::clone(call.program());
     assert!(Arc::ptr_eq(&owner, &code.upgrade().unwrap()));
-    let outputs = call.take_outputs().unwrap();
-    drop(call);
+    let outputs = returned_values(call);
     let Value::Agg(root) = outputs[0] else {
         panic!("root")
     };
@@ -673,7 +660,7 @@ fn retiring_a_vm_moves_its_results_without_copying_their_nested_payloads() {
 }
 
 #[test]
-fn consuming_an_invocation_copies_its_results_and_an_unfinished_one_cancels() {
+fn snapshotting_returned_values_copies_them_and_dropping_an_unfinished_turn_cancels() {
     let target = pack_text();
     let effects = Rc::new(Effects::default());
     let mut vm = Vm::new(Echo(effects.clone()), Limits::default());
@@ -683,18 +670,19 @@ fn consuming_an_invocation_copies_its_results_and_an_unfinished_one_cancels() {
         .start(
             FuncRef::new(unit, target.function_id()),
             &args,
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     assert!(
         Arc::ptr_eq(call.program(), target.program()),
         "every entry retains its installed code"
     );
-    call.resume(u64::MAX).unwrap();
-    let Value::Agg(original) = call.result().unwrap().unwrap()[0] else {
+    call.drive(u64::MAX).unwrap();
+    let returned = returned_values(call);
+    let Value::Agg(original) = returned[0] else {
         panic!("root")
     };
-    let snapshot = call.into_snapshot().unwrap().unwrap();
+    let snapshot = vm.snapshot(&returned).unwrap();
     let Value::Agg(retained) = snapshot.values()[0] else {
         panic!("retained root")
     };
@@ -706,14 +694,14 @@ fn consuming_an_invocation_copies_its_results_and_an_unfinished_one_cancels() {
         snapshot.aggregates().tuple_get(retained, 0),
         Ok(Value::Str("borrowed".into()))
     );
-    let call = target
-        .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
+    let call = vm
+        .start(target.at(unit), args.to_vec(), TurnOptions::default())
         .unwrap();
-    assert!(call.into_snapshot().unwrap().is_none());
+    drop(call);
     assert_eq!(
         effects.calls.get(),
         0,
-        "consuming an unfinished invocation cancels without execution"
+        "dropping an unfinished turn cancels without execution"
     );
 }
 
@@ -723,30 +711,27 @@ fn a_vm_retired_with_saved_computations_leaves_its_snapshot_unpinned() {
     let effects = Rc::new(Effects::default());
     let mut vm = Vm::new(Echo(effects), Limits::default());
     let unit = vm.install(Arc::clone(target.program())).unwrap();
-    let mut call = target
+    let mut call = vm
         .start(
-            &mut vm,
-            unit,
+            target.at(unit),
             vec![Value::Str("packed".into())],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
-    call.resume(u64::MAX).unwrap();
-    let outputs = call.take_outputs().unwrap();
-    drop(call);
+    call.drive(u64::MAX).unwrap();
+    let outputs = returned_values(call);
     // A computation waiting at its host request pins the VM's heap.
     let echo = echo();
     let echoes = vm.install(Arc::clone(echo.program())).unwrap();
-    let mut waiting = echo
+    let mut waiting = vm
         .start(
-            &mut vm,
-            echoes,
+            echo.at(echoes),
             vec![Value::Str("waiting".into())],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(waiting.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    waiting.save().ok().unwrap();
+    assert_eq!(waiting.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    saved_id(waiting);
 
     let snapshot = vm.into_snapshot(outputs).unwrap();
     let mut copy = snapshot.aggregates().clone();
@@ -755,4 +740,22 @@ fn a_vm_retired_with_saved_computations_leaves_its_snapshot_unpinned() {
     copy.clear();
     fresh.aggregates_mut().clear();
     fresh.collect().unwrap();
+}
+
+/// Finishes `turn`, whose computation must still be running or waiting, and takes its ID.
+#[track_caller]
+fn saved_id<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> ComputationId {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Saved(id)) => id,
+        other => panic!("the computation was not saved: {other:?}"),
+    }
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }

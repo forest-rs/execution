@@ -14,7 +14,7 @@ use execution_tape::{
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{StructTypeDef, ValueType},
     value::Value,
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{collections::HashSet, sync::Arc};
 
@@ -48,11 +48,11 @@ fn constant(number: i64) -> Callable {
 fn run(callable: &Callable) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let mut invocation = callable
-        .start(&mut vm, unit, vec![], InvocationOptions::default())
+    let mut invocation = vm
+        .start(callable.at(unit), vec![], TurnOptions::default())
         .unwrap();
-    invocation.resume(u64::MAX).unwrap();
-    invocation.take_outputs().unwrap()
+    invocation.drive(u64::MAX).unwrap();
+    returned_values(invocation)
 }
 
 #[test]
@@ -60,16 +60,18 @@ fn lookup_update_does_not_patch_a_paused_frame_or_a_retained_old_target() {
     let mut slot = CodeSlot::new(constant(11));
     let old = slot.current();
     let mut vm = Vm::new(NoHost, Limits::default());
-    // The lookup snapshot is temporary; the invocation itself retains the old code.
+    // The lookup snapshot is temporary; the turn itself retains the old code.
     let unit = vm
         .install(Arc::clone(slot.current().callable().program()))
         .unwrap();
-    let mut paused = slot
-        .current()
-        .callable()
-        .start(&mut vm, unit, vec![], InvocationOptions::default())
+    let mut paused = vm
+        .start(
+            slot.current().callable().at(unit),
+            vec![],
+            TurnOptions::default(),
+        )
         .unwrap();
-    assert_eq!(paused.resume(1).unwrap(), RunStatus::Suspended);
+    assert_eq!(paused.drive(1).unwrap(), RunStatus::Suspended);
     let update = slot.replace(constant(99)).unwrap();
     let CodeUpdate::Replaced { previous, current } = update else {
         panic!("expected new publication");
@@ -80,7 +82,7 @@ fn lookup_update_does_not_patch_a_paused_frame_or_a_retained_old_target() {
     assert!(old.same_slot(&current));
     assert_ne!(old, current);
     assert_eq!(run(slot.current().callable()), [Value::I64(99)]);
-    assert_eq!(paused.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(paused.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(paused.result().unwrap().unwrap(), [Value::I64(11)]);
     assert_eq!(run(old.callable()), [Value::I64(11)]);
 }
@@ -518,4 +520,13 @@ fn root_arity_changes_are_rejected_before_publication() {
         matches!(slot.replace(proposed), Err(CodeUpdateError::Signature { difference: SignatureDifference::ResultCount { ref path, expected: 1, proposed: 0 }, .. }) if path.is_empty())
     );
     assert_eq!(slot.current(), old);
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }

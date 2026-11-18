@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Reentry keeps the signaling stack, value domain and hard budgets in one invocation.
+//! Reentry keeps the signaling stack, value domain and hard budgets in one turn.
 
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
@@ -16,7 +16,7 @@ use execution_tape::{
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{AggHandle, Closure, FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, ObjectRootOrigin, RunStatus, Trap, Vm},
+    vm::{Limits, ObjectRootOrigin, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -162,8 +162,8 @@ fn fixture() -> Fixture {
         closure,
     }
 }
-fn options<'a>() -> InvocationOptions<'a> {
-    InvocationOptions::default().yield_host_calls()
+fn options<'a>() -> TurnOptions<'a> {
+    TurnOptions::default().yield_host_calls()
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &args, options())
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let before: Vec<_> = run.inspect().frames().collect();
     assert_eq!(
         before
@@ -196,7 +196,7 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
         run.pending_host_call().is_none(),
         "callback has not executed its host call yet"
     );
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     assert_eq!(run.pending_host_call().unwrap().symbol(), "lookup");
     let nested: Vec<_> = run.inspect().frames().collect();
     assert_eq!(nested.len(), 3);
@@ -219,17 +219,17 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
             vec![Value::I64(40)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut inner = run.pending_host_call().unwrap();
     assert_eq!(inner.symbol(), "lookup");
     let mut result = inner.take_callback_results().unwrap();
     assert_eq!(result, [Value::I64(41)]);
     assert!(inner.take_callback_results().is_none());
     inner.complete(&mut result, Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     assert!(
         run.result().is_none(),
-        "callback completion is not invocation completion"
+        "callback completion is not the computation's completion"
     );
     let mut outer = run.pending_host_call().unwrap();
     assert_eq!(outer.location(), original);
@@ -237,7 +237,7 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     let mut result = outer.take_callback_results().unwrap();
     assert_eq!(result, [Value::I64(41)]);
     outer.complete(&mut result, Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(41)]);
 }
 
@@ -250,7 +250,7 @@ fn a_callback_return_is_its_own_status_until_the_request_completes() {
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &args, options())
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -258,11 +258,11 @@ fn a_callback_return_is_its_own_status_until_the_request_completes() {
             vec![Value::I64(1)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     // The status describes the request, not whether its results were taken.
     let results = run.pending_host_call().unwrap().take_callback_results();
     assert_eq!(results, Some(vec![Value::I64(2)]));
-    assert_eq!(run.resume(0).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(0).unwrap(), RunStatus::CallbackReturned);
     assert_eq!(run.pending_host_call().unwrap().symbol(), "signal");
 
     // Calling back again from the returned request yields a fresh nested request first.
@@ -273,16 +273,16 @@ fn a_callback_return_is_its_own_status_until_the_request_completes() {
             vec![Value::I64(3)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let inner = run.pending_host_call().unwrap();
     assert_eq!(inner.symbol(), "lookup");
     assert_eq!(inner.callback_results(), None);
     inner.complete(&mut [Value::I64(4)], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut outer = run.pending_host_call().unwrap();
     assert_eq!(outer.take_callback_results(), Some(vec![Value::I64(4)]));
     outer.complete(&mut [Value::I64(5)], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(5)]);
 }
 
@@ -295,7 +295,7 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &args, options())
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut host = run.pending_host_call().unwrap();
     let staged = host.context().tuple_new(vec![Value::I64(42)]).unwrap();
     let unused = host.context().tuple_new(vec![Value::Bool(false)]).unwrap();
@@ -310,7 +310,7 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
             vec![Value::Agg(staged)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut host = run.pending_host_call().unwrap();
     let returned = host.take_callback_results().unwrap();
     let [Value::Agg(wrapped)] = returned.as_slice() else {
@@ -345,7 +345,7 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
         run.data_work().aggregate > work.aggregate,
         "promoted and subsequent work stay charged"
     );
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(
         run.aggregates().len_u32(),
         0,
@@ -362,7 +362,7 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &args, options())
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let environment = run
         .pending_host_call()
         .unwrap()
@@ -379,7 +379,7 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
             vec![Value::I64(2)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     assert_eq!(
         run.pending_host_call().unwrap().take_callback_results(),
         Some(vec![Value::I64(42)])
@@ -392,12 +392,12 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
             vec![Value::I64(8)],
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut host = run.pending_host_call().unwrap();
     assert_eq!(host.arguments().next(), Some(ValueRef::I64(0)));
     let mut result = host.take_callback_results().unwrap();
     host.complete(&mut result, Ok(0)).unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(9)]);
 }
 
@@ -410,7 +410,7 @@ fn moved_callback_text_is_distinct_from_root_argument_sources_and_charged() {
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &args, options())
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let value = String::from("callback-only text");
     let length = value.len() as u64;
     run.pending_host_call()
@@ -420,7 +420,7 @@ fn moved_callback_text_is_distinct_from_root_argument_sources_and_charged() {
             vec![Value::Str(value)],
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert_eq!(
         run.pending_host_call().unwrap().take_callback_results(),
         Some(vec![Value::Str("callback-only text".into())])
@@ -471,7 +471,7 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
         let mut run = vm
             .start(FuncRef::new(unit, f.entry), &args, options())
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         let request = run.pending_host_call().unwrap();
         let result = if expected == "payload" {
             request.call_guest(
@@ -486,7 +486,7 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
         };
         let error = match result {
             Err(error) => error,
-            Ok(()) => run.resume(u64::MAX).unwrap_err(),
+            Ok(()) => run.drive(u64::MAX).unwrap_err(),
         };
         assert!(match expected {
             "fuel" => matches!(error.trap, Trap::FuelExceeded),
@@ -501,8 +501,8 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
             "failed callback admission cannot redispatch its host"
         );
         assert!(
-            run.resume(0).is_err(),
-            "terminal invocation cannot retry callback work"
+            run.drive(0).is_err(),
+            "a terminal turn cannot retry callback work"
         );
     }
 }
@@ -521,7 +521,7 @@ fn callback_rejects_bad_targets_arguments_and_closure_contracts_before_guest_wor
         let mut run = vm
             .start(FuncRef::new(unit, f.entry), &args, options())
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         let (target, args) = match mode {
             0 => (
                 Value::Func(FuncRef::new(UnitId(0), FuncId(u32::MAX))),
@@ -633,14 +633,15 @@ fn cancellation_and_traps_close_nested_guest_host_and_instruction_scopes() {
         let mut vm = Vm::new(NoHost, Limits::default());
         let args = [Value::I64(1)];
         let unit = vm.install(f.program.clone()).unwrap();
+        let mut sink_640 = capture.clone();
         let mut run = vm
             .start(
                 FuncRef::new(unit, f.entry),
                 &args,
-                options().trace_owned(mask(), capture.clone()),
+                options().trace(mask(), &mut sink_640),
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         run.pending_host_call()
             .unwrap()
             .context()
@@ -653,7 +654,7 @@ fn cancellation_and_traps_close_nested_guest_host_and_instruction_scopes() {
                 vec![Value::I64(1)],
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         if trap {
             run.pending_host_call()
                 .unwrap()
@@ -682,14 +683,15 @@ fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(1)];
     let unit = vm.install(f.program.clone()).unwrap();
+    let mut sink_689 = recorder.clone();
     let mut run = vm
         .start(
             FuncRef::new(unit, f.entry),
             &args,
-            options().trace_owned(recorder.mask(), recorder.clone()),
+            options().trace(recorder.mask(), &mut sink_689),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -697,12 +699,13 @@ fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
             vec![Value::I64(1)],
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut host = run.pending_host_call().unwrap();
     let mut result = host.take_callback_results().unwrap();
     host.complete(&mut result, Ok(0)).unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     drop(run);
+    drop(sink_689);
     let record = Rc::try_unwrap(recorder)
         .expect("observer retired")
         .into_inner()
@@ -742,14 +745,15 @@ fn recorded_activations_match_live_activation_identities() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(1)];
     let unit = vm.install(f.program.clone()).unwrap();
+    let mut sink_749 = recorder.clone();
     let mut run = vm
         .start(
             FuncRef::new(unit, f.entry),
             &args,
-            options().trace_owned(recorder.mask(), recorder.clone()),
+            options().trace(recorder.mask(), &mut sink_749),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -757,7 +761,7 @@ fn recorded_activations_match_live_activation_identities() {
             vec![Value::I64(1)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     // entry -> signal waits in "signal" -> handler callback waits in "lookup".
     let live: Vec<_> = run
         .inspect()
@@ -768,13 +772,14 @@ fn recorded_activations_match_live_activation_identities() {
         .unwrap()
         .complete(&mut [Value::I64(2)], Ok(0))
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     run.pending_host_call()
         .unwrap()
         .complete(&mut [Value::I64(3)], Ok(0))
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(run);
+    drop(sink_749);
     let record = Rc::try_unwrap(recorder)
         .expect("observer retired")
         .into_inner()
@@ -830,14 +835,15 @@ fn observer_panic_after_entering_callback_prevents_retry_and_keeps_inspection_va
         let mut vm = Vm::new(NoHost, Limits::default());
         let args = [Value::I64(1)];
         let unit = vm.install(f.program.clone()).unwrap();
+        let mut sink_837 = capture.clone();
         let mut run = vm
             .start(
                 FuncRef::new(unit, f.entry),
                 &args,
-                options().trace_owned(mask(), capture.clone()),
+                options().trace(mask(), &mut sink_837),
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run.pending_host_call()
@@ -859,7 +865,7 @@ fn observer_panic_after_entering_callback_prevents_retry_and_keeps_inspection_va
             !run.inspect().frames().next().unwrap().waiting_for_return,
             "poison source belongs to the suspended parent, even for recursive reentry"
         );
-        let error = run.resume(u64::MAX).unwrap_err();
+        let error = run.drive(u64::MAX).unwrap_err();
         assert!(matches!(error.trap, Trap::HostCallAbandoned));
         drop(run);
         assert_eq!(capture.borrow().enter, capture.borrow().exit);
@@ -874,14 +880,15 @@ fn callback_result_signature_is_independent_of_the_pending_host_signature() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(40)];
     let unit = vm.install(f.program.clone()).unwrap();
+    let mut sink_881 = capture.clone();
     let mut run = vm
         .start(
             FuncRef::new(unit, f.entry),
             &args,
-            options().trace_owned(mask(), capture.clone()),
+            options().trace(mask(), &mut sink_881),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -889,12 +896,12 @@ fn callback_result_signature_is_independent_of_the_pending_host_signature() {
             vec![Value::I64(40)],
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut request = run.pending_host_call().unwrap();
     let mut results = request.take_callback_results().unwrap();
     assert_eq!(results, [Value::I64(40), Value::I64(41)]);
     request.complete(&mut results[1..], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(41)]);
     drop(run);
     let trace = capture.borrow();
@@ -939,19 +946,19 @@ fn callback_results_must_satisfy_their_own_rich_contract_before_returning_to_hos
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(program.clone()).unwrap();
     let mut run = vm.start(FuncRef::new(unit, entry), &[], options()).unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     run.pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(UnitId(0), callback)), vec![])
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut request = run.pending_host_call().unwrap();
     let wrong = request
         .context()
         .tuple_new(vec![Value::Bool(true)])
         .unwrap();
     request.complete(&mut [Value::Agg(wrong)], Ok(0)).unwrap();
-    let error = run.resume(u64::MAX).unwrap_err();
+    let error = run.drive(u64::MAX).unwrap_err();
     assert!(
         matches!(error.trap, Trap::ContractMismatch { function, .. } if function == FuncRef::new(UnitId(0), callback))
     );
@@ -981,7 +988,7 @@ fn promoted_staging_and_callback_allocations_share_one_aggregate_budget() {
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &args, options())
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let staged = run
         .pending_host_call()
         .unwrap()
@@ -995,7 +1002,7 @@ fn promoted_staging_and_callback_allocations_share_one_aggregate_budget() {
             vec![Value::Agg(staged)],
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     let mut request = run.pending_host_call().unwrap();
     let error = request
         .context()
@@ -1008,7 +1015,7 @@ fn promoted_staging_and_callback_allocations_share_one_aggregate_budget() {
         Some(Trap::AggregateWorkExceeded { used: 4, .. })
     ));
     request.complete(&mut [Value::I64(42)], Ok(0)).unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert_eq!(run.data_work().aggregate, 4);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(42)]);
 }
@@ -1026,7 +1033,7 @@ fn pending_callback_object_results_remain_visible_to_the_embedding_collector() {
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &args, options())
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -1035,7 +1042,7 @@ fn pending_callback_object_results_remain_visible_to_the_embedding_collector() {
         )
         .unwrap();
     let activation = run.inspect().frames().next().unwrap().activation;
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert!(
         run.inspect().register(&activation, Reg(1)).is_none(),
         "returned callback frame must expire"
@@ -1103,14 +1110,15 @@ fn original_host_state_arguments_and_access_sink_are_shared_across_callback_disp
     let args = [Value::I64(40)];
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let unit = vm.install(f.program.clone()).unwrap();
+    let mut sink_1110 = reads.clone();
     let mut run = vm
         .start(
             FuncRef::new(unit, f.entry),
             &args,
-            options().access_owned(reads.clone()),
+            options().access(&mut sink_1110),
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -1118,15 +1126,15 @@ fn original_host_state_arguments_and_access_sink_are_shared_across_callback_disp
             vec![Value::I64(2)],
         )
         .unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     run.pending_host_call().unwrap().dispatch().unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert_eq!(
         run.pending_host_call().unwrap().callback_results(),
         Some(&[Value::I64(2)][..])
     );
     run.pending_host_call().unwrap().dispatch().unwrap();
-    run.resume(u64::MAX).unwrap();
+    run.drive(u64::MAX).unwrap();
     assert_eq!(
         run.result().unwrap().unwrap(),
         [Value::I64(40)],

@@ -15,7 +15,7 @@ use execution_tape::{
     trace::{TraceMask, TraceSink},
     value::{AggType, Closure, FuncId, FuncRef, UnitId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm},
+    vm::{Limits, RunStatus, Trap, TrapInfo, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -89,7 +89,7 @@ fn entry_rejects_units_this_vm_did_not_install() {
     let entry = FuncRef::new(foreign, FuncId(0));
     let error = vm.run(entry, &[], TraceMask::NONE, None).unwrap_err();
     assert!(matches!(error.trap, Trap::UnknownUnit { unit } if unit == foreign));
-    let Err(error) = vm.start(entry, &[], InvocationOptions::default()) else {
+    let Err(error) = vm.start(entry, &[], TurnOptions::default()) else {
         panic!("unknown units cannot start");
     };
     assert!(matches!(error.trap, Trap::UnknownUnit { unit } if unit == UnitId(1)));
@@ -103,18 +103,17 @@ fn callables_start_only_in_a_unit_of_their_exact_program() {
     let equal_copy = vm
         .install(Arc::new(VerifiedProgram::clone(&program)))
         .unwrap();
-    let Err(error) = callable.start(&mut vm, equal_copy, vec![], InvocationOptions::default())
-    else {
+    let Err(error) = vm.start(callable.at(equal_copy), vec![], TurnOptions::default()) else {
         panic!("an equal copy is different code");
     };
     assert!(matches!(error.trap, Trap::UnitProgramMismatch { unit } if unit == equal_copy));
     let unit = vm.install(program).unwrap();
-    let mut call = callable
-        .start(&mut vm, unit, vec![], InvocationOptions::default())
+    let mut call = vm
+        .start(callable.at(unit), vec![], TurnOptions::default())
         .unwrap();
-    call.resume(u64::MAX).unwrap();
+    call.drive(u64::MAX).unwrap();
     assert_eq!(call.unit(), unit);
-    assert_eq!(call.take_outputs(), Some(vec![Value::I64(5)]));
+    assert_eq!(returned_values(call), vec![Value::I64(5)]);
 }
 
 fn point(field: &str) -> StructTypeDef {
@@ -513,19 +512,19 @@ fn installing_replacement_code_leaves_a_suspended_old_frame_running_its_unit() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let caller = vm.install(dispatcher()).unwrap();
     let old = vm.install(pausing_method()).unwrap();
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm
         .start(FuncRef::new(caller, FuncId(0)), &[Value::I64(10)], options)
         .unwrap();
     // The language's method table answers the first lookup with the old method.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let request = run.pending_host_call().unwrap();
     assert_eq!((request.symbol(), request.unit()), ("lookup", caller));
     request
         .complete(&mut [Value::Func(FuncRef::new(old, FuncId(0)))], Ok(0))
         .unwrap();
     // The old method is now suspended inside its own unit.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let units: Vec<_> = run
         .inspect()
         .frames()
@@ -539,12 +538,12 @@ fn installing_replacement_code_leaves_a_suspended_old_frame_running_its_unit() {
     assert_ne!(new, old);
     request.complete(&mut [], Ok(0)).unwrap();
     // The next lookup answers with the replacement; the old frame already returned `11`.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .complete(&mut [Value::Func(FuncRef::new(new, FuncId(0)))], Ok(0))
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     let [Value::Agg(pair)] = run.result().unwrap().unwrap()[..] else {
         panic!("pair result");
     };
@@ -576,10 +575,10 @@ fn a_host_request_can_call_back_into_another_unit() {
         .start(
             FuncRef::new(caller, main),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -587,13 +586,13 @@ fn a_host_request_can_call_back_into_another_unit() {
             vec![Value::I64(41)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let mut results = request.take_callback_results().unwrap();
     assert_eq!(results, [Value::I64(42)]);
     request.complete(&mut results, Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    assert_eq!(run.take_outputs(), Some(vec![Value::I64(42)]));
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(returned_values(run), vec![Value::I64(42)]);
 }
 
 /// A unit declaring `boom(i64)`. `fail(x)` throws it; `typed(f)` and `all(f)` call `f(7)` inside
@@ -674,7 +673,7 @@ fn recordings_follow_calls_and_exceptions_into_other_units() {
         .map(|unit| (unit.unit, unit.installed))
         .collect();
     assert_eq!(units, [(first, None), (second, None)]);
-    assert_eq!(recording.invocation().unwrap().entry.unit, second);
+    assert_eq!(recording.entry().unwrap().entry.unit, second);
     // Each activation names the unit that ran it, not the entry unit.
     let [root, callee] = recording.activations().collect::<Vec<_>>()[..] else {
         panic!("entry and the foreign callee");
@@ -704,27 +703,27 @@ fn recordings_replay_code_installed_while_suspended() {
     let caller = vm.install(Arc::clone(&program)).unwrap();
     let old = vm.install(pausing_method()).unwrap();
     let mut recorder = Recorder::new(program, RecordLimits::default());
-    let options = InvocationOptions::default()
+    let options = TurnOptions::default()
         .yield_host_calls()
         .trace(recorder.mask(), &mut recorder);
     let mut run = vm
         .start(FuncRef::new(caller, FuncId(0)), &[Value::I64(10)], options)
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .complete(&mut [Value::Func(FuncRef::new(old, FuncId(0)))], Ok(0))
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     let new = request.install(adds(100)).unwrap();
     request.complete(&mut [], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .complete(&mut [Value::Func(FuncRef::new(new, FuncId(0)))], Ok(0))
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(run);
     let recording = recorder.finish();
     recording.status().unwrap();
@@ -876,4 +875,13 @@ fn one_bound_host_serves_host_calls_from_every_bound_unit() {
     assert_eq!(apply, UnitId(0));
     assert_eq!(run(&mut vm, apply, unit).unwrap(), [Value::I64(101)]);
     assert_eq!(*vm.host().state(), 1, "both units share one host state");
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }

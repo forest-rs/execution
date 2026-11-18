@@ -265,7 +265,7 @@ fn unwinding_host_leaves_an_explicitly_incomplete_recording() {
     assert!(result.is_err());
     let record = recorder.finish();
     assert_eq!(record.status(), Err(&CaptureFault::MissingCompletion));
-    assert!(record.invocation().is_some());
+    assert!(record.entry().is_some());
     assert!(record.outcome().is_none());
     assert!(matches!(
         record.replay(),
@@ -435,7 +435,7 @@ fn shared_nodes_distinct_equal_nodes_and_interned_payloads_keep_their_meaning() 
         .unwrap();
     let record = capture(&mut vm, &p, &[Value::Agg(root)]);
     drop(vm);
-    let RecordedValue::Agg(id) = record.invocation().unwrap().args[0] else {
+    let RecordedValue::Agg(id) = record.entry().unwrap().args[0] else {
         panic!("root");
     };
     let fields = record.aggregate(id).unwrap().values;

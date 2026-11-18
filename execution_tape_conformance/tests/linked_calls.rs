@@ -14,7 +14,7 @@ use execution_tape::{
     trace::{TraceMask, TraceSink},
     value::{FuncId, FuncRef, UnitId, Value},
     verifier::{MetadataTable, VerifiedProgram, VerifyConfig, VerifyError, verify_program},
-    vm::{InvocationOptions, Limits, LinkMismatch, RelinkError, RunStatus, StoreEvent, Vm},
+    vm::{Limits, LinkMismatch, RelinkError, RunStatus, StoreEvent, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -874,7 +874,7 @@ fn relink_mid_call(
 ) -> (Vec<Value>, UnitId, UnitId) {
     let mut vm = Vm::new(NoHost, Limits::default());
     let caller = vm.install(program).unwrap();
-    let mut options = InvocationOptions::default().yield_host_calls();
+    let mut options = TurnOptions::default().yield_host_calls();
     if let Some(recorder) = recorder {
         options = options.trace(recorder.mask(), recorder);
     }
@@ -882,7 +882,7 @@ fn relink_mid_call(
         .start(FuncRef::new(caller, CALLER), &[Value::I64(4)], options)
         .unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "the first call waits"
     );
@@ -899,7 +899,7 @@ fn relink_mid_call(
     assert_eq!(previous, FuncRef::new(caller, SCALE), "the declared target");
     request.complete(&mut [], Ok(0)).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "the second call waits"
     );
@@ -911,11 +911,11 @@ fn relink_mid_call(
     );
     request.complete(&mut [], Ok(0)).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::Complete,
         "the caller returns"
     );
-    (run.take_outputs().unwrap(), caller, newer)
+    (returned_values(run), caller, newer)
 }
 
 #[test]
@@ -984,7 +984,7 @@ fn relink_at_suspension(
 ) -> (Vec<Value>, UnitId, UnitId) {
     let mut vm = Vm::new(NoHost, Limits::default());
     let caller = vm.install(program).unwrap();
-    let mut options = InvocationOptions::default().yield_suspensions();
+    let mut options = TurnOptions::default().yield_suspensions();
     if let Some(recorder) = recorder {
         options = options.trace(recorder.mask(), recorder);
     }
@@ -992,7 +992,7 @@ fn relink_at_suspension(
         .start(FuncRef::new(caller, CALLER), &[Value::I64(4)], options)
         .unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHandler,
         "the caller suspends before the linked call"
     );
@@ -1008,11 +1008,11 @@ fn relink_at_suspension(
     );
     pending.resume(vec![Value::I64(5)]).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::Complete,
         "the caller returns"
     );
-    (run.take_outputs().unwrap(), caller, newer)
+    (returned_values(run), caller, newer)
 }
 
 #[test]
@@ -1050,4 +1050,13 @@ fn recordings_replay_relinks_made_while_a_suspension_waits() {
         panic!("replay returns like the recorded run");
     };
     assert_eq!(values.values(), &outputs[..]);
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }

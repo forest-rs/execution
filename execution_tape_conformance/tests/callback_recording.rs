@@ -16,7 +16,7 @@ use execution_tape::{
     trace::{TraceLocation, TraceSink},
     value::{Closure, FuncId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -107,7 +107,7 @@ fn fixture() -> Fixture {
 }
 fn finish(recorder: Rc<RefCell<Recorder>>) -> Recording {
     Rc::try_unwrap(recorder)
-        .expect("invocation observer retired")
+        .expect("turn observer retired")
         .into_inner()
         .finish()
 }
@@ -144,17 +144,18 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
     let recorder = Rc::new(RefCell::new(recorder));
     let args = [Value::Agg(input)];
     let unit = vm.install(f.program.clone()).unwrap();
+    let mut sink_153 = recorder.clone();
     let mut run = vm
         .start(
             FuncRef::new(unit, f.root),
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
-                .trace_owned(recorder.mask(), recorder.clone()),
+                .trace(recorder.mask(), &mut sink_153),
         )
         .unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "root waits for outer host"
     );
@@ -175,7 +176,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         )
         .unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "nested callback waits for inner host"
     );
@@ -192,7 +193,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         )
         .unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned,
         "closure returns to inner request"
     );
@@ -200,7 +201,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
     let mut values = inner.take_callback_results().unwrap();
     inner.complete(&mut values, Ok(2)).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned,
         "outer callback returns to original request"
     );
@@ -221,12 +222,13 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         .unwrap();
     outer.complete(&mut [Value::Agg(result)], Ok(3)).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::Complete,
         "root publishes after outer completion"
     );
     drop(run);
     drop(vm);
+    drop(sink_153);
     finish(recorder)
 }
 #[test]
@@ -395,16 +397,17 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
         let input = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
         let args = [Value::Agg(input)];
         let unit = vm.install(f.program.clone()).unwrap();
+        let mut sink_404 = recorder.clone();
         let mut run = vm
             .start(
                 FuncRef::new(unit, f.root),
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
-                    .trace_owned(recorder.mask(), recorder.clone()),
+                    .trace(recorder.mask(), &mut sink_404),
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         let error = if mode == 0 {
             run.pending_host_call()
                 .unwrap()
@@ -437,7 +440,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
                     vec![Value::Agg(input)],
                 )
                 .unwrap();
-            run.resume(u64::MAX).unwrap();
+            run.drive(u64::MAX).unwrap();
             run.pending_host_call()
                 .unwrap()
                 .complete(&mut [], Err(HostError::Failed))
@@ -452,6 +455,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
                 | Trap::CallDepthExceeded
         ));
         drop(run);
+        drop(sink_404);
         let record = finish(recorder);
         record.status().unwrap();
         assert_eq!(
@@ -485,16 +489,17 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
         let input = vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let args = [Value::Agg(input)];
         let unit = vm.install(f.program.clone()).unwrap();
+        let mut sink_494 = recorder.clone();
         let mut run = vm
             .start(
                 FuncRef::new(unit, f.root),
                 &args,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
-                    .trace_owned(recorder.mask(), recorder.clone()),
+                    .trace(recorder.mask(), &mut sink_494),
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         run.pending_host_call()
             .unwrap()
             .call_guest(
@@ -502,15 +507,16 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
                 vec![Value::Agg(input)],
             )
             .unwrap();
-        run.resume(u64::MAX).unwrap();
+        run.drive(u64::MAX).unwrap();
         if return_first {
             run.pending_host_call()
                 .unwrap()
                 .complete(&mut [Value::Agg(input)], Ok(0))
                 .unwrap();
-            assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+            assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
         }
         drop(run);
+        drop(sink_494);
         let record = finish(recorder);
         assert_eq!(record.status(), Err(&CaptureFault::MissingCompletion));
         assert_eq!(record.control_commands().len(), 1);
