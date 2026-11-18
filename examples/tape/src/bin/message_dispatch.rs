@@ -15,7 +15,7 @@ use execution_tape::{
     recording::{RecordLimits, Recorder, Recording, ReplayOutcome},
     trace::{TraceLocation, TraceSink},
     value::Value,
-    vm::{Invocation, InvocationOptions, Limits, PendingHostCall, RunStatus, TrapInfo, Vm},
+    vm::{Limits, PendingHostCall, RunStatus, TrapInfo, Turn, TurnOptions, Vm},
 };
 use execution_tape_observatory::{LiveExplorer, ObjectView, RecordingExplorer};
 use model::{Compiled, Failure, Result, receiver};
@@ -87,7 +87,7 @@ struct MethodContext<'a> {
     snapshots: &'a mut Vec<(String, String)>,
 }
 fn execute_method(
-    mut call: Invocation<'_, Cells>,
+    mut call: Turn<'_, Cells>,
     request: &mut PendingHostCall<'_, '_, Cells>,
     publication: &CodeVersion,
     context: &mut MethodContext<'_>,
@@ -95,7 +95,7 @@ fn execute_method(
     fuel: u64,
 ) -> Result<(i64, u64)> {
     // The old target has entered and read its +1 before lookup publishes the +10 body.
-    call.resume(1)?;
+    call.drive(1)?;
     if index == 0 {
         context.methods.publish(context.new)?;
         request.context().record_write(ResourceKeyRef::HostState {
@@ -152,9 +152,9 @@ fn execute_method(
         if cancelled {
             return Err(Box::new(DispatchError::Cancelled));
         }
-        call = view.into_invocation();
+        call = view.into_turn();
     }
-    match call.resume(u64::MAX)? {
+    match call.drive(u64::MAX)? {
         RunStatus::Complete => {}
         _ => return Err(Box::new(DispatchError::UnexpectedReply)),
     }
@@ -190,11 +190,10 @@ fn run_method(
     let unit = vm
         .install(Arc::clone(publication.callable().program()))
         .unwrap();
-    let result = match publication.callable().start(
-        &mut vm,
-        unit,
+    let result = match vm.start(
+        publication.callable().at(unit),
         vec![Value::Obj(receiver())],
-        InvocationOptions::default()
+        TurnOptions::default()
             .trace(recorder.mask(), &mut recorder)
             .access(&mut ledger),
     ) {
@@ -269,19 +268,18 @@ fn run(options: &Options) -> Result<Report> {
         },
     );
     let unit = vm.install(Arc::clone(&caller.program))?;
-    let mut call =
-        execution_tape::callable::Callable::function(Arc::clone(&caller.program), caller.entry)?
-            .start(
-                &mut vm,
-                unit,
-                vec![Value::Obj(receiver())],
-                InvocationOptions::default()
-                    .yield_host_calls()
-                    .trace(recorder.mask(), &mut recorder)
-                    .access(&mut caller_access),
-            )?;
+    let caller_callable =
+        execution_tape::callable::Callable::function(Arc::clone(&caller.program), caller.entry)?;
+    let mut call = vm.start(
+        caller_callable.at(unit),
+        vec![Value::Obj(receiver())],
+        TurnOptions::default()
+            .yield_host_calls()
+            .trace(recorder.mask(), &mut recorder)
+            .access(&mut caller_access),
+    )?;
     let outcome = loop {
-        match call.resume(64) {
+        match call.drive(64) {
             Ok(RunStatus::Suspended) => {}
             Ok(RunStatus::CallbackReturned) => unreachable!("the caller starts no guest callbacks"),
             Ok(RunStatus::AwaitingHandler) => unreachable!("the caller yields no suspensions"),

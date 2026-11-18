@@ -12,7 +12,7 @@ use execution_tape::opcode::Opcode;
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncRef;
 use execution_tape::value::Value;
-use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
+use execution_tape::vm::{Limits, RunStatus, TurnOptions, TurnOutcome, Vm};
 use execution_tape_footfall::FootfallSink;
 use footfall::runtime::{Observation, Runtime, Snapshot};
 use footfall::{InstrumentationLevel, LabelKey, RegisteredContext};
@@ -222,11 +222,11 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
             .start(
                 FuncRef::new(unit, ENTRY),
                 &arguments,
-                InvocationOptions::default().trace(mask, &mut sink),
+                TurnOptions::default().trace(mask, &mut sink),
             )
             .unwrap();
-        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+        assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+        assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
         drop(invocation);
         let cancelled = runtime.snapshot_since(start);
         balanced(&cancelled);
@@ -257,12 +257,14 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
             .start(
                 FuncRef::new(unit, ENTRY),
                 &arguments,
-                InvocationOptions::default().trace(mask, &mut sink),
+                TurnOptions::default().trace(mask, &mut sink),
             )
             .unwrap();
-        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-        let saved = invocation.save().unwrap();
+        assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+        assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+        let Ok(TurnOutcome::Saved(saved)) = invocation.finish() else {
+            panic!("saved between quanta");
+        };
         let released = runtime.snapshot_since(start);
         balanced(&released);
         assert_eq!(count(&released, "execution_tape.release"), 1);
@@ -271,9 +273,9 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
 
         let start = runtime.snapshot().next_cursor();
         let mut invocation = vm
-            .resume(saved, InvocationOptions::default().trace(mask, &mut sink))
+            .resume(saved, TurnOptions::default().trace(mask, &mut sink))
             .unwrap();
-        assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
         drop(invocation);
         let resumed = runtime.snapshot_since(start);
         balanced(&resumed);

@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Language-owned lexical homes over one VM invocation. `ensure:` cleanup is ordinary guest code
+//! Language-owned lexical homes over one VM turn. `ensure:` cleanup is ordinary guest code
 //! in protected regions; a non-local return is a guest exception this runtime raises.
 
 use super::program::{CELL, Fixture, NON_LOCAL, Result};
@@ -12,7 +12,7 @@ use execution_tape::{
     recording::{InstructionCapture, RecordLimits, Recorder, Recording},
     trace::{TraceLocation, TraceSink},
     value::{Obj, ObjHandle, Value},
-    vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{ActivationId, Limits, RunStatus, Turn, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -139,8 +139,14 @@ pub(super) struct Session {
     pub(super) cleanups: Vec<i64>,
     pub(super) after_ensure: bool,
 }
+/// A VM for a runtime, and the shared recorder its turn borrows for the whole run.
+pub(super) struct RuntimeVm {
+    vm: Vm<Cells>,
+    sink: Option<Rc<RefCell<Recorder>>>,
+}
+
 pub(super) struct Runtime<'vm> {
-    run: Invocation<'vm, Cells>,
+    run: Turn<'vm, Cells>,
     recorder: Rc<RefCell<Recorder>>,
     non_local: TagId,
     homes: Vec<Home>,
@@ -150,11 +156,14 @@ pub(super) struct Runtime<'vm> {
 }
 impl<'vm> Runtime<'vm> {
     /// A VM for a runtime under `limits`; the runtime borrows it for its whole run.
-    pub(super) fn vm(limits: Limits) -> Vm<Cells> {
-        Vm::new(Cells::default(), limits)
+    pub(super) fn vm(limits: Limits) -> RuntimeVm {
+        RuntimeVm {
+            vm: Vm::new(Cells::default(), limits),
+            sink: None,
+        }
     }
 
-    pub(super) fn new(vm: &'vm mut Vm<Cells>, fixture: &Fixture) -> Result<Self> {
+    pub(super) fn new(runtime_vm: &'vm mut RuntimeVm, fixture: &Fixture) -> Result<Self> {
         let code = fixture.program.program();
         let non_local = (0..code.tags.len())
             .map(|index| TagId(u32::try_from(index).expect("bounded tag table")))
@@ -165,14 +174,15 @@ impl<'vm> Runtime<'vm> {
                 .with_instructions(InstructionCapture::default()),
         ));
         let callable = Callable::function(fixture.program.clone(), fixture.entry)?;
+        let RuntimeVm { vm, sink } = runtime_vm;
+        let sink = sink.insert(Rc::clone(&recorder));
         let unit = vm.install(Arc::clone(callable.program())).unwrap();
-        let run = callable.start(
-            vm,
-            unit,
+        let run = vm.start(
+            callable.at(unit),
             vec![],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
-                .trace_owned(recorder.mask(), recorder.clone()),
+                .trace(recorder.mask(), sink),
         )?;
         Ok(Self {
             run,
@@ -226,7 +236,7 @@ impl<'vm> Runtime<'vm> {
         result
     }
     fn step(&mut self, quantum: u64) -> Result<Status> {
-        match self.run.resume(quantum)? {
+        match self.run.drive(quantum)? {
             RunStatus::Suspended => return Ok(Status::Running),
             RunStatus::Complete => return Ok(Status::Complete),
             RunStatus::AwaitingHost => {}
@@ -367,10 +377,11 @@ impl<'vm> Runtime<'vm> {
         } = self;
         let cleanups = run.host().cleanups.clone();
         let after_ensure = run.host().after_ensure;
+        let program = Arc::clone(run.program());
         drop(run);
-        let recording = Rc::try_unwrap(recorder)
-            .expect("invocation observer retired")
-            .into_inner()
+        // The turn has released the recorder; take it from the slot it shares with the VM's.
+        let recording = recorder
+            .replace(Recorder::new(program, RecordLimits::default()))
             .finish();
         Session {
             recording,

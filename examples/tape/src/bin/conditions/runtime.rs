@@ -15,7 +15,7 @@ use execution_tape::{
     trace::{TraceLocation, TraceSink},
     value::{FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, TrapInfo, Vm},
+    vm::{ActivationId, Limits, RunStatus, TrapInfo, Turn, TurnOptions, Vm},
 };
 use std::{
     cell::RefCell,
@@ -265,8 +265,14 @@ pub(super) struct Session {
     pub(super) policy_end: PolicyEnd,
 }
 
+/// A VM for a runtime, and the shared recorder its turn borrows for the whole run.
+pub(super) struct RuntimeVm {
+    vm: Vm<NoHost>,
+    sink: Option<Rc<RefCell<Recorder>>>,
+}
+
 pub(super) struct Runtime<'vm> {
-    run: Invocation<'vm, NoHost>,
+    run: Turn<'vm, NoHost>,
     recorder: Rc<RefCell<Recorder>>,
     exit: TagId,
     scopes: Vec<Binding>,
@@ -283,12 +289,15 @@ pub(super) struct Runtime<'vm> {
 }
 impl<'vm> Runtime<'vm> {
     /// A VM for a runtime under `limits`; the runtime borrows it for its whole run.
-    pub(super) fn vm(limits: Limits) -> Vm<NoHost> {
-        Vm::new(NoHost, limits)
+    pub(super) fn vm(limits: Limits) -> RuntimeVm {
+        RuntimeVm {
+            vm: Vm::new(NoHost, limits),
+            sink: None,
+        }
     }
 
     pub(super) fn new(
-        vm: &'vm mut Vm<NoHost>,
+        runtime_vm: &'vm mut RuntimeVm,
         program: Arc<VerifiedProgram>,
         entry: FuncId,
     ) -> Result<Self, Error> {
@@ -303,14 +312,15 @@ impl<'vm> Runtime<'vm> {
         ));
         let callable =
             Callable::function(program, entry).map_err(|_| Error::Abi("missing entry"))?;
+        let RuntimeVm { vm, sink } = runtime_vm;
+        let sink = sink.insert(Rc::clone(&recorder));
         let unit = vm.install(Arc::clone(callable.program())).unwrap();
-        let run = callable.start(
-            vm,
-            unit,
+        let run = vm.start(
+            callable.at(unit),
             vec![],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
-                .trace_owned(recorder.mask(), recorder.clone()),
+                .trace(recorder.mask(), sink),
         )?;
         Ok(Self {
             run,
@@ -388,12 +398,14 @@ impl<'vm> Runtime<'vm> {
             Some(Err(_)) => PolicyEnd::Trapped,
             None => PolicyEnd::Cancelled,
         };
+        let program = Arc::clone(run.program());
         drop(run);
+        // The turn has released the recorder; take it from the slot it shares with the VM's.
+        let recording = recorder
+            .replace(Recorder::new(program, RecordLimits::default()))
+            .finish();
         Session {
-            recording: Rc::try_unwrap(recorder)
-                .expect("invocation observer retired")
-                .into_inner()
-                .finish(),
+            recording,
             policy: events,
             policy_truncated: events_truncated,
             policy_end,
@@ -552,7 +564,7 @@ impl<'vm> Runtime<'vm> {
         self.masks.retain(|mask| live.contains(&mask.callback));
     }
     fn step(&mut self, quantum: u64) -> Result<Status, Error> {
-        let returned = match self.run.resume(quantum)? {
+        let returned = match self.run.drive(quantum)? {
             RunStatus::Suspended => return Ok(Status::Running),
             RunStatus::Complete => return Ok(Status::Complete),
             RunStatus::AwaitingHost => false,
