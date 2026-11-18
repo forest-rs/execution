@@ -3620,12 +3620,14 @@ fn verify_function_bytecode(
                     func_id: *callee,
                     args: push_vregs(args)?,
                     rets: push_vregs(rets)?,
+                    args_proved: false,
                 }
             }
             Instr::Ret { eff_in, rets } => {
                 check_unit(*eff_in)?;
                 ExecInstr::Ret {
                     rets: push_vregs(rets)?,
+                    rets_proved: false,
                 }
             }
             Instr::HostCall {
@@ -3663,12 +3665,14 @@ fn verify_function_bytecode(
                         callee,
                         args,
                         rets,
+                        args_proved: false,
                     },
                     VReg::Closure(callee) => ExecInstr::CallIndirectClosure {
                         call_sig,
                         callee,
                         args,
                         rets,
+                        args_proved: false,
                     },
                     _ => {
                         return Err(mismatch(*callee_reg, ValueType::Func));
@@ -3688,6 +3692,7 @@ fn verify_function_bytecode(
                     link: LinkId(*link),
                     args: push_vregs(args)?,
                     rets: push_vregs(rets)?,
+                    args_proved: false,
                 }
             }
             Instr::ClosureNew { dst, func, env } => ExecInstr::ClosureNew {
@@ -3899,7 +3904,7 @@ fn verify_function_bytecode(
             instr: vi,
         });
     }
-    contracts::verify_flow(
+    let proofs = contracts::verify_flow(
         program,
         func_id,
         &blocks,
@@ -3907,6 +3912,15 @@ fn verify_function_bytecode(
         register_types,
         decoded,
     )?;
+    // Block headers have no execution instruction, so proofs map through the execution index.
+    for (source_ix, _) in proofs.iter().enumerate().filter(|(_, proved)| **proved) {
+        let exec_ix = source_to_exec
+            .get(source_ix)
+            .map_or(source_ix, |&ix| ix as usize);
+        if !matches!(decoded[source_ix].instr, Instr::Block { .. }) {
+            execution_instrs[exec_ix].instr.set_proved();
+        }
+    }
     let mut contract_checks = Vec::new();
     for (index, &contract) in func
         .arg_contracts(program)

@@ -66,8 +66,9 @@ pub struct FunctionStats {
     pub prepared_capacity_bytes: usize,
 }
 
-/// A prepared instruction's source location and opcode.
+/// A prepared instruction's source location, opcode and proofs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct InstructionInfo {
     /// Source byte offset within the function.
     pub pc: Pc,
@@ -77,6 +78,10 @@ pub struct InstructionInfo {
     pub opcode: Opcode,
     /// Resolved source span used by runtime tracing, if any.
     pub span: Option<SpanId>,
+    /// Whether this is a call or return whose contracts the verifier proved: every value it
+    /// passes is known to satisfy its contract, so execution does not check them again. A
+    /// closure call still checks the closure's environment. False for every other instruction.
+    pub boundary_proved: bool,
 }
 
 impl<'a> VerifiedFunction<'a> {
@@ -187,6 +192,7 @@ impl<'a> VerifiedFunction<'a> {
                     .and_then(Opcode::from_code)
                     .expect("verified opcode"),
                 span: self.executable.span_at_ix(index),
+                boundary_proved: instruction.instr.boundary_proved(),
             })
     }
 
