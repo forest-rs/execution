@@ -46,6 +46,10 @@ name = "callables"
 harness = false
 
 [[bench]]
+name = "callable_values"
+harness = false
+
+[[bench]]
 name = "observations"
 harness = false
 

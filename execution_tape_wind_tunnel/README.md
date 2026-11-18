@@ -43,6 +43,22 @@ loop with the add inline; subtract it and divide by 1,000 for a per-call cost.
 cargo bench -p execution_tape_wind_tunnel --bench linked_calls
 ```
 
+## Callable values
+
+`callable_values` models a frontend whose callable values are tuples of a typed entry closure,
+a boxed entry closure and a `u64` signature shape, under a tuple contract. Each case walks a
+balanced call tree of depth 8 that passes the value to its 256 leaves and calls `n + 1` at each:
+`direct` calls the function directly (the baseline), `typed` opens the value and calls its typed
+entry, `untyped` compares shapes first, and `mismatch` takes the boxed path, with four host calls
+to box and unbox that the turn yields and dispatches; `mismatch_synchronous` declares them
+synchronous. `typed_entry_only` and `untyped_parts` pass the parts as separate values, a bound on
+what a different callable representation could save. Subtract `direct` and divide by 256 for the
+cost of one call through a value.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench callable_values
+```
+
 ## Host import lookup
 
 `host_imports` runs a guest loop of 1,000 dependent host calls to the last of 1, 8, 32 or 128
