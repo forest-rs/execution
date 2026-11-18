@@ -1121,7 +1121,7 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   continuation of the activations above that `resume`, typed by the tag's results and the
   `resume`'s results. Resuming it continues after the `suspend`, whose `rets` receive the resume
   values. No matching clause traps with `UnhandledSuspension`, unless the invocation yields
-  suspensions (`InvocationOptions::yield_suspensions`): then the suspension waits for the
+  suspensions (`TurnOptions::yield_suspensions`): then the suspension waits for the
   embedding, which resumes it with values for the tag's results (checked for arity, kind,
   payload work and the suspending unit's result contracts, as `ContractPosition::Resumption`),
   raises an exception at the `suspend`, or discards it, which traps with

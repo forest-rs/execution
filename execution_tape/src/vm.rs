@@ -61,31 +61,17 @@ pub use inspection::{
     StackId,
 };
 mod observations;
-mod ownership;
 mod roots;
 pub use roots::{RootError, RootedValues};
 mod saved;
 pub use saved::{ComputationError, ComputationId};
 mod units;
 mod work;
-use ownership::BorrowedOrOwned;
 pub use turn::{
     Arguments, Callee, PendingHostCall, PendingSuspension, RequestError, RequestId, RunStatus,
     Turn, TurnOptions, TurnOutcome,
 };
 pub use units::{InstallError, LinkMismatch, RelinkError, StoreEvent, TagError, Units};
-/// Temporary name for [`Turn`], removed later in this change.
-#[doc(hidden)]
-pub type Invocation<'a, H> = Turn<'a, H>;
-/// Temporary name for [`TurnOptions`], removed later in this change.
-#[doc(hidden)]
-pub type InvocationOptions<'a> = TurnOptions<'a>;
-/// Temporary name for [`ComputationInspection`], removed later in this change.
-#[doc(hidden)]
-pub type InvocationInspection<'a> = ComputationInspection<'a>;
-/// Temporary name for [`ComputationError`], removed later in this change.
-#[doc(hidden)]
-pub type ResumeError = ComputationError;
 pub(crate) use units::{Unit, UnitTable};
 pub use work::ExecutionWork;
 #[cfg(test)]
@@ -861,7 +847,7 @@ impl<H: Host> fmt::Debug for Vm<H> {
 /// long-lived register file while still flattening VM hot-loop tracing code.
 struct TraceCtx<'a> {
     mask: TraceMask,
-    sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
+    sink: Option<&'a mut (dyn TraceSink + 'a)>,
     scopes: Vec<(ScopeKind, usize)>,
     pending: Option<TraceLocation>,
 }
@@ -869,13 +855,10 @@ struct TraceCtx<'a> {
 impl<'a> TraceCtx<'a> {
     #[inline]
     fn new(mask: TraceMask, sink: Option<&'a mut dyn TraceSink>) -> Self {
-        Self::with_observer(mask, sink.map(BorrowedOrOwned::Borrowed))
+        Self::with_observer(mask, sink)
     }
 
-    fn with_observer(
-        mask: TraceMask,
-        sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
-    ) -> Self {
+    fn with_observer(mask: TraceMask, sink: Option<&'a mut (dyn TraceSink + 'a)>) -> Self {
         Self {
             mask,
             sink,
@@ -1135,7 +1118,7 @@ impl<'a> TraceCtx<'a> {
         self.scopes.clear();
         self.pending = None;
         if self.mask != TraceMask::NONE
-            && let Some(mut sink) = sink
+            && let Some(sink) = sink
         {
             sink.release(program);
         }

@@ -242,27 +242,6 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         self.turn.result()
     }
 
-    /// Temporary forward to [`Self::drive`], removed later in this change.
-    #[doc(hidden)]
-    pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
-        self.drive(quantum)
-    }
-
-    /// Temporary forward, removed later in this change.
-    #[doc(hidden)]
-    pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
-        let values = self.turn.take_outputs();
-        self.refresh();
-        values
-    }
-
-    /// Temporary forward to [`Self::into_turn`], removed later in this change.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn into_invocation(self) -> Turn<'vm, H> {
-        self.into_turn()
-    }
-
     /// Leaves presentation and finishes the turn, as [`Turn::finish`] does.
     ///
     /// Returned values' aggregate handles belong to the original borrowed VM. A computation that

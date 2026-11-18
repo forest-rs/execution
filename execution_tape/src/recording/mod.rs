@@ -765,13 +765,6 @@ impl Recording {
         })
     }
 
-    /// Temporary forward to [`Self::entry`], removed later in this change.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn invocation(&self) -> Option<RecordedEntry<'_>> {
-        self.entry()
-    }
-
     /// Borrows the computation's entry, arguments and first turn's limits, if captured.
     pub fn entry(&self) -> Option<RecordedEntry<'_>> {
         self.entry.as_ref().map(|entry| RecordedEntry {

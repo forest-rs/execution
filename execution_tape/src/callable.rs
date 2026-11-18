@@ -29,15 +29,6 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CallableError {
-    /// The turn has no successful outputs to retain.
-    NoSuccessfulResult,
-    /// The requested successful result slot is absent.
-    OutputIndex {
-        /// Requested result position.
-        index: usize,
-        /// Number of successful result values.
-        count: usize,
-    },
     /// The value has no retained prepared-program owner. Obtain an owned result from a
     /// callable turn or tape graph node, or explicitly retain its original program.
     MissingCodeOwner,
@@ -75,8 +66,6 @@ pub enum CallableError {
 impl fmt::Display for CallableError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoSuccessfulResult => f.write_str("callable retention requires a successful invocation result"),
-            Self::OutputIndex { index, count } => write!(f, "cannot retain callable output {index}: invocation returned {count} values"),
             Self::MissingCodeOwner => f.write_str("callable value has no retained code owner; retain its original prepared program before exporting it"),
             Self::NotCallable { actual } => {
                 write!(f, "expected a function or closure, got {actual:?}")

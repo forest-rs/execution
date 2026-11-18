@@ -2122,13 +2122,14 @@ mod tests {
         let mut vm = Vm::new(Echo, Limits::default());
         let args = [Value::I64(41)];
         let unit = vm.install(program.clone()).unwrap();
+        let mut sink = Rc::clone(&recorder);
         let mut run = vm
             .start(
                 FuncRef::new(unit, root),
                 &args,
                 TurnOptions::default()
                     .yield_host_calls()
-                    .trace_owned(recorder.mask(), recorder.clone()),
+                    .trace(recorder.mask(), &mut sink),
             )
             .unwrap();
         assert_eq!(run.drive(100).unwrap(), RunStatus::AwaitingHost);
@@ -2142,6 +2143,7 @@ mod tests {
         request.complete(&mut results, Ok(0)).unwrap();
         assert_eq!(run.drive(100).unwrap(), RunStatus::Complete);
         drop(run);
+        drop(sink);
         let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
         record.replay().unwrap();
         record

@@ -56,7 +56,7 @@ pub(super) struct Continuation<'a> {
     pub(super) stack: Stack,
     pub(super) args: Cow<'a, [Value]>,
     pub(super) trace: TraceCtx<'a>,
-    pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
+    pub(super) access: Option<&'a mut (dyn AccessSink + 'a)>,
     pub(super) register_state: observations::RegisterState,
 }
 
