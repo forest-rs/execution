@@ -11,7 +11,7 @@ use execution_tape::program::{StructTypeDef, ValueType};
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::value::{Closure, FuncId};
-use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
+use execution_tape::vm::{Limits, RunStatus, TurnOptions, Vm};
 
 #[test]
 fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
@@ -71,18 +71,16 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
     assert!(weak.upgrade().is_some(), "export owns its code");
     let mut vm = Vm::new(HostProbe::default(), Limits::default());
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let mut call = callable
+    let mut call = vm
         .start(
-            &mut vm,
-            unit,
+            callable.at(unit),
             vec![Value::I64(2)],
-            InvocationOptions::default(),
+            TurnOptions::default(),
         )
         .unwrap();
     drop(callable);
-    while call.resume(1).unwrap() == RunStatus::Suspended {}
-    assert_eq!(call.take_outputs(), Some(vec![Value::I64(42)]));
-    drop(call);
+    while call.drive(1).unwrap() == RunStatus::Suspended {}
+    assert_eq!(returned_values(call), vec![Value::I64(42)]);
     assert_eq!(vm.aggregates().len_u32(), 0);
     assert_eq!(vm.host().calls, 0);
     assert!(
@@ -111,11 +109,11 @@ fn exported_function_uses_original_program_and_raw_values_explain_missing_owners
     drop(graph);
     let mut vm = Vm::new(HostProbe::default(), Limits::default());
     let unit = vm.install(Arc::clone(callable.program())).unwrap();
-    let mut call = callable
-        .start(&mut vm, unit, vec![], InvocationOptions::default())
+    let mut call = vm
+        .start(callable.at(unit), vec![], TurnOptions::default())
         .unwrap();
-    call.resume(u64::MAX).unwrap();
-    assert_eq!(call.take_outputs(), Some(vec![Value::I64(11)]));
+    call.drive(u64::MAX).unwrap();
+    assert_eq!(returned_values(call), vec![Value::I64(11)]);
     assert_eq!(
         TapeValue::from(Value::I64(42))
             .retain_callable()
@@ -833,4 +831,13 @@ fn selected_ports_do_not_import_unrelated_bundle_roots() {
             .value(),
         &Value::Bool(true)
     );
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }
