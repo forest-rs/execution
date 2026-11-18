@@ -20,7 +20,7 @@ use execution_tape::{
     verifier::{
         RegionError, RegionRunError, VerifiedProgram, VerifyConfig, VerifyError, verify_program,
     },
-    vm::{InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{Limits, RunStatus, Trap, TurnOptions, Vm},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -333,13 +333,14 @@ fn drive_callback(
 ) {
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(Arc::clone(program)).unwrap();
-    let mut options = InvocationOptions::default().yield_host_calls();
-    if let Some(recorder) = recorder {
-        options = options.trace_owned(recorder.mask(), recorder);
+    let mut recorder = recorder;
+    let mut options = TurnOptions::default().yield_host_calls();
+    if let Some(recorder) = recorder.as_mut() {
+        options = options.trace(recorder.mask(), recorder);
     }
     let mut invocation = vm.start(FuncRef::new(unit, outer), &[], options).unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "outer waits in its protected host call"
     );
@@ -352,7 +353,7 @@ fn drive_callback(
         )
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::Complete,
         "outer's handler returns after the callback throws"
     );

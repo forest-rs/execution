@@ -3,7 +3,7 @@
 
 //! Typed exception tags and `throw`.
 //!
-//! No protected region exists yet, so every raised exception leaves the invocation as
+//! No protected region exists yet, so every raised exception leaves the turn as
 //! `Trap::Uncaught` with a payload snapshot that survives rollback.
 
 use execution_tape::value::FuncRef;
@@ -18,7 +18,7 @@ use execution_tape::{
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{FuncId, Value},
     verifier::{MetadataTable, VerifiedProgram, VerifyConfig, VerifyError, verify_program},
-    vm::{InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm},
+    vm::{Limits, RunStatus, Trap, TrapInfo, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -178,14 +178,10 @@ fn resumable_invocations_report_the_same_uncaught_trap() {
     let args = [Value::I64(3)];
     let unit = vm.install(f.program.clone()).unwrap();
     let mut run = vm
-        .start(
-            FuncRef::new(unit, f.entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, f.entry), &args, TurnOptions::default())
         .unwrap();
     let error = loop {
-        match run.resume(1) {
+        match run.drive(1) {
             Ok(RunStatus::Suspended) => {}
             Ok(status) => panic!("unexpected status {status:?}"),
             Err(error) => break error,
@@ -227,10 +223,10 @@ fn an_exception_escaping_a_guest_callback_ends_the_whole_invocation() {
         .start(
             FuncRef::new(unit, outer),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(
@@ -238,7 +234,7 @@ fn an_exception_escaping_a_guest_callback_ends_the_whole_invocation() {
             vec![Value::I64(5)],
         )
         .unwrap();
-    let error = run.resume(u64::MAX).unwrap_err();
+    let error = run.drive(u64::MAX).unwrap_err();
     assert_eq!((error.func, error.pc), (raise, throw_pc));
     let Trap::Uncaught(exception) = &error.trap else {
         panic!("expected an uncaught exception, got {error}");

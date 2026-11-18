@@ -823,13 +823,13 @@ fn cont_bind_supplies_leading_inputs() {
 fn invocations_pause_and_resume_at_every_boundary_inside_continuations() {
     use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
     use execution_tape::trace::TraceSink as _;
-    use execution_tape::vm::{InvocationOptions, RunStatus};
+    use execution_tape::vm::{RunStatus, TurnOptions};
     let fixture = effects();
     for quantum in [1, 2, 5, u64::MAX] {
         let mut vm = Vm::new(NoHost, Limits::default());
         let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
         let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
-        let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
+        let options = TurnOptions::default().trace(recorder.mask(), &mut recorder);
         let mut invocation = vm
             .start(
                 FuncRef::new(unit, fixture.outer),
@@ -838,12 +838,11 @@ fn invocations_pause_and_resume_at_every_boundary_inside_continuations() {
             )
             .unwrap();
         let mut deepest = 0;
-        while invocation.resume(quantum).unwrap() == RunStatus::Suspended {
+        while invocation.drive(quantum).unwrap() == RunStatus::Suspended {
             // Paused frames are the active stack, including resumed continuations.
             deepest = deepest.max(invocation.inspect().frames().len());
         }
-        assert_eq!(invocation.take_outputs().unwrap(), vec![Value::I64(11)]);
-        drop(invocation);
+        assert_eq!(returned_values(invocation), vec![Value::I64(11)]);
         if quantum == 1 {
             // `outer`, `middle` and `logged` are all on the stack while `logged` runs.
             assert_eq!(deepest, 3);
@@ -860,7 +859,7 @@ fn invocations_pause_and_resume_at_every_boundary_inside_continuations() {
 #[test]
 fn a_guest_callback_cannot_suspend_its_pending_host_request() {
     use execution_tape::host::HostSig;
-    use execution_tape::vm::{InvocationOptions, RunStatus};
+    use execution_tape::vm::{RunStatus, TurnOptions};
     let mut b = ProgramBuilder::new();
     let ask = b
         .declare_tag_with_results("ask", &[], &[ValueType::I64.into()])
@@ -913,15 +912,15 @@ fn a_guest_callback_cannot_suspend_its_pending_host_request() {
         .start(
             FuncRef::new(unit, drive),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, asker)), vec![])
         .unwrap();
-    let error = run.resume(u64::MAX).unwrap_err();
+    let error = run.drive(u64::MAX).unwrap_err();
     assert!(
         matches!(error.trap, Trap::SuspensionAcrossHost { .. }),
         "{error:?}"
@@ -1224,7 +1223,7 @@ fn continuations_cannot_cross_the_invocation_boundary() {
 #[test]
 fn abandoned_continuations_hold_their_frames_until_the_invocation_ends() {
     // A continuation that is never resumed or dropped keeps its frames charged against
-    // `max_call_depth` until the invocation ends. `take_first(n)` starts `n` generators, takes
+    // `max_call_depth` until the turn ends. `take_first(n)` starts `n` generators, takes
     // one value from each and abandons it; `cont.drop` would release it instead.
     let mut b = ProgramBuilder::new();
     let yield_tag = b.declare_tag("yield", &[ValueType::I64.into()]).unwrap();
@@ -1381,7 +1380,7 @@ fn verifier_checks_a_known_callable_against_its_continuation_signature() {
 fn exceptional_switching_records_replays_and_pauses_anywhere() {
     use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
     use execution_tape::trace::TraceSink as _;
-    use execution_tape::vm::{InvocationOptions, RunStatus};
+    use execution_tape::vm::{RunStatus, TurnOptions};
     let fixture = exceptional();
     for entry in [
         fixture.throw_into,
@@ -1420,26 +1419,26 @@ fn exceptional_switching_records_replays_and_pauses_anywhere() {
             let mut vm = Vm::new(NoHost, Limits::default());
             let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
             let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
-            let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
+            let options = TurnOptions::default().trace(recorder.mask(), &mut recorder);
             let mut invocation = vm
                 .start(FuncRef::new(unit, entry), &[Value::I64(7)], options)
                 .unwrap();
             loop {
-                match invocation.resume(quantum) {
+                match invocation.drive(quantum) {
                     Ok(RunStatus::Suspended) => {}
                     Ok(RunStatus::Complete) => {
-                        let outputs = invocation.take_outputs().unwrap();
+                        let outputs = returned_values(invocation);
                         assert_eq!(Ok(&outputs), expected.as_ref().map_err(|_| ()));
                         break;
                     }
                     Ok(other) => panic!("unexpected status {other:?}"),
                     Err(error) => {
                         assert!(matches!(error.trap, Trap::Uncaught(_)), "{error:?}");
+                        drop(invocation);
                         break;
                     }
                 }
             }
-            drop(invocation);
             check(recorder);
         }
     }
@@ -1890,5 +1889,14 @@ fn cont_drop_is_verified_disassembled_encoded_and_recorded() {
                 panic!("expected {expected:?}, live {live:?}, replay {replayed:?}")
             }
         }
+    }
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
     }
 }

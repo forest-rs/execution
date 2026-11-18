@@ -14,7 +14,7 @@ use execution_tape::{
     trace::TraceLocation,
     value::{FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, ObjectRootOrigin, RunStatus, Vm},
+    vm::{Limits, ObjectRootOrigin, RunStatus, TurnOptions, Vm},
 };
 
 const OBJECT: HostTypeId = HostTypeId(73);
@@ -78,14 +78,10 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(p.clone()).unwrap();
     let mut run = vm
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
     let root = run.inspect().frames().next().unwrap().activation;
-    assert_eq!(run.resume(2).unwrap(), RunStatus::Suspended); // initialize old, enter child
+    assert_eq!(run.drive(2).unwrap(), RunStatus::Suspended); // initialize old, enter child
     let child = {
         let mut inspection = run.inspect();
         let frames: Vec<_> = inspection.frames().collect();
@@ -121,12 +117,12 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
         );
         frames[0].activation.clone()
     };
-    run.resume(1).unwrap(); // child defines result
+    run.drive(1).unwrap(); // child defines result
     assert_eq!(
         run.inspect().register(&child, Reg(2)).unwrap().value,
         Some(ValueRef::I64(7))
     );
-    run.resume(1).unwrap(); // return to root
+    run.drive(1).unwrap(); // return to root
     {
         let mut inspection = run.inspect();
         assert!(
@@ -139,7 +135,7 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
         );
         assert_eq!(inspection.frames().next().unwrap().location.pc, second);
     }
-    run.resume(1).unwrap(); // enter the same child at the same physical bank base
+    run.drive(1).unwrap(); // enter the same child at the same physical bank base
     {
         let mut inspection = run.inspect();
         let replacement = inspection.frames().next().unwrap();
@@ -159,10 +155,10 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
             "pending result must not replace the old value"
         );
     }
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    assert_eq!(run.take_outputs().unwrap(), [Value::I64(14)]);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.inspect().frames().len(), 0);
     assert!(run.inspect().register(&root, Reg(2)).is_none());
+    assert_eq!(returned_values(run), [Value::I64(14)]);
 }
 
 #[test]
@@ -173,28 +169,20 @@ fn activation_ids_reject_other_invocations_and_remain_stable_across_large_quanta
     let mut b = Vm::new(NoHost, Limits::default());
     let unit = a.install(p.clone()).unwrap();
     let mut left = a
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
     let unit = b.install(p.clone()).unwrap();
     let right = b
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
     let old = left.inspect().frames().next().unwrap().activation;
     let other = right.inspect().frames().next().unwrap().activation;
     assert_eq!(old.ordinal(), other.ordinal());
     assert_ne!(old, other);
     assert!(right.inspect().register(&old, Reg(1)).is_none());
-    left.resume(4).unwrap(); // first child entered and retired before this suspension
+    left.drive(4).unwrap(); // first child entered and retired before this suspension
     assert_eq!(left.inspect().frames().next().unwrap().activation, old);
-    left.resume(1).unwrap();
+    left.drive(1).unwrap();
     assert_eq!(
         left.inspect().frames().next().unwrap().activation.ordinal(),
         2
@@ -202,11 +190,7 @@ fn activation_ids_reject_other_invocations_and_remain_stable_across_large_quanta
     drop(left);
     let unit = a.install(p.clone()).unwrap();
     let replacement = a
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
     assert_ne!(
         replacement.inspect().frames().next().unwrap().activation,
@@ -240,13 +224,9 @@ fn paused_call_sites_resolve_to_exact_authored_source() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(p.clone()).unwrap();
     let mut run = vm
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
-    run.resume(2).unwrap();
+    run.drive(2).unwrap();
     let caller = run.inspect().frames().nth(1).unwrap();
     assert_eq!(
         bound.lookup(caller.location).unwrap().text(),
@@ -331,13 +311,9 @@ fn conservative_roots_support_a_real_host_collection_between_quanta() {
     let args = [Value::Obj(object(42))];
     let unit = vm.install(p.clone()).unwrap();
     let mut run = vm
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
-    run.resume(3).unwrap();
+    run.drive(3).unwrap();
     let roots = {
         let mut roots = Vec::new();
         run.inspect().visit_objects(|root| roots.push(root));
@@ -363,9 +339,8 @@ fn conservative_roots_support_a_real_host_collection_between_quanta() {
         .live
         .retain(|id| roots.iter().any(|root| root.object.handle.0 == *id));
     assert_eq!(run.host().live, [42, 43, 44]);
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    assert_eq!(run.take_outputs().unwrap(), [Value::I64(44)]);
-    drop(run);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(returned_values(run), [Value::I64(44)]);
     assert_eq!(
         vm.aggregates().len_u32(),
         1,
@@ -437,14 +412,10 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
         let args = [Value::Obj(object(42))];
         let unit = vm.install(p.clone()).unwrap();
         let mut run = vm
-            .start(
-                FuncRef::new(unit, entry),
-                &args,
-                InvocationOptions::default(),
-            )
+            .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
             .unwrap();
         assert_eq!(
-            run.resume(if closure { 4 } else { 2 }).unwrap(),
+            run.drive(if closure { 4 } else { 2 }).unwrap(),
             RunStatus::Suspended
         );
         {
@@ -480,7 +451,16 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
                 );
             }
         }
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-        assert_eq!(run.take_outputs().unwrap(), [Value::I64(7)]);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(returned_values(run), [Value::I64(7)]);
+    }
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
     }
 }

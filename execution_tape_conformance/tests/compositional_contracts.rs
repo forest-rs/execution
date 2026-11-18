@@ -12,7 +12,7 @@ use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, VerifyError, verify_program_owned};
-use execution_tape::vm::{Limits, Trap, Vm};
+use execution_tape::vm::{Limits, RunStatus, Trap, TurnOptions, Vm};
 
 struct TestHost(Value);
 impl Host for TestHost {
@@ -786,7 +786,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             Some(&mut observer),
         )
         .unwrap_err();
-        // A call instruction completes its dispatch into the callee. Invocation completion is
+        // A call instruction completes its dispatch into the callee. Turn completion is
         // reported by the frame outcomes; neither frame may succeed after the callee return fails.
         assert!(observer.success);
         assert_eq!(observer.frames, vec![false, false]);
@@ -1222,4 +1222,46 @@ fn aliased_opaque_member_does_not_inherit_its_containers_shape() {
             VerifyError::UnknownAggregateShape { func, pc, reg: Reg(1) } if func == entry && pc == projection
         )
     ));
+}
+
+#[test]
+fn a_turns_contract_allowance_replaces_the_vms_limit() {
+    let mut builder = ProgramBuilder::new();
+    let integer = integer(&mut builder);
+    let required = tuple(&mut builder, &[Some(integer)]);
+    let mut asm = body(&[ValueType::Unit, ValueType::Agg, ValueType::Agg]);
+    asm.ret(Reg::EFFECT, &[]);
+    let entry = builder
+        .push_function_checked(
+            asm,
+            FunctionAbi {
+                args: vec![required.into(), required.into()],
+                rets: vec![],
+            },
+        )
+        .unwrap();
+    let program = builder.build_verified().unwrap();
+    let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
+    let value = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let unit = vm.install(program).unwrap();
+    let args = [Value::Agg(value), Value::Agg(value)];
+    // Checking both arguments costs 4; an allowance of 3 refuses the second at entry.
+    let mut three = vm.limits().allowance();
+    three.contract_work = 3;
+    let error = vm
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            TurnOptions::default().allowance(three),
+        )
+        .expect_err("the allowance refuses the entry's contracts");
+    assert!(
+        matches!(error.trap, Trap::ContractWorkExceeded { limit: 3, .. }),
+        "{error:?}"
+    );
+    // The VM's own limit still admits it.
+    let mut turn = vm
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
+        .unwrap();
+    assert_eq!(turn.drive(u64::MAX).unwrap(), RunStatus::Complete);
 }

@@ -3,8 +3,8 @@
 
 //! Host objects held by continuations stay visible to the embedding collector.
 //!
-//! Each fixture collects in the middle of an invocation: the `collect` host call keeps only the
-//! objects [`InvocationInspection::visit_objects`] reports, and `check` fails for an object that
+//! Each fixture collects in the middle of a turn: the `collect` host call keeps only the
+//! objects [`ComputationInspection::visit_objects`] reports, and `check` fails for an object that
 //! was collected while the guest could still use it.
 
 use execution_tape::{
@@ -14,8 +14,8 @@ use execution_tape::{
     value::{FuncId, FuncRef, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
     vm::{
-        ActivationId, InvocationInspection, InvocationOptions, Limits, ObjectRoot,
-        ObjectRootOrigin, RunStatus, Vm,
+        ActivationId, ComputationInspection, Limits, ObjectRoot, ObjectRootOrigin, RunStatus,
+        TurnOptions, Vm,
     },
 };
 use std::collections::BTreeSet;
@@ -95,7 +95,7 @@ impl Imports {
     }
 }
 
-/// What a driven invocation reported to its embedding.
+/// What a driven turn reported to its embedding.
 #[derive(Default)]
 struct Collector {
     next: u64,
@@ -123,13 +123,13 @@ fn drive(program: &Arc<VerifiedProgram>, entry: FuncId) -> Collector {
         .start(
             FuncRef::new(unit, entry),
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .yield_suspensions(),
         )
         .unwrap();
     let mut heap = Collector::default();
-    let collect = |heap: &mut Collector, inspection: &mut InvocationInspection<'_>| {
+    let collect = |heap: &mut Collector, inspection: &mut ComputationInspection<'_>| {
         let mut roots = Vec::new();
         inspection.visit_objects(|root| roots.push(root));
         assert!(
@@ -143,7 +143,7 @@ fn drive(program: &Arc<VerifiedProgram>, entry: FuncId) -> Collector {
         heap.collections.push(roots);
     };
     loop {
-        match run.resume(u64::MAX).unwrap() {
+        match run.drive(u64::MAX).unwrap() {
             RunStatus::Complete => break,
             RunStatus::AwaitingHandler => {
                 let pending = run.pending_suspension().unwrap();
@@ -182,7 +182,7 @@ fn drive(program: &Arc<VerifiedProgram>, entry: FuncId) -> Collector {
             status => panic!("unexpected {status:?}"),
         }
     }
-    assert_eq!(run.take_outputs().unwrap(), [], "fixtures return nothing");
+    assert_eq!(returned_values(run), [], "fixtures return nothing");
     heap
 }
 
@@ -557,4 +557,13 @@ fn suspensions_yielded_to_the_embedding_stay_on_the_stack() {
         &held[0].origin,
         ObjectRootOrigin::Register { activation, .. } if *activation == heap.checkers[0]
     ));
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }

@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A VM keeps saved computations between invocations and resumes each once, with a fresh
+//! A VM keeps saved computations between turns and resumes each once, with a fresh
 //! allowance.
 
 use execution_tape::{
@@ -15,8 +15,8 @@ use execution_tape::{
     value::{AggHandle, AggType, FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::{
-        CollectError, ComputationId, InvocationOptions, Limits, RequestError, ResumeError,
-        RunStatus, Trap, Vm,
+        CollectError, ComputationError, ComputationId, Limits, RequestError, RunStatus, Trap,
+        TurnOptions, Vm,
     },
 };
 use std::sync::Arc;
@@ -78,27 +78,23 @@ fn asks() -> (Arc<VerifiedProgram>, FuncId) {
 fn save_asking(vm: &mut Vm<Answers>, entry: FuncRef, text: &str) -> ComputationId {
     let args = [Value::Str(text.into())];
     let mut invocation = vm
-        .start(
-            entry,
-            &args,
-            InvocationOptions::default().yield_host_calls(),
-        )
+        .start(entry, &args, TurnOptions::default().yield_host_calls())
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "it waits at `ask`"
     );
-    invocation.save().unwrap()
+    saved_id(invocation)
 }
 
 /// Resumes a saved `asks`, answers its request with `answer` and returns its text and number.
 fn finish_asking(vm: &mut Vm<Answers>, id: ComputationId, answer: i64) -> (String, i64) {
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     assert_eq!(
-        invocation.resume(0).unwrap(),
+        invocation.drive(0).unwrap(),
         RunStatus::AwaitingHost,
         "the resumed computation still waits at `ask`"
     );
@@ -108,14 +104,13 @@ fn finish_asking(vm: &mut Vm<Answers>, id: ComputationId, answer: i64) -> (Strin
         .complete(&mut [Value::I64(answer)], Ok(0))
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::Complete,
         "answered, it returns"
     );
-    let [Value::Agg(result)] = invocation.take_outputs().unwrap()[..] else {
+    let [Value::Agg(result)] = returned_values(invocation)[..] else {
         panic!("one tuple");
     };
-    drop(invocation);
     let heap = vm.aggregates();
     let Value::Agg(boxed) = heap.tuple_get(result, 0).unwrap() else {
         panic!("a boxed string");
@@ -165,14 +160,14 @@ fn saved_computations_resume_independently_and_each_id_once() {
 
     assert_eq!(finish_asking(&mut vm, second, 2), ("second".into(), 2));
     assert!(matches!(
-        vm.resume(second, InvocationOptions::default()),
-        Err(ResumeError::Unknown)
+        vm.resume(second, TurnOptions::default()),
+        Err(ComputationError::Unknown)
     ));
     // A later computation may reuse the slot; the old ID still names nothing.
     let third = save_asking(&mut vm, entry, "third");
     assert!(matches!(
-        vm.resume(second, InvocationOptions::default()),
-        Err(ResumeError::Unknown)
+        vm.resume(second, TurnOptions::default()),
+        Err(ComputationError::Unknown)
     ));
     assert_eq!(finish_asking(&mut vm, first, 1), ("first".into(), 1));
     assert_eq!(finish_asking(&mut vm, third, 3), ("third".into(), 3));
@@ -188,15 +183,15 @@ fn dropping_a_resumed_invocation_cancels_it_and_keeps_its_older_sibling() {
     let before = vm.aggregates().len_u32();
     {
         let mut invocation = vm
-            .resume(doomed, InvocationOptions::default().yield_host_calls())
+            .resume(doomed, TurnOptions::default().yield_host_calls())
             .unwrap();
         invocation
             .pending_host_call()
             .unwrap()
             .complete(&mut [Value::I64(0)], Ok(0))
             .unwrap();
-        // The result tuple is allocated before the invocation is dropped unfinished.
-        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+        // The result tuple is allocated before the turn is dropped unfinished.
+        assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
         assert_eq!(invocation.aggregates().len_u32(), before + 1);
     }
     assert_eq!(
@@ -205,8 +200,8 @@ fn dropping_a_resumed_invocation_cancels_it_and_keeps_its_older_sibling() {
         "only its own lease rolled back"
     );
     assert!(matches!(
-        vm.resume(doomed, InvocationOptions::default()),
-        Err(ResumeError::Unknown)
+        vm.resume(doomed, TurnOptions::default()),
+        Err(ComputationError::Unknown)
     ));
     assert_eq!(finish_asking(&mut vm, older, 4), ("older".into(), 4));
 }
@@ -218,13 +213,13 @@ fn a_forgotten_resumed_invocation_never_frees_its_id() {
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let lost = save_asking(&mut vm, entry, "lost");
     core::mem::forget(
-        vm.resume(lost, InvocationOptions::default().yield_host_calls())
+        vm.resume(lost, TurnOptions::default().yield_host_calls())
             .unwrap(),
     );
     let next = save_asking(&mut vm, entry, "next");
     assert!(matches!(
-        vm.resume(lost, InvocationOptions::default()),
-        Err(ResumeError::Unknown)
+        vm.resume(lost, TurnOptions::default()),
+        Err(ComputationError::Unknown)
     ));
     assert_eq!(finish_asking(&mut vm, next, 6), ("next".into(), 6));
 }
@@ -259,12 +254,12 @@ fn each_resumed_invocation_starts_a_fresh_allowance() {
     let error = vm.run(entry, &[], TraceMask::NONE, None).unwrap_err();
     assert!(matches!(error.trap, Trap::FuelExceeded), "{error:?}");
 
-    let mut invocation = vm.start(entry, &[], InvocationOptions::default()).unwrap();
-    assert_eq!(invocation.resume(11).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().unwrap();
-    let mut invocation = vm.resume(id, InvocationOptions::default()).unwrap();
+    let mut invocation = vm.start(entry, &[], TurnOptions::default()).unwrap();
+    assert_eq!(invocation.drive(11).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
+    let mut invocation = vm.resume(id, TurnOptions::default()).unwrap();
     assert_eq!(invocation.remaining_fuel(), 12);
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(20)]);
 }
 
@@ -309,21 +304,18 @@ fn a_resumed_computation_keeps_its_frames_and_activation_ids() {
     let mut vm = Vm::new(Answers, limits);
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let mut invocation = vm
-        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .start(entry, &[], TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let before: Vec<_> = invocation
         .inspect()
         .frames()
         .map(|frame| frame.activation)
         .collect();
-    let id = invocation.save().unwrap();
+    let id = saved_id(invocation);
 
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     let after: Vec<_> = invocation
         .inspect()
@@ -337,7 +329,7 @@ fn a_resumed_computation_keeps_its_frames_and_activation_ids() {
         .complete(&mut [Value::I64(0)], Ok(0))
         .unwrap();
     // The two held frames still count: `leaf` would be the third.
-    let error = invocation.resume(u64::MAX).unwrap_err();
+    let error = invocation.drive(u64::MAX).unwrap_err();
     assert!(matches!(error.trap, Trap::CallDepthExceeded), "{error:?}");
 }
 
@@ -429,16 +421,13 @@ fn observers_hand_over_a_waiting_computation_without_inventing_events() {
         .start(
             entry,
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut first),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let id = saved_id(invocation);
     assert_eq!(first.events, ["start", "release"]);
     assert_eq!(
         first.open.len(),
@@ -450,7 +439,7 @@ fn observers_hand_over_a_waiting_computation_without_inventing_events() {
     let mut invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut second),
         )
@@ -460,7 +449,7 @@ fn observers_hand_over_a_waiting_computation_without_inventing_events() {
         .unwrap()
         .complete(&mut [Value::I64(0)], Ok(0))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(invocation);
     assert_eq!(second.events, ["attach", "end"]);
     assert_eq!(
@@ -476,16 +465,16 @@ fn a_computation_saved_between_quanta_hands_over_its_frames() {
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let mask = TraceMask::RUN | TraceMask::CALL | TraceMask::INSTR;
-    let mut invocation = vm.start(entry, &[], InvocationOptions::default()).unwrap();
+    let mut invocation = vm.start(entry, &[], TurnOptions::default()).unwrap();
     // Inside `mid`, before its host call.
-    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
 
     let mut observer = Balanced::default();
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().trace(mask, &mut observer))
+        .resume(id, TurnOptions::default().trace(mask, &mut observer))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(invocation);
     assert_eq!(observer.events, ["attach", "end"]);
     assert_eq!(observer.attached.len(), 2, "entry and mid");
@@ -503,21 +492,18 @@ fn a_recording_follows_its_computation_across_invocations_and_replays() {
         .start(
             entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let id = saved_id(invocation);
 
     let mut invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
@@ -527,7 +513,7 @@ fn a_recording_follows_its_computation_across_invocations_and_replays() {
         .unwrap()
         .complete(&mut [Value::I64(7)], Ok(0))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(invocation);
     let recording = recorder.finish();
     assert_eq!(recording.status(), Ok(()));
@@ -540,7 +526,7 @@ fn a_recording_follows_its_computation_across_invocations_and_replays() {
 #[test]
 fn replay_gives_each_invocation_the_allowance_the_original_had() {
     let (program, entry) = counts();
-    // Too little fuel for the whole computation in one invocation.
+    // Too little fuel for the whole computation in one turn.
     let limits = Limits {
         fuel: 12,
         ..Limits::default()
@@ -553,15 +539,15 @@ fn replay_gives_each_invocation_the_allowance_the_original_had() {
         .start(
             entry,
             &[],
-            InvocationOptions::default().trace(mask, &mut recorder),
+            TurnOptions::default().trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(invocation.resume(11).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(11).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+        .resume(id, TurnOptions::default().trace(mask, &mut recorder))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(invocation);
     let recording = recorder.finish();
     assert_eq!(recording.status(), Ok(()));
@@ -583,16 +569,13 @@ fn installs_and_relinks_while_saved_are_replayed_before_the_next_invocation() {
         .start(
             FuncRef::new(unit, entry),
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let id = saved_id(invocation);
     // While it is saved: install a replacement and point the link at it.
     let (replacement, _) = asks_then_links(10);
     let replacement = vm.install(replacement).unwrap();
@@ -603,7 +586,7 @@ fn installs_and_relinks_while_saved_are_replayed_before_the_next_invocation() {
     let mut invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
@@ -613,7 +596,7 @@ fn installs_and_relinks_while_saved_are_replayed_before_the_next_invocation() {
         .unwrap()
         .complete(&mut [Value::I64(0)], Ok(0))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(30)]);
     drop(invocation);
     let recording = recorder.finish();
@@ -636,22 +619,19 @@ fn a_recording_refuses_a_heap_changed_while_its_computation_was_saved() {
         .start(
             entry,
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let id = saved_id(invocation);
     // Another run allocates meanwhile.
     vm.run(entry, &args, TraceMask::NONE, None).unwrap();
     let invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
@@ -671,7 +651,7 @@ fn a_recorder_cannot_join_a_computation_it_did_not_see_start() {
     let invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
@@ -753,58 +733,51 @@ fn a_computation_running_a_callback_resumes_only_unobserved() {
         .start(
             FuncRef::new(unit, entry),
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            TurnOptions::default().yield_host_calls(),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     invocation
         .pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
         .unwrap();
-    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
 
     let mut observer = Balanced::default();
     assert!(matches!(
         vm.resume(
             id,
-            InvocationOptions::default().trace(TraceMask::CALL, &mut observer)
+            TurnOptions::default().trace(TraceMask::CALL, &mut observer)
         ),
-        Err(ResumeError::Observed)
+        Err(ComputationError::Observed)
     ));
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned
     );
     let mut request = invocation.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
     request.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(8)]);
 }
 
 #[test]
-fn a_finished_invocation_is_not_saved() {
+fn a_returned_computation_finishes_with_its_values_and_is_not_saved() {
     let (program, entry) = asks();
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let args = [Value::Str("text".into())];
 
-    // Finished: its result is taken instead.
-    let mut invocation = vm
-        .start(entry, &args, InvocationOptions::default())
-        .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    let invocation = invocation.save().unwrap_err();
-    assert!(invocation.result().unwrap().is_ok());
-    drop(invocation);
+    let mut invocation = vm.start(entry, &args, TurnOptions::default()).unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(returned_values(invocation).len(), 1);
+    assert_eq!(vm.heap_stats().saved_computations, 0);
 }
 
 /// `entry()` asks the host to `make` a tuple and returns it; `spin()` returns 4, for the host
@@ -839,12 +812,9 @@ fn a_request_with_staged_host_aggregates_is_not_saved() {
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let mut invocation = vm
-        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .start(entry, &[], TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let staged = invocation
         .pending_host_call()
         .unwrap()
@@ -853,15 +823,14 @@ fn a_request_with_staged_host_aggregates_is_not_saved() {
         .unwrap();
     // Only the host's handle reaches the staged tuple, and it would alias what later runs
     // allocate.
-    let mut invocation = invocation.save().unwrap_err();
+    let mut invocation = invocation.finish().unwrap_err();
     let mut request = invocation.pending_host_call().unwrap();
     assert_eq!(request.context().tuple_len(staged), Ok(1));
     request.complete(&mut [Value::Agg(staged)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    let [Value::Agg(made)] = invocation.take_outputs().unwrap()[..] else {
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    let [Value::Agg(made)] = returned_values(invocation)[..] else {
         panic!("one tuple");
     };
-    drop(invocation);
     assert_eq!(vm.aggregates().tuple_get(made, 0).unwrap(), Value::I64(111));
 }
 
@@ -874,12 +843,9 @@ fn promoted_host_aggregates_survive_saving_and_pin_collection_to_their_computati
     // Garbage below, so a collection would move the promoted tuple.
     vm.aggregates_mut().tuple_new(vec![]).unwrap();
     let mut invocation = vm
-        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .start(entry, &[], TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let staged = {
         let mut request = invocation.pending_host_call().unwrap();
         let staged = request.context().tuple_new(vec![Value::I64(111)]).unwrap();
@@ -890,10 +856,10 @@ fn promoted_host_aggregates_survive_saving_and_pin_collection_to_their_computati
         staged
     };
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned
     );
-    let id = invocation.save().unwrap();
+    let id = saved_id(invocation);
 
     // Another run commits its own tuple meanwhile; nothing aliases.
     let [Value::Agg(other)] = vm.run(entry, &[], TraceMask::NONE, None).unwrap()[..] else {
@@ -906,7 +872,7 @@ fn promoted_host_aggregates_survive_saving_and_pin_collection_to_their_computati
     );
 
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     let mut request = invocation.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
@@ -916,11 +882,10 @@ fn promoted_host_aggregates_survive_saving_and_pin_collection_to_their_computati
         .tuple_new(vec![Value::Agg(staged)])
         .unwrap();
     request.complete(&mut [Value::Agg(wrapped)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    let [Value::Agg(made)] = invocation.take_outputs().unwrap()[..] else {
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    let [Value::Agg(made)] = returned_values(invocation)[..] else {
         panic!("one tuple");
     };
-    drop(invocation);
     let heap = vm.aggregates();
     let Value::Agg(inner) = heap.tuple_get(made, 0).unwrap() else {
         panic!("the promoted tuple");
@@ -948,7 +913,7 @@ fn clearing_the_heap_of_saved_computations_panics_instead_of_aliasing() {
     let fresh = AggHeap::new();
     let previous = core::mem::replace(vm.aggregates_mut(), fresh);
     let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        drop(vm.resume(id, InvocationOptions::default()));
+        drop(vm.resume(id, TurnOptions::default()));
     }));
     assert!(resumed.is_err());
     *vm.aggregates_mut() = previous;
@@ -967,17 +932,17 @@ fn another_vms_id_is_refused() {
     let from_a = save_asking(&mut a, entry_a, "a");
     let from_b = save_asking(&mut b, entry_b, "b");
     assert!(matches!(
-        b.resume(from_a, InvocationOptions::default()),
-        Err(ResumeError::ForeignVm)
+        b.resume(from_a, TurnOptions::default()),
+        Err(ComputationError::ForeignVm)
     ));
     // The ID's VM checks come before the observer check.
     let mut sink = Silent;
     assert!(matches!(
         b.resume(
             from_a,
-            InvocationOptions::default().trace(TraceMask::RUN, &mut sink)
+            TurnOptions::default().trace(TraceMask::RUN, &mut sink)
         ),
-        Err(ResumeError::ForeignVm)
+        Err(ComputationError::ForeignVm)
     ));
     assert_eq!(finish_asking(&mut b, from_b, 2), ("b".into(), 2));
     assert_eq!(finish_asking(&mut a, from_a, 1), ("a".into(), 1));
@@ -1009,23 +974,23 @@ fn a_computation_saved_at_a_yielded_suspension_is_answered_later() {
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let mut invocation = vm
-        .start(entry, &[], InvocationOptions::default().yield_suspensions())
+        .start(entry, &[], TurnOptions::default().yield_suspensions())
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHandler
     );
-    let id = invocation.save().unwrap();
+    let id = saved_id(invocation);
     let (asking, ask) = asks();
     let ask = FuncRef::new(vm.install(asking).unwrap(), ask);
     vm.run(ask, &[Value::Str("other".into())], TraceMask::NONE, None)
         .unwrap();
 
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_suspensions())
+        .resume(id, TurnOptions::default().yield_suspensions())
         .unwrap();
     assert_eq!(
-        invocation.resume(0).unwrap(),
+        invocation.drive(0).unwrap(),
         RunStatus::AwaitingHandler,
         "still waiting"
     );
@@ -1034,7 +999,7 @@ fn a_computation_saved_at_a_yielded_suspension_is_answered_later() {
         .unwrap()
         .resume(vec![Value::I64(41)])
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(42)]);
 }
 
@@ -1076,16 +1041,16 @@ fn answer_once(
     answer: i64,
 ) -> Result<Value, ComputationId> {
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     invocation
         .pending_host_call()
         .unwrap()
         .complete(&mut [Value::I64(answer)], Ok(0))
         .unwrap();
-    match invocation.resume(u64::MAX).unwrap() {
-        RunStatus::AwaitingHost => Err(invocation.save().unwrap()),
-        RunStatus::Complete => Ok(invocation.take_outputs().unwrap().remove(0)),
+    match invocation.drive(u64::MAX).unwrap() {
+        RunStatus::AwaitingHost => Err(saved_id(invocation)),
+        RunStatus::Complete => Ok(returned_values(invocation).remove(0)),
         status => panic!("unexpected {status:?}"),
     }
 }
@@ -1098,17 +1063,10 @@ fn interleaved_computations_allocate_across_leases_and_collections() {
     let start = |vm: &mut Vm<Answers>, text: &str| {
         let args = [Value::Str(text.into())];
         let mut invocation = vm
-            .start(
-                entry,
-                &args,
-                InvocationOptions::default().yield_host_calls(),
-            )
+            .start(entry, &args, TurnOptions::default().yield_host_calls())
             .unwrap();
-        assert_eq!(
-            invocation.resume(u64::MAX).unwrap(),
-            RunStatus::AwaitingHost
-        );
-        invocation.save().unwrap()
+        assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        saved_id(invocation)
     };
     let a = start(&mut vm, "a");
     let b = start(&mut vm, "b");
@@ -1333,8 +1291,8 @@ fn drive_rotating(
     ];
     let mut vm = Vm::new(Answers, Limits::default());
     let unit = vm.install(Arc::clone(program)).unwrap();
-    fn options<'a>() -> InvocationOptions<'a> {
-        InvocationOptions::default()
+    fn options<'a>() -> TurnOptions<'a> {
+        TurnOptions::default()
             .yield_host_calls()
             .yield_suspensions()
     }
@@ -1361,13 +1319,13 @@ fn drive_rotating(
             Some(id) => vm.resume(id, options().trace(mask, &mut sink)).unwrap(),
         };
         let quantum = if rotate { 1 } else { u64::MAX };
-        let status = match invocation.resume(quantum) {
+        let status = match invocation.drive(quantum) {
             Ok(status) => status,
             Err(error) => return Err(error.trap),
         };
         match status {
             RunStatus::Suspended => {}
-            RunStatus::Complete => return Ok(invocation.take_outputs().unwrap()),
+            RunStatus::Complete => return Ok(returned_values(invocation)),
             RunStatus::AwaitingHandler => invocation
                 .pending_suspension()
                 .unwrap()
@@ -1397,7 +1355,7 @@ fn drive_rotating(
             }
             status => panic!("unexpected {status:?}"),
         }
-        saved = Some(invocation.save().unwrap());
+        saved = Some(saved_id(invocation));
     }
     unreachable!("the computation ends")
 }
@@ -1445,18 +1403,18 @@ fn a_trap_and_a_cancellation_after_an_observed_resume_close_what_was_attached() 
     let mut vm = Vm::new(Answers, limits);
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     for trap in [true, false] {
-        let mut invocation = vm.start(entry, &[], InvocationOptions::default()).unwrap();
-        assert_eq!(invocation.resume(4).unwrap(), RunStatus::Suspended);
-        let id = invocation.save().unwrap();
+        let mut invocation = vm.start(entry, &[], TurnOptions::default()).unwrap();
+        assert_eq!(invocation.drive(4).unwrap(), RunStatus::Suspended);
+        let id = saved_id(invocation);
         let mut sink = Strict::default();
         let mut invocation = vm
-            .resume(id, InvocationOptions::default().trace(mask, &mut sink))
+            .resume(id, TurnOptions::default().trace(mask, &mut sink))
             .unwrap();
         if trap {
-            let error = invocation.resume(u64::MAX).unwrap_err();
+            let error = invocation.drive(u64::MAX).unwrap_err();
             assert!(matches!(error.trap, Trap::FuelExceeded), "{error:?}");
         } else {
-            assert_eq!(invocation.resume(2).unwrap(), RunStatus::Suspended);
+            assert_eq!(invocation.drive(2).unwrap(), RunStatus::Suspended);
         }
         drop(invocation);
         assert_eq!(sink.done, Some("end"), "the run ended, balanced");
@@ -1480,17 +1438,14 @@ fn release_is_the_last_event_even_when_it_panics() {
             .start(
                 entry,
                 &args,
-                InvocationOptions::default().yield_host_calls().trace(
+                TurnOptions::default().yield_host_calls().trace(
                     TraceMask::RUN | TraceMask::CALL | TraceMask::HOST,
                     &mut sink,
                 ),
             )
             .unwrap();
-        assert_eq!(
-            invocation.resume(u64::MAX).unwrap(),
-            RunStatus::AwaitingHost
-        );
-        invocation.save().map(drop).map_err(drop)
+        assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        invocation.finish().map(drop).map_err(drop)
     }));
     // The panic cancelled the computation instead, without reporting to the released sink.
     assert!(saved.is_err());
@@ -1564,20 +1519,20 @@ fn replay_saves_where_the_original_saved_at_a_wait_and_resumes_under_its_limits(
             .start(
                 entry,
                 &[],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .yield_suspensions()
                     .trace(mask, &mut recorder),
             )
             .unwrap();
-        let waiting = invocation.resume(u64::MAX).unwrap();
+        let waiting = invocation.drive(u64::MAX).unwrap();
         assert_ne!(waiting, RunStatus::Suspended);
-        let id = invocation.save().ok().unwrap();
+        let id = saved_id(invocation);
         vm.set_limits(Limits::default());
         let mut invocation = vm
             .resume(
                 id,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
                     .yield_suspensions()
                     .trace(mask, &mut recorder),
@@ -1596,10 +1551,10 @@ fn replay_saves_where_the_original_saved_at_a_wait_and_resumes_under_its_limits(
                 .complete(&mut [Value::I64(10)], Ok(0))
                 .unwrap();
         }
-        assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
         assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(30)]);
         drop(invocation);
-        // Without saving at the wait, replay would run out of the first invocation's fuel.
+        // Without saving at the wait, replay would run out of the first turn's fuel.
         assert_eq!(replayed(recorder), 30);
     }
 }
@@ -1621,15 +1576,15 @@ fn replay_repeats_every_save_of_a_computation_saved_many_times() {
         .start(
             entry,
             &[],
-            InvocationOptions::default().trace(mask, &mut recorder),
+            TurnOptions::default().trace(mask, &mut recorder),
         )
         .unwrap();
     let mut saves = 0;
-    while invocation.resume(4).unwrap() == RunStatus::Suspended {
-        let id = invocation.save().ok().unwrap();
+    while invocation.drive(4).unwrap() == RunStatus::Suspended {
+        let id = saved_id(invocation);
         saves += 1;
         invocation = vm
-            .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+            .resume(id, TurnOptions::default().trace(mask, &mut recorder))
             .unwrap();
     }
     drop(invocation);
@@ -1676,14 +1631,14 @@ fn units_installed_and_relinked_while_saved_replay_with_their_links() {
         .start(
             FuncRef::new(unit, entry),
             &args,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
     // Saved before its first instruction.
-    assert_eq!(invocation.resume(0).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().ok().unwrap();
+    assert_eq!(invocation.drive(0).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
     let forward = vm.install(forwards(10)).unwrap();
     let hundred = vm.install(forwards(100)).unwrap();
     vm.relink(forward, LinkId(0), FuncRef::new(hundred, FuncId(0)))
@@ -1693,21 +1648,18 @@ fn units_installed_and_relinked_while_saved_replay_with_their_links() {
     let mut invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     invocation
         .pending_host_call()
         .unwrap()
         .complete(&mut [Value::I64(0)], Ok(0))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(300)]);
     drop(invocation);
     assert_eq!(replayed(recorder), 300);
@@ -1725,19 +1677,19 @@ fn tags_defined_while_saved_replay_before_the_next_invocation() {
             .start(
                 entry,
                 &[],
-                InvocationOptions::default().trace(mask, &mut recorder),
+                TurnOptions::default().trace(mask, &mut recorder),
             )
             .unwrap();
-        assert_eq!(invocation.resume(3).unwrap(), RunStatus::Suspended);
-        let id = invocation.save().ok().unwrap();
+        assert_eq!(invocation.drive(3).unwrap(), RunStatus::Suspended);
+        let id = saved_id(invocation);
         if install_first {
             vm.install(forwards(1)).unwrap();
         }
         vm.define_tag("later", &[]).unwrap();
         let mut invocation = vm
-            .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+            .resume(id, TurnOptions::default().trace(mask, &mut recorder))
             .unwrap();
-        assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
         drop(invocation);
         assert_eq!(replayed(recorder), 20);
     }
@@ -1754,23 +1706,23 @@ fn an_invocation_run_without_the_recorder_makes_the_capture_incomplete() {
         .start(
             entry,
             &[],
-            InvocationOptions::default().trace(mask, &mut recorder),
+            TurnOptions::default().trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(invocation.resume(6).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().ok().unwrap();
-    // Another recorder, or none, runs the next invocation.
+    assert_eq!(invocation.drive(6).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
+    // Another recorder, or none, runs the next turn.
     let mut stranger = Recorder::new(program, RecordLimits::default());
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().trace(mask, &mut stranger))
+        .resume(id, TurnOptions::default().trace(mask, &mut stranger))
         .unwrap();
-    assert_eq!(invocation.resume(6).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().ok().unwrap();
+    assert_eq!(invocation.drive(6).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
     assert_eq!(stranger.finish().status(), Err(&CaptureFault::MissingEntry));
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+        .resume(id, TurnOptions::default().trace(mask, &mut recorder))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(invocation);
     assert_eq!(recorder.finish().status(), Err(&CaptureFault::Unrecorded));
 }
@@ -1802,30 +1754,27 @@ fn a_recorder_handed_another_computations_resume_is_incomplete() {
         .start(
             entry,
             &[Value::I64(3)],
-            InvocationOptions::default().trace(mask, &mut recorder),
+            TurnOptions::default().trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(first.resume(1).unwrap(), RunStatus::Suspended);
-    let first = first.save().ok().unwrap();
+    assert_eq!(first.drive(1).unwrap(), RunStatus::Suspended);
+    let first = saved_id(first);
     let mut second = vm
-        .start(entry, &[Value::I64(4)], InvocationOptions::default())
+        .start(entry, &[Value::I64(4)], TurnOptions::default())
         .unwrap();
-    assert_eq!(second.resume(1).unwrap(), RunStatus::Suspended);
-    let second = second.save().ok().unwrap();
+    assert_eq!(second.drive(1).unwrap(), RunStatus::Suspended);
+    let second = saved_id(second);
 
     // The recorded computation finishes unobserved, without allocating; the other one, whose
-    // invocation count matches, resumes with the recorder.
-    let mut invocation = vm.resume(first, InvocationOptions::default()).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    // turn count matches, resumes with the recorder.
+    let mut invocation = vm.resume(first, TurnOptions::default()).unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(6)]);
     drop(invocation);
     let mut invocation = vm
-        .resume(
-            second,
-            InvocationOptions::default().trace(mask, &mut recorder),
-        )
+        .resume(second, TurnOptions::default().trace(mask, &mut recorder))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(8)]);
     drop(invocation);
     assert_eq!(recorder.finish().status(), Err(&CaptureFault::MissingEntry));
@@ -1842,35 +1791,32 @@ fn a_save_inside_a_callback_resumed_unobserved_leaves_the_recording_incomplete()
         .start(
             FuncRef::new(unit, entry),
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     invocation
         .pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
         .unwrap();
-    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().ok().unwrap();
+    assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
     // A running callback is resumed only unobserved.
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned
     );
-    let id = invocation.save().ok().unwrap();
+    let id = saved_id(invocation);
     let mut invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
@@ -1878,7 +1824,7 @@ fn a_save_inside_a_callback_resumed_unobserved_leaves_the_recording_incomplete()
     let mut request = invocation.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
     request.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(invocation);
     assert_eq!(recorder.finish().status(), Err(&CaptureFault::Unrecorded));
 }
@@ -1901,10 +1847,10 @@ fn a_computation_saved_where_its_callback_returned_replays_under_tight_fuel() {
                 .start(
                     FuncRef::new(unit, entry),
                     &[],
-                    InvocationOptions::default().yield_host_calls(),
+                    TurnOptions::default().yield_host_calls(),
                 )
                 .unwrap();
-            if invocation.resume(u64::MAX).ok() != Some(RunStatus::AwaitingHost) {
+            if invocation.drive(u64::MAX).ok() != Some(RunStatus::AwaitingHost) {
                 return false;
             }
             invocation
@@ -1912,7 +1858,7 @@ fn a_computation_saved_where_its_callback_returned_replays_under_tight_fuel() {
                 .unwrap()
                 .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
                 .is_ok()
-                && invocation.resume(u64::MAX).ok() == Some(RunStatus::CallbackReturned)
+                && invocation.drive(u64::MAX).ok() == Some(RunStatus::CallbackReturned)
         })
         .expect("some fuel reaches the return");
     let mut vm = Vm::new(
@@ -1929,30 +1875,27 @@ fn a_computation_saved_where_its_callback_returned_replays_under_tight_fuel() {
         .start(
             FuncRef::new(unit, entry),
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     invocation
         .pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, spin)), vec![])
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned
     );
-    let id = invocation.save().ok().unwrap();
+    let id = saved_id(invocation);
     vm.set_limits(Limits::default());
     let mut invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
@@ -1960,7 +1903,7 @@ fn a_computation_saved_where_its_callback_returned_replays_under_tight_fuel() {
     let mut request = invocation.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
     request.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(8)]);
     drop(invocation);
     assert_eq!(replayed(recorder), 8);
@@ -2040,16 +1983,13 @@ fn shapes_interned_while_saved_replay_the_same_structs() {
         .start(
             FuncRef::new(unit, entry),
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    let id = invocation.save().ok().unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let id = saved_id(invocation);
     // The host interns a shape of its own, then a unit whose struct shape is new is linked in.
     vm.aggregates_mut()
         .intern_shape(AggShape::Struct(StructTypeDef {
@@ -2063,7 +2003,7 @@ fn shapes_interned_while_saved_replay_the_same_structs() {
     let mut invocation = vm
         .resume(
             id,
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
@@ -2073,9 +2013,8 @@ fn shapes_interned_while_saved_replay_the_same_structs() {
         .unwrap()
         .complete(&mut [Value::I64(7)], Ok(0))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    let live = invocation.take_outputs().unwrap();
-    drop(invocation);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    let live = returned_values(invocation);
     let live = struct_of(vm.aggregates(), &live[0]);
     assert_eq!(live.1, [Value::I64(7), Value::I64(7)]);
 
@@ -2098,9 +2037,9 @@ fn a_spawned_computation_waits_before_its_first_instruction_until_resumed() {
     let id = vm.spawn(entry, vec![]).unwrap();
     assert_eq!(vm.heap_stats().saved_computations, 1);
     assert_eq!(vm.heap_stats().saved_frames, 1, "its entry frame");
-    let mut invocation = vm.resume(id, InvocationOptions::default()).unwrap();
+    let mut invocation = vm.resume(id, TurnOptions::default()).unwrap();
     assert_eq!(invocation.work().fuel, 0, "nothing ran before");
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(20)]);
     drop(invocation);
     let error = vm.spawn(entry, vec![Value::I64(1)]).unwrap_err();
@@ -2117,10 +2056,13 @@ fn discarding_a_saved_computation_releases_its_frames_and_aggregates() {
     let discarded = save_asking(&mut vm, entry, "discarded");
     assert_eq!(vm.aggregates().len_u32(), 2);
     vm.discard(discarded).unwrap();
-    assert!(matches!(vm.discard(discarded), Err(ResumeError::Unknown)));
     assert!(matches!(
-        vm.resume(discarded, InvocationOptions::default()),
-        Err(ResumeError::Unknown)
+        vm.discard(discarded),
+        Err(ComputationError::Unknown)
+    ));
+    assert!(matches!(
+        vm.resume(discarded, TurnOptions::default()),
+        Err(ComputationError::Unknown)
     ));
     assert_eq!(vm.heap_stats().saved_computations, 1);
     assert_eq!(vm.heap_stats().saved_frames, 1);
@@ -2145,17 +2087,10 @@ fn the_vm_keeps_at_most_its_limit_of_saved_computations() {
     save_asking(&mut vm, entry, "second");
     let args = [Value::Str("third".into())];
     let mut invocation = vm
-        .start(
-            entry,
-            &args,
-            InvocationOptions::default().yield_host_calls(),
-        )
+        .start(entry, &args, TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    let invocation = invocation.save().unwrap_err();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let invocation = invocation.finish().unwrap_err();
     drop(invocation);
     let error = vm.spawn(entry, args.to_vec()).unwrap_err();
     assert!(
@@ -2176,13 +2111,10 @@ fn saved_frames_count_against_the_vms_frame_limit() {
     let mut vm = Vm::new(Answers, limits);
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let mut invocation = vm
-        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .start(entry, &[], TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
-    let saved = invocation.save().unwrap();
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let saved = saved_id(invocation);
     assert_eq!(vm.heap_stats().saved_frames, 2);
     // Its entry frame fits beside the two saved ones; the call into `mid` does not.
     let error = vm.run(entry, &[], TraceMask::NONE, None).unwrap_err();
@@ -2214,10 +2146,10 @@ fn a_frame_refused_for_another_computations_frames_replays_the_refusal() {
     let mut vm = Vm::new(Answers, limits);
     let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
     let mut waiting = vm
-        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .start(entry, &[], TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(waiting.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-    waiting.save().ok().unwrap();
+    assert_eq!(waiting.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    saved_id(waiting);
 
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
     let mask = recorder.mask();
@@ -2225,12 +2157,12 @@ fn a_frame_refused_for_another_computations_frames_replays_the_refusal() {
         .start(
             entry,
             &[],
-            InvocationOptions::default()
+            TurnOptions::default()
                 .yield_host_calls()
                 .trace(mask, &mut recorder),
         )
         .unwrap();
-    let error = invocation.resume(u64::MAX).unwrap_err();
+    let error = invocation.drive(u64::MAX).unwrap_err();
     assert!(
         matches!(
             error.trap,
@@ -2270,10 +2202,10 @@ fn a_spawned_computation_is_recorded_from_its_first_resume_and_replays() {
     let mask = recorder.mask();
     let result = loop {
         let mut invocation = vm
-            .resume(id, InvocationOptions::default().trace(mask, &mut recorder))
+            .resume(id, TurnOptions::default().trace(mask, &mut recorder))
             .unwrap();
-        match invocation.resume(7).unwrap() {
-            RunStatus::Suspended => id = invocation.save().ok().unwrap(),
+        match invocation.drive(7).unwrap() {
+            RunStatus::Suspended => id = saved_id(invocation),
             RunStatus::Complete => break invocation.result().unwrap().unwrap().to_vec(),
             status => panic!("unexpected {status:?}"),
         }
@@ -2306,7 +2238,7 @@ fn an_argument_naming_no_aggregate_is_refused_at_entry() {
         "{error:?}"
     );
     let error = vm
-        .start(keeps, &dangling, InvocationOptions::default())
+        .start(keeps, &dangling, TurnOptions::default())
         .err()
         .unwrap();
     assert!(
@@ -2324,16 +2256,13 @@ fn a_request_id_finds_its_request_after_saving_and_refuses_once_answered() {
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let args = [Value::Str("text".into())];
-    fn options<'a>() -> InvocationOptions<'a> {
-        InvocationOptions::default().yield_host_calls()
+    fn options<'a>() -> TurnOptions<'a> {
+        TurnOptions::default().yield_host_calls()
     }
     let mut invocation = vm.start(entry, &args, options()).unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let first = invocation.pending_host_call().unwrap().id();
-    let id = invocation.save().unwrap();
+    let id = saved_id(invocation);
 
     let mut invocation = vm.resume(id, options()).unwrap();
     assert_eq!(
@@ -2346,10 +2275,7 @@ fn a_request_id_finds_its_request_after_saving_and_refuses_once_answered() {
         .unwrap()
         .complete(&mut [Value::I64(1)], Ok(0))
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     // The same instruction admitted again is a new request.
     assert!(matches!(
         invocation.host_request(first),
@@ -2362,7 +2288,7 @@ fn a_request_id_finds_its_request_after_saving_and_refuses_once_answered() {
         .unwrap()
         .complete(&mut [Value::I64(2)], Ok(0))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert!(matches!(
         invocation.host_request(second),
         Err(RequestError::NotWaiting)
@@ -2378,15 +2304,15 @@ fn a_request_id_is_refused_by_other_computations_and_for_the_other_kind() {
     let suspends = FuncRef::new(vm.install(suspending).unwrap(), suspends);
     let one = save_asking(&mut vm, entry, "one");
     let two = save_asking(&mut vm, entry, "two");
-    fn options<'a>() -> InvocationOptions<'a> {
-        InvocationOptions::default()
+    fn options<'a>() -> TurnOptions<'a> {
+        TurnOptions::default()
             .yield_host_calls()
             .yield_suspensions()
     }
 
     let mut invocation = vm.resume(one, options()).unwrap();
     let request = invocation.pending_host_call().unwrap().id();
-    let one = invocation.save().unwrap();
+    let one = saved_id(invocation);
     let mut invocation = vm.resume(two, options()).unwrap();
     assert!(matches!(
         invocation.host_request(request),
@@ -2408,7 +2334,7 @@ fn a_request_id_is_refused_by_other_computations_and_for_the_other_kind() {
 
     let mut invocation = vm.start(suspends, &[], options()).unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHandler
     );
     let suspension = invocation.pending_suspension().unwrap().id();
@@ -2416,7 +2342,7 @@ fn a_request_id_is_refused_by_other_computations_and_for_the_other_kind() {
         invocation.host_request(suspension),
         Err(RequestError::OtherKind)
     ));
-    let waiting = invocation.save().unwrap();
+    let waiting = saved_id(invocation);
     let mut invocation = vm.resume(waiting, options()).unwrap();
     invocation
         .suspension(suspension)
@@ -2427,7 +2353,7 @@ fn a_request_id_is_refused_by_other_computations_and_for_the_other_kind() {
         invocation.suspension(suspension),
         Err(RequestError::NotWaiting)
     ));
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(42)]);
     drop(invocation);
     assert_eq!(finish_asking(&mut vm, one, 7), ("one".into(), 7));
@@ -2438,14 +2364,11 @@ fn a_request_a_callback_returned_to_keeps_its_id() {
     let (program, entry, spin) = calls_back();
     let mut vm = Vm::new(Answers, Limits::default());
     let unit = vm.install(program).unwrap();
-    fn options<'a>() -> InvocationOptions<'a> {
-        InvocationOptions::default().yield_host_calls()
+    fn options<'a>() -> TurnOptions<'a> {
+        TurnOptions::default().yield_host_calls()
     }
     let mut invocation = vm.start(FuncRef::new(unit, entry), &[], options()).unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let request = invocation.pending_host_call().unwrap().id();
     invocation
         .host_request(request)
@@ -2459,24 +2382,24 @@ fn a_request_a_callback_returned_to_keeps_its_id() {
         ),
         "it waits for its callback"
     );
-    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-    let id = invocation.save().unwrap();
+    assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+    let id = saved_id(invocation);
     let mut invocation = vm.resume(id, options()).unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned
     );
     let mut pending = invocation.host_request(request).unwrap();
     assert_eq!(pending.take_callback_results().unwrap(), [Value::I64(4)]);
     pending.complete(&mut [Value::I64(8)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
 }
 
 #[test]
 fn ids_from_a_dropped_vm_name_nothing_in_a_later_one() {
     let (program, entry) = asks();
-    fn options<'a>() -> InvocationOptions<'a> {
-        InvocationOptions::default().yield_host_calls()
+    fn options<'a>() -> TurnOptions<'a> {
+        TurnOptions::default().yield_host_calls()
     }
     let (old_computation, old_request) = {
         let mut vm = Vm::new(Answers, Limits::default());
@@ -2484,7 +2407,7 @@ fn ids_from_a_dropped_vm_name_nothing_in_a_later_one() {
         let id = save_asking(&mut vm, entry, "old");
         let mut invocation = vm.resume(id, options()).unwrap();
         let request = invocation.pending_host_call().unwrap().id();
-        (invocation.save().ok().unwrap(), request)
+        (saved_id(invocation), request)
     };
     // The same program, numbered and admitted the same way, in a VM made after the first one
     // was dropped.
@@ -2493,15 +2416,15 @@ fn ids_from_a_dropped_vm_name_nothing_in_a_later_one() {
     let id = save_asking(&mut vm, entry, "new");
     assert!(matches!(
         vm.discard(old_computation),
-        Err(ResumeError::ForeignVm)
+        Err(ComputationError::ForeignVm)
     ));
     assert!(matches!(
         vm.inspect(old_computation),
-        Err(ResumeError::ForeignVm)
+        Err(ComputationError::ForeignVm)
     ));
     assert!(matches!(
         vm.resume(old_computation, options()),
-        Err(ResumeError::ForeignVm)
+        Err(ComputationError::ForeignVm)
     ));
     let mut invocation = vm.resume(id, options()).unwrap();
     assert!(matches!(
@@ -2540,27 +2463,21 @@ fn request_ids_of_a_request_and_its_callbacks_request_survive_a_save() {
     let (program, entry, inner) = asks_from_callbacks();
     let mut vm = Vm::new(Answers, Limits::default());
     let unit = vm.install(program).unwrap();
-    fn options<'a>() -> InvocationOptions<'a> {
-        InvocationOptions::default().yield_host_calls()
+    fn options<'a>() -> TurnOptions<'a> {
+        TurnOptions::default().yield_host_calls()
     }
     let mut invocation = vm.start(FuncRef::new(unit, entry), &[], options()).unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let outer = invocation.pending_host_call().unwrap().id();
     invocation
         .host_request(outer)
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, inner)), vec![])
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let nested = invocation.pending_host_call().unwrap().id();
     assert_ne!(nested, outer);
-    let id = invocation.save().ok().unwrap();
+    let id = saved_id(invocation);
 
     let mut invocation = vm.resume(id, options()).unwrap();
     assert!(matches!(
@@ -2573,10 +2490,10 @@ fn request_ids_of_a_request_and_its_callbacks_request_survive_a_save() {
         .complete(&mut [Value::I64(4)], Ok(0))
         .unwrap();
     assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
+        invocation.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned
     );
-    let id = invocation.save().ok().unwrap();
+    let id = saved_id(invocation);
     let mut invocation = vm.resume(id, options()).unwrap();
     assert!(matches!(
         invocation.host_request(nested),
@@ -2585,7 +2502,7 @@ fn request_ids_of_a_request_and_its_callbacks_request_survive_a_save() {
     let mut request = invocation.host_request(outer).unwrap();
     assert_eq!(request.take_callback_results().unwrap(), [Value::I64(4)]);
     request.complete(&mut [Value::I64(9)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(9)]);
 }
 
@@ -2595,20 +2512,17 @@ fn a_saved_computation_is_inspected_as_it_will_resume() {
     let mut vm = Vm::new(Answers, Limits::default());
     let entry = FuncRef::new(vm.install(program).unwrap(), entry);
     let mut invocation = vm
-        .start(entry, &[], InvocationOptions::default().yield_host_calls())
+        .start(entry, &[], TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let live: Vec<_> = invocation.inspect().frames().collect();
-    let id = invocation.save().unwrap();
+    let id = saved_id(invocation);
 
     let saved: Vec<_> = vm.inspect(id).unwrap().frames().collect();
     assert_eq!(saved, live, "same frames, locations and activation IDs");
     assert!(saved.iter().all(|frame| frame.waiting_for_return));
     let mut invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     let resumed: Vec<_> = invocation.inspect().frames().collect();
     assert_eq!(resumed, saved);
@@ -2617,9 +2531,9 @@ fn a_saved_computation_is_inspected_as_it_will_resume() {
         .unwrap()
         .complete(&mut [Value::I64(0)], Ok(0))
         .unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(invocation);
-    assert!(matches!(vm.inspect(id), Err(ResumeError::Unknown)));
+    assert!(matches!(vm.inspect(id), Err(ComputationError::Unknown)));
 }
 
 #[test]
@@ -2637,16 +2551,9 @@ fn a_waiting_request_inspects_another_saved_computation() {
 
     let args = [Value::Str("mine".into())];
     let mut invocation = vm
-        .start(
-            entry,
-            &args,
-            InvocationOptions::default().yield_host_calls(),
-        )
+        .start(entry, &args, TurnOptions::default().yield_host_calls())
         .unwrap();
-    assert_eq!(
-        invocation.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost
-    );
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let request = invocation.pending_host_call().unwrap();
     let mut inspection = request.inspect_saved(other).unwrap();
     let frame = inspection.frames().next().unwrap();
@@ -2662,14 +2569,14 @@ fn a_waiting_request_inspects_another_saved_computation() {
     );
     assert!(matches!(
         request.inspect_saved(gone),
-        Err(ResumeError::Unknown)
+        Err(ComputationError::Unknown)
     ));
     assert!(matches!(
         request.inspect_saved(foreign),
-        Err(ResumeError::ForeignVm)
+        Err(ComputationError::ForeignVm)
     ));
     request.complete(&mut [Value::I64(3)], Ok(0)).unwrap();
-    assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert!(invocation.inspect_saved(other).is_ok());
     drop(invocation);
     assert_eq!(finish_asking(&mut vm, other, 4), ("other".into(), 4));
@@ -2684,7 +2591,7 @@ fn a_spawned_computation_inspects_the_same_before_and_after_its_first_resume() {
     let before: Vec<_> = vm.inspect(id).unwrap().frames().collect();
     assert_eq!(before.len(), 1, "its entry frame");
     let invocation = vm
-        .resume(id, InvocationOptions::default().yield_host_calls())
+        .resume(id, TurnOptions::default().yield_host_calls())
         .unwrap();
     let after: Vec<_> = invocation.inspect().frames().collect();
     assert_eq!(after, before, "same frame, location and activation ID");
@@ -2720,4 +2627,229 @@ fn a_saved_computation_is_inspected_where_a_collection_moved_its_aggregates() {
         Value::Str("moved".into())
     );
     assert_eq!(finish_asking(&mut vm, id, 2), ("moved".into(), 2));
+}
+
+/// Finishes `turn`, whose computation must still be running or waiting, and takes its ID.
+#[track_caller]
+fn saved_id<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> ComputationId {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Saved(id)) => id,
+        other => panic!("the computation was not saved: {other:?}"),
+    }
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
+}
+
+/// `entry()` suspends `need` twice and returns the sum of the answers.
+fn suspends_twice() -> (Arc<VerifiedProgram>, FuncId) {
+    let mut b = ProgramBuilder::new();
+    let need = b
+        .declare_tag_with_results("need", &[], &[ValueType::I64.into()])
+        .unwrap();
+    let entry = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let mut a = b.function_asm(entry).unwrap();
+    let (first, second) = (
+        a.alloc_register(ValueType::I64),
+        a.alloc_register(ValueType::I64),
+    );
+    a.suspend(Reg::EFFECT, need, Reg::EFFECT, &[], &[first])
+        .suspend(Reg::EFFECT, need, Reg::EFFECT, &[], &[second])
+        .i64_add(first, first, second)
+        .ret(Reg::EFFECT, &[first]);
+    b.define_function(entry, a).unwrap();
+    (Arc::new(b.build_verified().unwrap()), entry)
+}
+
+#[test]
+fn replay_yields_suspensions_only_in_the_turns_that_yielded_them() {
+    let (program, entry) = suspends_twice();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut turn = vm
+        .start(
+            entry,
+            &[],
+            TurnOptions::default()
+                .yield_suspensions()
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(turn.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    turn.pending_suspension()
+        .unwrap()
+        .resume(vec![Value::I64(1)])
+        .unwrap();
+    let id = saved_id(turn);
+    // The next turn does not yield suspensions, so the second one traps.
+    let mut turn = vm
+        .resume(id, TurnOptions::default().trace(mask, &mut recorder))
+        .unwrap();
+    let error = turn.drive(u64::MAX).unwrap_err();
+    assert!(
+        matches!(error.trap, Trap::UnhandledSuspension { .. }),
+        "{error:?}"
+    );
+    drop(turn);
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()));
+    let outcome = recording.replay();
+    let Ok(ReplayOutcome::Trapped(replayed)) = outcome else {
+        panic!("replay traps where the original did: {outcome:?}");
+    };
+    assert!(matches!(replayed.trap, Trap::UnhandledSuspension { .. }));
+    assert_eq!((replayed.func, replayed.pc), (error.func, error.pc));
+}
+
+#[test]
+fn a_turns_host_call_allowance_replaces_the_vms_for_that_turn_only() {
+    let (program, entry) = asks_twice();
+    let args = [Value::Str("text".into())];
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut one_call = vm.limits().allowance();
+    one_call.host_calls = 1;
+    let mut turn = vm
+        .start(entry, &args, TurnOptions::default().allowance(one_call))
+        .unwrap();
+    let error = turn.drive(u64::MAX).unwrap_err();
+    assert!(
+        matches!(error.trap, Trap::HostCallLimitExceeded),
+        "{error:?}"
+    );
+    drop(turn);
+    // A later run has the VM's own limits again.
+    vm.run(entry, &args, TraceMask::NONE, None).unwrap();
+
+    // An allowance can also exceed the VM's limits.
+    let mut vm = Vm::new(
+        Answers,
+        Limits {
+            max_host_calls: 1,
+            ..Limits::default()
+        },
+    );
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry.func);
+    let mut two_calls = vm.limits().allowance();
+    two_calls.host_calls = 2;
+    let mut turn = vm
+        .start(entry, &args, TurnOptions::default().allowance(two_calls))
+        .unwrap();
+    assert_eq!(turn.drive(u64::MAX).unwrap(), RunStatus::Complete);
+}
+
+#[test]
+fn a_spawned_computations_first_turn_runs_under_its_allowance() {
+    let (program, entry) = counts();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let id = vm.spawn(entry, vec![]).unwrap();
+    let mut five = vm.limits().allowance();
+    five.fuel = 5;
+    let mut turn = vm
+        .resume(id, TurnOptions::default().allowance(five))
+        .unwrap();
+    let error = turn.drive(u64::MAX).unwrap_err();
+    assert!(matches!(error.trap, Trap::FuelExceeded), "{error:?}");
+    assert_eq!(turn.work().fuel, 5);
+}
+
+#[test]
+fn each_turn_runs_under_its_own_allowance_and_replays_under_it() {
+    let (program, entry) = counts();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(Arc::clone(&program)).unwrap(), entry);
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let mask = recorder.mask();
+    let mut ten = vm.limits().allowance();
+    ten.fuel = 10;
+    let mut turn = vm
+        .start(
+            entry,
+            &[],
+            TurnOptions::default()
+                .allowance(ten)
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    assert_eq!(turn.drive(5).unwrap(), RunStatus::Suspended);
+    let id = saved_id(turn);
+    let mut three = vm.limits().allowance();
+    three.fuel = 3;
+    let mut turn = vm
+        .resume(
+            id,
+            TurnOptions::default()
+                .allowance(three)
+                .trace(mask, &mut recorder),
+        )
+        .unwrap();
+    let error = turn.drive(u64::MAX).unwrap_err();
+    assert!(matches!(error.trap, Trap::FuelExceeded), "{error:?}");
+    assert_eq!(turn.work().fuel, 3);
+    drop(turn);
+    let recording = recorder.finish();
+    assert_eq!(recording.status(), Ok(()));
+    let outcome = recording.replay();
+    let Ok(ReplayOutcome::Trapped(replayed)) = outcome else {
+        panic!("replay traps under the same allowances: {outcome:?}");
+    };
+    assert!(matches!(replayed.trap, Trap::FuelExceeded));
+    assert_eq!((replayed.func, replayed.pc), (error.func, error.pc));
+}
+
+/// Counts what a trace observer receives, for checking that nothing reached it.
+#[derive(Default)]
+struct Counted {
+    events: usize,
+    releases: usize,
+}
+impl TraceSink for Counted {
+    fn values(&mut self, _: &Program, _: execution_tape::trace::ValueEvent<'_>) {
+        self.events += 1;
+    }
+    fn release(&mut self, _: &Program) {
+        self.releases += 1;
+    }
+}
+
+#[test]
+fn a_refused_finish_keeps_the_turns_work_request_and_observer() {
+    let (program, entry, _) = makes();
+    let mut vm = Vm::new(Answers, Limits::default());
+    let entry = FuncRef::new(vm.install(program).unwrap(), entry);
+    let mut observer = Counted::default();
+    let mut turn = vm
+        .start(
+            entry,
+            &[],
+            TurnOptions::default()
+                .yield_host_calls()
+                .trace(TraceMask::VALUES, &mut observer),
+        )
+        .unwrap();
+    assert_eq!(turn.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let staged = turn
+        .pending_host_call()
+        .unwrap()
+        .context()
+        .tuple_new(vec![Value::I64(111)])
+        .unwrap();
+    let (work, request) = (turn.work(), turn.pending_host_call().unwrap().id());
+    let mut turn = turn.finish().unwrap_err();
+    assert_eq!(turn.work(), work, "refusing spends nothing");
+    let pending = turn.host_request(request).unwrap();
+    pending.complete(&mut [Value::Agg(staged)], Ok(0)).unwrap();
+    assert_eq!(turn.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    returned_values(turn);
+    assert_eq!(observer.releases, 0, "the observer was never released");
+    assert!(observer.events > 0, "and kept receiving events");
 }

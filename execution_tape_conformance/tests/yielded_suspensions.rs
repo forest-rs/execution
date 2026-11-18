@@ -13,7 +13,7 @@ use execution_tape::{
     value::{FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::PendingSuspension,
-    vm::{Invocation, InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{Limits, RunStatus, Trap, Turn, TurnOptions, Vm},
 };
 use std::sync::Arc;
 
@@ -224,8 +224,8 @@ fn fixture() -> Fixture {
     }
 }
 
-fn yielding<'a>() -> InvocationOptions<'a> {
-    InvocationOptions::default().yield_suspensions()
+fn yielding<'a>() -> TurnOptions<'a> {
+    TurnOptions::default().yield_suspensions()
 }
 
 fn start<'a>(
@@ -233,8 +233,8 @@ fn start<'a>(
     unit: execution_tape::value::UnitId,
     func: FuncId,
     args: &'a [Value],
-    options: InvocationOptions<'a>,
-) -> Invocation<'a, NoHost> {
+    options: TurnOptions<'a>,
+) -> Turn<'a, NoHost> {
     vm.start(FuncRef::new(unit, func), args, options).unwrap()
 }
 
@@ -248,7 +248,7 @@ fn yielded_suspensions_resume_with_values_over_many_turns() {
     let mut run = start(&mut vm, unit, fixture.body, &args, yielding());
     let mut asked = Vec::new();
     loop {
-        match run.resume(u64::MAX).unwrap() {
+        match run.drive(u64::MAX).unwrap() {
             RunStatus::Complete => break,
             RunStatus::AwaitingHandler => {
                 let pending = run.pending_suspension().unwrap();
@@ -271,7 +271,7 @@ fn yielded_suspensions_resume_with_values_over_many_turns() {
     }
     // leaf(5) = 51, leaf(51) = 511, leaf(511) = 5111; body = 51 + 5111.
     assert_eq!(asked, [5, 51, 511]);
-    assert_eq!(run.take_outputs().unwrap(), [Value::I64(5162)]);
+    assert_eq!(returned_values(run), [Value::I64(5162)]);
 }
 
 #[test]
@@ -297,9 +297,9 @@ fn without_opting_in_unhandled_suspensions_still_trap() {
         unit,
         fixture.body,
         &args,
-        InvocationOptions::default().yield_host_calls(),
+        TurnOptions::default().yield_host_calls(),
     );
-    let error = run.resume(u64::MAX).unwrap_err();
+    let error = run.drive(u64::MAX).unwrap_err();
     assert!(
         matches!(error.trap, Trap::UnhandledSuspension { .. }),
         "{error:?}"
@@ -314,12 +314,12 @@ fn a_waiting_suspension_executes_nothing_and_shows_its_frames() {
     let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
     let args = [Value::I64(5)];
     let mut run = start(&mut vm, unit, fixture.body, &args, yielding());
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     let fuel = run.remaining_fuel();
     // Repeated queries, dropped views and further quanta neither execute nor answer.
     assert!(run.pending_suspension().is_some());
-    assert_eq!(run.resume(0).unwrap(), RunStatus::AwaitingHandler);
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(0).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     assert_eq!(run.remaining_fuel(), fuel);
 
     let location = run.pending_suspension().unwrap().location();
@@ -352,7 +352,7 @@ fn a_waiting_suspension_executes_nothing_and_shows_its_frames() {
         .resume(vec![Value::I64(7)])
         .unwrap();
     // The resumed leaf keeps its activation identity.
-    assert_eq!(run.resume(1).unwrap(), RunStatus::Suspended);
+    assert_eq!(run.drive(1).unwrap(), RunStatus::Suspended);
     assert_eq!(run.inspect().frames().next().unwrap().activation, leaf);
 }
 
@@ -366,18 +366,17 @@ fn resume_throw_raises_at_the_suspend() {
     // A region around the `suspend` catches the raised exception.
     let args = [Value::I64(5)];
     let mut run = start(&mut vm, unit, fixture.guarded, &args, yielding());
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     run.pending_suspension()
         .unwrap()
         .resume_throw(stop, vec![Value::I64(3)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    assert_eq!(run.take_outputs().unwrap(), [Value::I64(1003)]);
-    drop(run);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(returned_values(run), [Value::I64(1003)]);
 
-    // Nothing catches it in `body`: it leaves the invocation, originating at the `suspend`.
+    // Nothing catches it in `body`: it leaves the turn, originating at the `suspend`.
     let mut run = start(&mut vm, unit, fixture.body, &args, yielding());
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     let location = run.pending_suspension().unwrap().location();
     let error = run
         .pending_suspension()
@@ -389,12 +388,12 @@ fn resume_throw_raises_at_the_suspend() {
     };
     assert_eq!(exception.origin(), location);
     assert_eq!((error.func, error.pc), (location.func, location.pc));
-    assert!(matches!(run.resume(1), Err(again) if matches!(again.trap, Trap::Uncaught(_))));
+    assert!(matches!(run.drive(1), Err(again) if matches!(again.trap, Trap::Uncaught(_))));
     drop(run);
 
     // A wrong payload traps at the `suspend` like an invalid host throw.
     let mut run = start(&mut vm, unit, fixture.guarded, &args, yielding());
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     let error = run
         .pending_suspension()
         .unwrap()
@@ -411,7 +410,7 @@ fn discard_ends_the_invocation_with_the_unhandled_trap() {
     let tag = vm.units().tag(unit, fixture.ask).unwrap();
     let args = [Value::I64(5)];
     let mut run = start(&mut vm, unit, fixture.body, &args, yielding());
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     let location = run.pending_suspension().unwrap().location();
     let error = run.pending_suspension().unwrap().discard();
     assert!(
@@ -422,13 +421,13 @@ fn discard_ends_the_invocation_with_the_unhandled_trap() {
         (error.unit, error.func, error.pc),
         (location.unit, location.func, location.pc)
     );
-    // The invocation is finished: its frames are gone and nothing is pending.
+    // The turn is finished: its frames are gone and nothing is pending.
     assert!(run.pending_suspension().is_none());
     assert_eq!(run.inspect().frames().len(), 0);
     assert!(
         matches!(run.result(), Some(Err(info)) if matches!(info.trap, Trap::UnhandledSuspension { .. }))
     );
-    assert!(run.resume(u64::MAX).is_err());
+    assert!(run.drive(u64::MAX).is_err());
 }
 
 #[test]
@@ -439,14 +438,14 @@ fn answers_are_checked_like_host_returns() {
     let args = [Value::I64(5)];
     let answer = |vm: &mut Vm<NoHost>, func: FuncId, values: Vec<Value>| {
         let mut run = start(vm, unit, func, &args, yielding());
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
         let location = run.pending_suspension().unwrap().location();
         let result = run
             .pending_suspension()
             .unwrap()
             .resume(values)
-            .and_then(|()| match run.resume(u64::MAX)? {
-                RunStatus::Complete => Ok(run.take_outputs().unwrap()),
+            .and_then(|()| match run.drive(u64::MAX)? {
+                RunStatus::Complete => Ok(returned_values(run)),
                 other => panic!("unexpected {other:?}"),
             });
         (result, location)
@@ -482,7 +481,7 @@ fn answers_satisfy_the_tags_refined_result_contracts() {
     for (handle, expected) in [(flagged, None), (numbered, Some(9))] {
         let args: [Value; 0] = [];
         let mut run = start(&mut vm, unit, fixture.picker, &args, yielding());
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
         let result = run
             .pending_suspension()
             .unwrap()
@@ -490,8 +489,8 @@ fn answers_satisfy_the_tags_refined_result_contracts() {
         match expected {
             Some(value) => {
                 result.unwrap();
-                assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-                assert_eq!(run.take_outputs().unwrap(), [Value::I64(value)]);
+                assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+                assert_eq!(returned_values(run), [Value::I64(value)]);
             }
             None => {
                 let error = result.unwrap_err();
@@ -517,7 +516,7 @@ fn a_suspension_passes_guest_resumes_without_a_clause_before_it_yields() {
     let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
     let args = [Value::I64(5)];
     let mut run = start(&mut vm, unit, fixture.outer, &args, yielding());
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     // `outer` waits at its `resume`, `logged` at its `suspend`.
     assert_eq!(run.inspect().frames().len(), 2);
     run.pending_suspension()
@@ -525,8 +524,8 @@ fn a_suspension_passes_guest_resumes_without_a_clause_before_it_yields() {
         .resume(vec![Value::I64(42)])
         .unwrap();
     // `log` is handled by `outer`, which resumes `logged` to return the answer.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    assert_eq!(run.take_outputs().unwrap(), [Value::I64(42)]);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(returned_values(run), [Value::I64(42)]);
 }
 
 #[test]
@@ -542,12 +541,12 @@ fn a_suspension_inside_a_guest_callback_still_traps() {
         &args,
         yielding().yield_host_calls(),
     );
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, fixture.callback)), vec![])
         .unwrap();
-    let error = run.resume(u64::MAX).unwrap_err();
+    let error = run.drive(u64::MAX).unwrap_err();
     assert!(
         matches!(error.trap, Trap::SuspensionAcrossHost { .. }),
         "{error:?}"
@@ -617,12 +616,12 @@ fn yielded_activations_close_their_scopes_and_reenter_when_answered() {
             &args,
             yielding().trace(mask, &mut scopes),
         );
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
         run.pending_suspension()
             .unwrap()
             .resume(vec![Value::I64(8)])
             .unwrap();
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     }
     assert_eq!(
         scopes.log,
@@ -630,7 +629,7 @@ fn yielded_activations_close_their_scopes_and_reenter_when_answered() {
     );
     assert_eq!(scopes.end.as_deref(), Some("Ok"));
 
-    // Dropping an invocation while its suspension waits cancels it; no scope is left open.
+    // Dropping a turn while its suspension waits cancels it; no scope is left open.
     let mut scopes = Scopes::default();
     {
         let mask = scopes.mask();
@@ -641,7 +640,7 @@ fn yielded_activations_close_their_scopes_and_reenter_when_answered() {
             &args,
             yielding().trace(mask, &mut scopes),
         );
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     }
     assert!(scopes.open.is_empty());
     assert_eq!(
@@ -649,7 +648,7 @@ fn yielded_activations_close_their_scopes_and_reenter_when_answered() {
         ["enter 1", "enter 2", "exit 2 Suspended", "exit 1 Suspended"]
     );
     assert_eq!(scopes.end.as_deref(), Some("Cancelled"));
-    // The VM is free again; the cancelled invocation's frames were released.
+    // The VM is free again; the cancelled turn's frames were released.
     let error = vm
         .run(
             FuncRef::new(unit, fixture.leaf),
@@ -691,9 +690,9 @@ fn record(
         );
         let mut answers = answers.iter();
         loop {
-            match run.resume(quantum) {
+            match run.drive(quantum) {
                 Err(error) => break Err(error.trap),
-                Ok(RunStatus::Complete) => break Ok(run.take_outputs().unwrap()),
+                Ok(RunStatus::Complete) => break Ok(returned_values(run)),
                 Ok(RunStatus::Suspended) => {}
                 Ok(RunStatus::AwaitingHandler) => {
                     let mut pending = run.pending_suspension().unwrap();
@@ -831,7 +830,7 @@ fn a_recording_cancelled_while_a_suspension_waits_is_incomplete() {
             &args,
             yielding().trace(mask, &mut recorder),
         );
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     }
     let recording = recorder.finish();
     assert!(recording.status().is_err());
@@ -877,19 +876,19 @@ fn an_answer_interrupted_by_an_observer_panic_is_terminal() {
         &args,
         yielding().trace(TraceMask::CALL, &mut observer),
     );
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     let answered = catch_unwind(AssertUnwindSafe(|| {
         run.pending_suspension()
             .unwrap()
             .resume(vec![Value::I64(1)])
     }));
     assert!(answered.is_err());
-    // The `suspend` never received its result, so the invocation cannot continue after it.
+    // The `suspend` never received its result, so the turn cannot continue after it.
     assert!(run.pending_suspension().is_none());
-    let error = run.resume(u64::MAX).unwrap_err();
+    let error = run.drive(u64::MAX).unwrap_err();
     assert!(matches!(error.trap, Trap::HostCallAbandoned), "{error:?}");
     assert_eq!(error.func, fixture.leaf);
-    assert!(matches!(run.resume(0), Err(again) if matches!(again.trap, Trap::HostCallAbandoned)));
+    assert!(matches!(run.drive(0), Err(again) if matches!(again.trap, Trap::HostCallAbandoned)));
 }
 
 #[test]
@@ -898,7 +897,7 @@ fn answers_holding_aggregates_record_and_replay() {
     let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
-    // A retained aggregate from before the invocation answers its `pick` suspension.
+    // A retained aggregate from before the turn answers its `pick` suspension.
     let numbered = vm.aggregates_mut().tuple_new(vec![Value::I64(9)]).unwrap();
     let args: [Value; 0] = [];
     {
@@ -910,13 +909,13 @@ fn answers_holding_aggregates_record_and_replay() {
             &args,
             yielding().trace(mask, &mut recorder),
         );
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
         run.pending_suspension()
             .unwrap()
             .resume(vec![Value::Agg(numbered)])
             .unwrap();
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-        assert_eq!(run.take_outputs().unwrap(), [Value::I64(9)]);
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+        assert_eq!(returned_values(run), [Value::I64(9)]);
     }
     let recording = recorder.finish();
     recording.status().unwrap();
@@ -964,14 +963,14 @@ fn an_unhandled_suspension_checks_its_payload_whether_or_not_it_yields() {
             .unwrap();
         let args = [Value::Agg(flagged)];
         let mask = recorder.mask();
-        let options = InvocationOptions::default().trace(mask, &mut recorder);
+        let options = TurnOptions::default().trace(mask, &mut recorder);
         let options = if yields {
             options.yield_suspensions()
         } else {
             options
         };
         let mut run = start(&mut vm, unit, tell, &args, options);
-        let error = run.resume(u64::MAX).unwrap_err();
+        let error = run.drive(u64::MAX).unwrap_err();
         assert!(
             matches!(
                 error.trap,
@@ -1028,9 +1027,18 @@ fn a_yield_interrupted_by_an_observer_panic_is_terminal() {
         &args,
         yielding().trace(TraceMask::CALL, &mut observer),
     );
-    assert!(catch_unwind(AssertUnwindSafe(|| run.resume(u64::MAX))).is_err());
-    // The `suspend` was left part way: the invocation must not continue past it.
+    assert!(catch_unwind(AssertUnwindSafe(|| run.drive(u64::MAX))).is_err());
+    // The `suspend` was left part way: the turn must not continue past it.
     assert!(run.pending_suspension().is_none());
-    let error = run.resume(u64::MAX).unwrap_err();
+    let error = run.drive(u64::MAX).unwrap_err();
     assert!(matches!(error.trap, Trap::HostCallAbandoned), "{error:?}");
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }

@@ -16,7 +16,7 @@ use execution_tape::value::{Decimal, DecimalRounding, FuncId, Value};
 use execution_tape::verifier::{
     MetadataTable, VerifiedProgram, VerifyConfig, VerifyError, verify_program, verify_program_owned,
 };
-use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm};
+use execution_tape::vm::{Limits, RunStatus, Trap, TrapInfo, TurnOptions, Vm};
 
 struct NoHost;
 impl Host for NoHost {
@@ -341,13 +341,9 @@ fn division_charges_fuel_for_each_long_division_step() {
         let unit = vm.install(program.clone()).unwrap();
         let args = [a, b, Value::U64(scale)];
         let mut run = vm
-            .start(
-                FuncRef::new(unit, FuncId(0)),
-                &args,
-                InvocationOptions::default(),
-            )
+            .start(FuncRef::new(unit, FuncId(0)), &args, TurnOptions::default())
             .unwrap();
-        let status = run.resume(u64::MAX);
+        let status = run.drive(u64::MAX);
         let fuel = run.work().fuel;
         let result = run
             .result()

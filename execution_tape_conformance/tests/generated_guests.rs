@@ -11,7 +11,7 @@ use execution_tape::{
     trace::TraceMask,
     value::{FuncId, Value},
     verifier::{ProgramAnalysis, ValueFact, VerifyConfig, verify_program_owned},
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 
 #[derive(Clone, Debug)]
@@ -267,18 +267,14 @@ fn check(expr: &Expr, input: i64) -> Result<(), String> {
             let args = [Value::I64(input)];
             let unit = vm.install(verified.clone()).unwrap();
             let mut invocation = vm
-                .start(
-                    FuncRef::new(unit, FuncId(0)),
-                    &args,
-                    InvocationOptions::default(),
-                )
+                .start(FuncRef::new(unit, FuncId(0)), &args, TurnOptions::default())
                 .map_err(|e| format!("start: {e:?}"))?;
             while invocation
-                .resume(quantum)
+                .drive(quantum)
                 .map_err(|e| format!("resume: {e:?}"))?
                 == RunStatus::Suspended
             {}
-            if invocation.take_outputs().unwrap() != output {
+            if returned_values(invocation) != output {
                 return Err(format!("scheduled execution differed at quantum {quantum}"));
             }
         }
@@ -361,11 +357,7 @@ fn paused_registers_match_the_function_analysis_at_every_step() {
         let unit = vm.install(verified.clone()).unwrap();
         let args = [Value::I64(seed as i64)];
         let mut invocation = vm
-            .start(
-                FuncRef::new(unit, FuncId(0)),
-                &args,
-                InvocationOptions::default(),
-            )
+            .start(FuncRef::new(unit, FuncId(0)), &args, TurnOptions::default())
             .unwrap();
         loop {
             let mut inspection = invocation.inspect();
@@ -397,9 +389,18 @@ fn paused_registers_match_the_function_analysis_at_every_step() {
                         .is_none()
                 );
             }
-            if invocation.resume(1).unwrap() != RunStatus::Suspended {
+            if invocation.drive(1).unwrap() != RunStatus::Suspended {
                 break;
             }
         }
+    }
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
     }
 }

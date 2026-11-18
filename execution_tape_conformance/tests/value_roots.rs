@@ -14,8 +14,8 @@ use execution_tape::{
     value::{AggHandle, Closure, FuncId, FuncRef, Value},
     verifier::VerifiedProgram,
     vm::{
-        CollectError, CollectionReport, Invocation, InvocationOptions, Limits, Retention,
-        RootError, RunStatus, Trap, Vm,
+        CollectError, CollectionReport, Limits, Retention, RootError, RunStatus, Trap, Turn,
+        TurnOptions, Vm,
     },
 };
 use std::sync::Arc;
@@ -420,11 +420,11 @@ fn collection_while_a_host_request_waits_relocates_its_registers() {
     let kept_before = vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
     let root = vm.root(vec![Value::Agg(kept_before)]).unwrap();
     let _ = older;
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &[Value::I64(5)], options)
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     assert_eq!(run.aggregates().len_u32(), 6);
     let before = {
         let request = run.pending_host_call().unwrap();
@@ -478,12 +478,11 @@ fn collection_while_a_host_request_waits_relocates_its_registers() {
         Value::Str("text".into())
     );
     request.complete(&mut [Value::I64(10)], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
-    let outputs = run.take_outputs().unwrap();
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
+    let outputs = returned_values(run);
     assert_eq!(outputs[..2], [Value::I64(15), Value::Str("text".into())]);
     let kept = aggregate(&outputs[2]);
-    assert_eq!(run.aggregates().tuple_get(kept, 0).unwrap(), Value::I64(5));
-    drop(run);
+    assert_eq!(vm.aggregates().tuple_get(kept, 0).unwrap(), Value::I64(5));
     let values = vm.resolve(&root).unwrap();
     assert_eq!(
         field(vm.aggregates(), aggregate(&values[0]), 0),
@@ -510,11 +509,11 @@ fn a_trap_after_collection_rolls_back_to_where_the_run_began() {
     vm.aggregates_mut().tuple_new(vec![]).unwrap();
     let older = vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
     let root = vm.root(vec![Value::Agg(older)]).unwrap();
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &[Value::I64(5)], options)
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     // The run began after two nodes; once one older node is reclaimed, it begins after one.
     run.collect().unwrap();
     let request = run.pending_host_call().unwrap();
@@ -601,12 +600,12 @@ fn at_inner<'vm>(
     vm: &'vm mut Vm<NoHost>,
     f: &Promoting,
     build: bool,
-) -> (Invocation<'vm, NoHost>, Option<AggHandle>) {
+) -> (Turn<'vm, NoHost>, Option<AggHandle>) {
     let unit = vm.install(Arc::clone(&f.program)).unwrap();
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm.start(FuncRef::new(unit, f.entry), &[], options).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "the fixture reaches its next step"
     );
@@ -616,7 +615,7 @@ fn at_inner<'vm>(
         .call_guest(Value::Func(FuncRef::new(unit, f.nested)), vec![])
         .unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
         "the fixture reaches its next step"
     );
@@ -624,13 +623,13 @@ fn at_inner<'vm>(
 }
 
 /// Completes the waiting `inner` request with its own argument and the outer one with `value`.
-fn finish(run: &mut Invocation<'_, NoHost>, value: Value) -> Value {
+fn finish(run: &mut Turn<'_, NoHost>, value: Value) -> Value {
     let request = run.pending_host_call().unwrap();
     assert_eq!(request.symbol(), "inner", "the callback waits");
     let mut argument = vec![request.arguments().next().unwrap().to_value()];
     request.complete(&mut argument, Ok(0)).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::CallbackReturned,
         "the fixture reaches its next step"
     );
@@ -638,7 +637,7 @@ fn finish(run: &mut Invocation<'_, NoHost>, value: Value) -> Value {
     assert_eq!(request.symbol(), "outer", "the original request waits");
     request.complete(&mut [value], Ok(0)).unwrap();
     assert_eq!(
-        run.resume(u64::MAX).unwrap(),
+        run.drive(u64::MAX).unwrap(),
         RunStatus::Complete,
         "the fixture reaches its next step"
     );
@@ -700,7 +699,7 @@ fn a_host_built_aggregate_passed_to_a_nested_callback_is_never_moved() {
             vec![Value::Agg(mine)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     assert_eq!(run.collect(), Err(CollectError::HostHandles));
     let mut request = run.pending_host_call().unwrap();
     let [Value::Agg(echoed)] = request.take_callback_results().unwrap()[..] else {
@@ -767,11 +766,11 @@ fn host_staging_refuses_collection_until_the_request_completes() {
     let f = paused();
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(Arc::clone(&f.program)).unwrap();
-    let options = InvocationOptions::default().yield_host_calls();
+    let options = TurnOptions::default().yield_host_calls();
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &[Value::I64(1)], options)
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     request.context().tuple_new(vec![]).unwrap();
     drop(request);
@@ -781,7 +780,7 @@ fn host_staging_refuses_collection_until_the_request_completes() {
     let request = run.pending_host_call().unwrap();
     request.complete(&mut [Value::I64(0)], Ok(0)).unwrap();
     assert!(run.collect().is_ok());
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
 }
 
 /// A guest that waits at a yielded suspension while it holds a continuation it has not resumed
@@ -896,11 +895,11 @@ fn collection_while_a_suspension_waits_relocates_continuations_and_exceptions() 
     let f = suspended();
     let mut vm = Vm::new(NoHost, Limits::default());
     let unit = vm.install(Arc::clone(&f.program)).unwrap();
-    let options = InvocationOptions::default().yield_suspensions();
+    let options = TurnOptions::default().yield_suspensions();
     let mut run = vm
         .start(FuncRef::new(unit, f.entry), &[Value::I64(5)], options)
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
     let _ = f.boxed;
     let report = run.collect().unwrap();
     // Two unreachable tuples go. The continuation's environment, the exception's payload and
@@ -920,7 +919,7 @@ fn collection_while_a_suspension_waits_relocates_continuations_and_exceptions() 
     };
     assert_eq!(suspension.aggregates().tuple_len(payload).unwrap(), 0);
     suspension.resume(vec![Value::I64(100)]).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(100 + 5 + 6)]);
 }
 
@@ -954,25 +953,25 @@ fn observers_see_a_collection_and_recordings_refuse_to_replay_across_it() {
     let entry = FuncRef::new(unit, f.entry);
 
     let mut sink = Collections::default();
-    let options = InvocationOptions::default()
+    let options = TurnOptions::default()
         .yield_host_calls()
         .trace(TraceMask::VALUES, &mut sink);
     let mut run = vm.start(entry, &[Value::I64(1)], options).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let report = run.collect().unwrap();
     drop(run);
     assert_eq!(sink.seen, [report]);
 
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
-    let options = InvocationOptions::default()
+    let options = TurnOptions::default()
         .yield_host_calls()
         .trace(recorder.mask(), &mut recorder);
     let mut run = vm.start(entry, &[Value::I64(1)], options).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.collect().unwrap();
     let request = run.pending_host_call().unwrap();
     request.complete(&mut [Value::I64(2)], Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::Complete);
     drop(run);
     let recording = recorder.finish();
     assert_eq!(recording.status(), Err(&CaptureFault::Relocated));
@@ -1012,4 +1011,13 @@ fn recordings_replay_runs_between_collections() {
         Value::I64(3)
     );
     assert_eq!(vm.resolve(&first).unwrap().len(), 1);
+}
+
+/// Finishes `turn`, whose computation must have returned, and takes what it returned.
+#[track_caller]
+fn returned_values<H: Host>(turn: Turn<'_, H>) -> Vec<Value> {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Returned(values)) => values,
+        other => panic!("the computation did not return: {other:?}"),
+    }
 }
