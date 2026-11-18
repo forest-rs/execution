@@ -201,7 +201,7 @@ fn retained_callables(c: &mut Criterion) {
     use execution_tape::{
         aggregates::AggHeap,
         callable::Callable,
-        vm::{InvocationOptions, RunStatus},
+        vm::{RunStatus, TurnOptions},
     };
     use std::sync::Arc;
     let mut group = c.benchmark_group("retained_callable");
@@ -247,10 +247,10 @@ fn retained_callables(c: &mut Criterion) {
         let unit = vm.install(Arc::clone(callable.program())).unwrap();
         group.bench_function(BenchmarkId::new("import_and_execute", fields), |b| {
             b.iter(|| {
-                let mut invocation = callable
-                    .start(&mut vm, unit, vec![], InvocationOptions::default())
+                let mut invocation = vm
+                    .start(callable.at(unit), vec![], TurnOptions::default())
                     .unwrap();
-                assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+                assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
                 black_box(invocation.result().unwrap().unwrap());
             })
         });

@@ -11,7 +11,7 @@ use execution_tape::{
     program::ValueType,
     trace::TraceMask,
     value::{FuncId, Value},
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{
     future::Future,
@@ -98,13 +98,13 @@ fn host_requests(c: &mut Criterion) {
                         black_box(out);
                         return;
                     }
-                    let mut options = InvocationOptions::default();
+                    let mut options = TurnOptions::default();
                     if !matches!(mode, Mode::Scheduled) {
                         options = options.yield_host_calls();
                     }
                     let mut run = vm.start(FuncRef::new(unit, entry), &[], options).unwrap();
                     loop {
-                        match run.resume(u64::MAX).unwrap() {
+                        match run.drive(u64::MAX).unwrap() {
                             RunStatus::Suspended => unreachable!("unlimited quantum"),
                             RunStatus::CallbackReturned => unreachable!("no guest callbacks"),
                             RunStatus::AwaitingHandler => {

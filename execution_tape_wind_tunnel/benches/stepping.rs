@@ -12,7 +12,7 @@ use execution_tape::{
     program::{HostTypeId, ValueType},
     trace::TraceMask,
     value::{FuncId, Obj, ObjHandle, Value},
-    vm::{InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, TurnOptions, Vm},
 };
 use std::{hint::black_box, sync::Arc, time::Duration};
 
@@ -94,10 +94,10 @@ fn stepping(c: &mut Criterion) {
                         .start(
                             FuncRef::new(unit, entry),
                             black_box(&args),
-                            InvocationOptions::default(),
+                            TurnOptions::default(),
                         )
                         .unwrap();
-                    while run.resume(quantum).unwrap() == RunStatus::Suspended {}
+                    while run.drive(quantum).unwrap() == RunStatus::Suspended {}
                     black_box(run.result().unwrap().unwrap());
                 })
             },
@@ -114,20 +114,19 @@ fn stepping(c: &mut Criterion) {
             b.iter(|| {
                 let mut fresh = Vm::new(NoHost, Limits::default());
                 let unit = fresh.install(Arc::clone(callable.program())).unwrap();
-                let mut invocation = callable
+                let mut invocation = fresh
                     .start(
-                        &mut fresh,
-                        unit,
+                        callable.at(unit),
                         black_box(args.to_vec()),
-                        InvocationOptions::default(),
+                        TurnOptions::default(),
                     )
                     .unwrap();
                 if saved {
-                    assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
-                    let id = invocation.save().unwrap();
-                    invocation = fresh.resume(id, InvocationOptions::default()).unwrap();
+                    assert_eq!(invocation.drive(1).unwrap(), RunStatus::Suspended);
+                    let id = saved_id(invocation);
+                    invocation = fresh.resume(id, TurnOptions::default()).unwrap();
                 }
-                assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+                assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
                 black_box(invocation.result().unwrap().unwrap());
             });
         });
@@ -137,13 +136,9 @@ fn stepping(c: &mut Criterion) {
     // These retained nodes make object inventory cost visible without growing the heap per sample.
     vm.aggregates_mut().tuple_new(vec![object; 1024]).unwrap();
     let mut run = vm
-        .start(
-            FuncRef::new(unit, entry),
-            &args,
-            InvocationOptions::default(),
-        )
+        .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
         .unwrap();
-    run.resume(100).unwrap();
+    run.drive(100).unwrap();
     let mut group = c.benchmark_group("live_inspection");
     group.bench_function("frame_metadata", |b| {
         b.iter(|| {
@@ -217,13 +212,9 @@ fn callback_free_calls(c: &mut Criterion) {
     group.bench_function("scheduled_1000", |b| {
         b.iter(|| {
             let mut invocation = vm
-                .start(
-                    FuncRef::new(unit, caller),
-                    &[],
-                    InvocationOptions::default(),
-                )
+                .start(FuncRef::new(unit, caller), &[], TurnOptions::default())
                 .unwrap();
-            assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+            assert_eq!(invocation.drive(u64::MAX).unwrap(), RunStatus::Complete);
             black_box(invocation.result().unwrap().unwrap());
         })
     });
@@ -299,11 +290,11 @@ fn frame_snapshots(c: &mut Criterion) {
             .start(
                 FuncRef::new(unit, FuncId(0)),
                 &[Value::I64(1)],
-                InvocationOptions::default().yield_host_calls(),
+                TurnOptions::default().yield_host_calls(),
             )
             .unwrap();
-        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
-        let snapshot = |inspection: &mut execution_tape::vm::InvocationInspection<'_>| {
+        assert_eq!(run.drive(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+        let snapshot = |inspection: &mut execution_tape::vm::ComputationInspection<'_>| {
             let frames: Vec<_> = inspection.frames().collect();
             frames
                 .into_iter()
@@ -338,3 +329,14 @@ criterion_group! {
     targets = stepping, callback_free_calls, frame_snapshots
 }
 criterion_main!(benches);
+
+/// Finishes `turn`, whose computation must still be running or waiting, and takes its ID.
+#[track_caller]
+fn saved_id<H: execution_tape::host::Host>(
+    turn: execution_tape::vm::Turn<'_, H>,
+) -> execution_tape::vm::ComputationId {
+    match turn.finish() {
+        Ok(execution_tape::vm::TurnOutcome::Saved(id)) => id,
+        other => panic!("the computation was not saved: {other:?}"),
+    }
+}
