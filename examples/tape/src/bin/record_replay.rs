@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Capture one real invocation, drop the live host and VM, then replay and inspect it.
+//! Capture one real turn, drop the live host and VM, then replay and inspect it.
 
 #[path = "../support/recording.rs"]
 mod workload;

@@ -11,7 +11,7 @@ use execution_tape::{
     source::{SourceDocument, SourceId, SourceLimits, SourceMap},
     value::{FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, Vm},
+    vm::{Limits, TurnOptions, Vm},
 };
 use execution_tape_observatory::LiveExplorer;
 
@@ -167,13 +167,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let args = [Value::Obj(object())];
     let unit = vm.install(p.clone()).unwrap();
-    let invocation = vm.start(
-        FuncRef::new(unit, entry),
-        &args,
-        InvocationOptions::default(),
-    )?;
+    let invocation = vm.start(FuncRef::new(unit, entry), &args, TurnOptions::default())?;
     let mut view = LiveExplorer::new(invocation).sources(&sources)?;
-    view.resume(if complete { u64::MAX } else { steps })?;
+    view.drive(if complete { u64::MAX } else { steps })?;
     if snapshot {
         print!("{}", view.render_text(140, 42)?);
     } else {
@@ -207,11 +203,7 @@ mod tests {
         let args = [Value::Obj(object())];
         let unit = vm.install(p.clone()).unwrap();
         let invocation = vm
-            .start(
-                FuncRef::new(unit, entry),
-                &args,
-                InvocationOptions::default(),
-            )
+            .start(FuncRef::new(unit, entry), &args, TurnOptions::default())
             .unwrap();
         let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
         view.step().unwrap();
@@ -219,9 +211,10 @@ mod tests {
         assert!(text.contains("Counter.read"));
         assert!(text.contains("read(receiver)"));
         assert!(text.contains("waiting for return"));
-        view.resume(u64::MAX).unwrap();
-        let output = view.take_outputs().unwrap();
-        drop(view);
+        view.drive(u64::MAX).unwrap();
+        let Ok(execution_tape::vm::TurnOutcome::Returned(output)) = view.finish() else {
+            panic!("the computation returned");
+        };
         let [Value::Agg(tuple)] = output.as_slice() else {
             panic!("expected rich result");
         };

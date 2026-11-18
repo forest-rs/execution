@@ -10,7 +10,7 @@ use execution_tape::{
     vm::Trap,
 };
 
-fn runtime<'vm>(vm: &'vm mut Vm<NoHost>, name: &str) -> Runtime<'vm> {
+fn runtime<'vm>(vm: &'vm mut RuntimeVm, name: &str) -> Runtime<'vm> {
     let fixture = program::scenario(name).unwrap();
     Runtime::new(vm, fixture.program, fixture.entry).unwrap()
 }
