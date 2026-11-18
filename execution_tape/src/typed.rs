@@ -1437,9 +1437,15 @@ pub(crate) enum ExecInstr {
         func_id: FuncId,
         args: VRegSlice,
         rets: VRegSlice,
+        /// The verifier proved every argument satisfies the callee's contract, so entering the
+        /// callee checks none of them again.
+        args_proved: bool,
     },
     Ret {
         rets: VRegSlice,
+        /// The verifier proved every result satisfies the function's contract, so returning
+        /// checks none of them again.
+        rets_proved: bool,
     },
 
     HostCall {
@@ -1452,18 +1458,27 @@ pub(crate) enum ExecInstr {
         callee: FuncReg,
         args: VRegSlice,
         rets: VRegSlice,
+        /// The verifier proved every argument satisfies the call signature's contract. Every
+        /// target the call accepts has that signature, so entering it checks none of them again.
+        args_proved: bool,
     },
     CallIndirectClosure {
         call_sig: CallSigId,
         callee: ClosureReg,
         args: VRegSlice,
         rets: VRegSlice,
+        /// As for [`Self::CallIndirectFunc`]. The closure's environment is not an argument the
+        /// call passes, so entering still checks it.
+        args_proved: bool,
     },
     /// Call the function the calling unit's `link` names when the call executes.
     CallLink {
         link: LinkId,
         args: VRegSlice,
         rets: VRegSlice,
+        /// The verifier proved every argument satisfies the link signature's contract. Every
+        /// target the link can name has that signature, so entering it checks none of them again.
+        args_proved: bool,
     },
     ClosureNew {
         dst: ClosureReg,
@@ -1769,6 +1784,33 @@ impl ExecProtection {
                 }
             }
             region = (*parent)?;
+        }
+    }
+}
+
+impl ExecInstr {
+    /// Records that the verifier proved this boundary's contracts; other instructions have
+    /// none to prove.
+    pub(crate) fn set_proved(&mut self) {
+        match self {
+            Self::Call { args_proved, .. }
+            | Self::CallIndirectFunc { args_proved, .. }
+            | Self::CallIndirectClosure { args_proved, .. }
+            | Self::CallLink { args_proved, .. } => *args_proved = true,
+            Self::Ret { rets_proved, .. } => *rets_proved = true,
+            _ => {}
+        }
+    }
+
+    /// Whether this is a call or return whose contracts the verifier proved.
+    pub(crate) fn boundary_proved(&self) -> bool {
+        match self {
+            Self::Call { args_proved, .. }
+            | Self::CallIndirectFunc { args_proved, .. }
+            | Self::CallIndirectClosure { args_proved, .. }
+            | Self::CallLink { args_proved, .. } => *args_proved,
+            Self::Ret { rets_proved, .. } => *rets_proved,
+            _ => false,
         }
     }
 }

@@ -737,6 +737,17 @@ This release has an [MSRV][] of 1.88.
   invocation, so starting an invocation allocates nothing for it. Activation IDs and registered
   groups share one identity per VM.
 
+- Calls and returns no longer check contracts the verifier proved. A call whose every argument
+  is known to satisfy the callee's contract, such as a tuple made locally or taken from a
+  parameter whose contract was checked, enters the callee without checking it again, and a
+  return whose results are proved returns without checking them. Values whose shape no fact
+  knows, such as host results, are still checked where they cross, as is a closure's
+  environment, which a host can make, and a guest callback's return to its host request.
+  `InstructionInfo::boundary_proved` reports which calls and returns are proved, and proved
+  boundaries spend no contract work. **Breaking:** `InstructionInfo` is now `#[non_exhaustive]`. In the new
+  `callable_values` wind-tunnel bench, which passes a tuple-shaped callable value down a call
+  tree, a call through it drops from about 69 ns to 32 ns above a direct call.
+
 - Starting and finishing a turn costs less. A turn takes the VM's register file, control and
   work budget by pointer instead of moving them out of the VM and back, and its computation
   keeps them boxed when it is saved, so a turn no longer copies about 1.4 KB of execution

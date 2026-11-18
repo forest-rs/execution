@@ -3530,6 +3530,7 @@ impl<H: Host> Vm<H> {
                     func_id: callee,
                     args,
                     rets: dst_rets,
+                    args_proved,
                 } => {
                     budget
                         .admit_frame()
@@ -3557,8 +3558,17 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(ctx, budget, unit_id, *callee, callee_vf, callee_base)
+                    if !*args_proved {
+                        self.check_arg_contracts(
+                            ctx,
+                            budget,
+                            unit_id,
+                            *callee,
+                            callee_vf,
+                            callee_base,
+                        )
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
@@ -3603,7 +3613,7 @@ impl<H: Host> Vm<H> {
                     );
                 }
 
-                ExecInstr::Ret { rets } => {
+                ExecInstr::Ret { rets, rets_proved } => {
                     if YIELD && turn::callback::returns_to_host(control, ctx.frames.len()) {
                         turn::callback::return_to_host::<H, P>(
                             self,
@@ -3643,8 +3653,12 @@ impl<H: Host> Vm<H> {
                             values: &outputs[output_start..],
                             aggregates: self.memory.aggs(),
                         });
-                        self.check_result_contracts(ctx, budget, unit_id, func_id, vf, base, rets)
+                        if !*rets_proved {
+                            self.check_result_contracts(
+                                ctx, budget, unit_id, func_id, vf, base, rets,
+                            )
                             .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
+                        }
                         return Ok(Progress::Returned(ReturnSite {
                             location: TraceLocation {
                                 unit: unit_id,
@@ -3655,16 +3669,18 @@ impl<H: Host> Vm<H> {
                         }));
                     }
 
-                    self.check_result_contracts(
-                        ctx,
-                        budget,
-                        unit_id,
-                        func_id,
-                        vf,
-                        base,
-                        vf.vregs(*rets),
-                    )
-                    .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
+                    if !*rets_proved {
+                        self.check_result_contracts(
+                            ctx,
+                            budget,
+                            unit_id,
+                            func_id,
+                            vf,
+                            base,
+                            vf.vregs(*rets),
+                        )
+                        .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
+                    }
                     let finished = ctx
                         .frames
                         .pop()
@@ -3964,6 +3980,7 @@ impl<H: Host> Vm<H> {
                     callee,
                     args,
                     rets: dst_rets,
+                    args_proved,
                 } => {
                     budget
                         .admit_frame()
@@ -3990,15 +4007,17 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(
-                        ctx,
-                        budget,
-                        target.unit,
-                        target.func,
-                        callee_vf,
-                        callee_base,
-                    )
-                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    if !*args_proved {
+                        self.check_arg_contracts(
+                            ctx,
+                            budget,
+                            target.unit,
+                            target.func,
+                            callee_vf,
+                            callee_base,
+                        )
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
@@ -4047,6 +4066,7 @@ impl<H: Host> Vm<H> {
                     callee,
                     args,
                     rets: dst_rets,
+                    args_proved,
                 } => {
                     budget
                         .admit_frame()
@@ -4079,14 +4099,26 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(
-                        ctx,
-                        budget,
-                        target.unit,
-                        target.func,
-                        callee_vf,
-                        callee_base,
-                    )
+                    // Proved arguments leave only the environment, which the call does not pass.
+                    if *args_proved {
+                        self.check_environment_contract(
+                            ctx,
+                            budget,
+                            target.unit,
+                            target.func,
+                            callee_vf,
+                            callee_base,
+                        )
+                    } else {
+                        self.check_arg_contracts(
+                            ctx,
+                            budget,
+                            target.unit,
+                            target.func,
+                            callee_vf,
+                            callee_base,
+                        )
+                    }
                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     // Even an unrefined environment must resolve before entering a closure body.
@@ -4170,6 +4202,7 @@ impl<H: Host> Vm<H> {
                     link,
                     args,
                     rets: dst_rets,
+                    args_proved,
                 } => {
                     budget
                         .admit_frame()
@@ -4207,15 +4240,17 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(
-                        ctx,
-                        budget,
-                        target.unit,
-                        target.func,
-                        callee_vf,
-                        callee_base,
-                    )
-                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    if !*args_proved {
+                        self.check_arg_contracts(
+                            ctx,
+                            budget,
+                            target.unit,
+                            target.func,
+                            callee_vf,
+                            callee_base,
+                        )
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
@@ -4946,11 +4981,14 @@ impl<H: Host> Vm<H> {
         if vf.arg_check_count == 0 {
             return Ok(());
         }
-        self.check_arg_contracts_slow(ctx, budget, unit, callee, vf, base)
+        let checks = &vf.contract_checks[..vf.arg_check_count as usize];
+        self.check_arguments(ctx, budget, unit, callee, vf, base, checks)
     }
 
-    #[inline(never)]
-    fn check_arg_contracts_slow(
+    /// Checks a closure body's environment contract alone, for a call whose own arguments the
+    /// verifier proved. Checks are ordered by argument, so the environment's comes first.
+    #[inline]
+    fn check_environment_contract(
         &self,
         ctx: &mut Registers,
         budget: &mut Budget,
@@ -4959,7 +4997,41 @@ impl<H: Host> Vm<H> {
         vf: &ExecFunc,
         base: RegBase,
     ) -> Result<(), Trap> {
-        for check in &vf.contract_checks[..vf.arg_check_count as usize] {
+        let checks = &vf.contract_checks[..vf.arg_check_count as usize];
+        debug_assert!(
+            checks.is_sorted_by_key(|check| check.index),
+            "argument checks are ordered by argument, so the environment's comes first"
+        );
+        match checks.first() {
+            Some(check) if check.index == 0 => self.check_arguments(
+                ctx,
+                budget,
+                unit,
+                callee,
+                vf,
+                base,
+                &vf.contract_checks[..1],
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    #[inline(never)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of one function entry"
+    )]
+    fn check_arguments(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        unit: UnitId,
+        callee: FuncId,
+        vf: &ExecFunc,
+        base: RegBase,
+        checks: &[crate::typed::ContractCheck],
+    ) -> Result<(), Trap> {
+        for check in checks {
             let value =
                 Self::contract_value(ctx, base, vf.reg_layout.arg_regs[check.index as usize]);
             budget

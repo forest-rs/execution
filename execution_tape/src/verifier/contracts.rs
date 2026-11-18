@@ -9,7 +9,7 @@ use super::*;
 use crate::contract::{
     Contract, ContractHasher, ContractId, ContractMismatch, ContractPath, ContractViolation,
 };
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
 
@@ -186,6 +186,8 @@ struct Check {
     actual: Fact,
     next: usize,
     entered: bool,
+    /// Whether some part of this check is left to the VM: a value whose shape no fact knows.
+    dynamic: bool,
 }
 
 struct Arena<'a> {
@@ -200,7 +202,8 @@ struct Arena<'a> {
     replacements: Vec<(u32, Fact)>,
     check_frames: Vec<Check>,
     check_path: Vec<ContractPath>,
-    check_proven: BTreeSet<(ContractId, Fact)>,
+    /// Checked pairs without contradiction, and whether each left a dynamic obligation.
+    check_proven: BTreeMap<(ContractId, Fact), bool>,
     import_pending: Vec<(ContractId, bool)>,
     common_pending: Vec<((Fact, Fact), bool)>,
 }
@@ -218,7 +221,7 @@ impl<'a> Arena<'a> {
             replacements: Vec::new(),
             check_frames: Vec::new(),
             check_path: Vec::new(),
-            check_proven: BTreeSet::new(),
+            check_proven: BTreeMap::new(),
             import_pending: Vec::new(),
             common_pending: Vec::new(),
         }
@@ -527,10 +530,12 @@ impl<'a> Arena<'a> {
     fn fact(&self, state: &RefinementState, types: RegisterTypes<'_>, reg: u32) -> Fact {
         Fact::register(state, types, reg)
     }
-    fn check(&mut self, expected: ContractId, actual: Fact) -> Result<(), ContractViolation> {
+    /// Checks that `actual` can satisfy `expected`, and whether it is proved to: `Ok(false)`
+    /// leaves an obligation the VM checks when the value crosses the boundary.
+    fn check(&mut self, expected: ContractId, actual: Fact) -> Result<bool, ContractViolation> {
         if let Some(Contract::Kind(kind)) = self.program.contracts.get(expected) {
             return if kind == self.kind(actual) {
-                Ok(())
+                Ok(true)
             } else {
                 Err(ContractViolation {
                     contract: expected,
@@ -550,7 +555,9 @@ impl<'a> Arena<'a> {
                 actual,
                 next: 0,
                 entered: false,
+                dynamic: false,
             });
+            let mut proved = true;
             while let Some(frame) = pending.last_mut() {
                 let contract = self
                     .program
@@ -587,11 +594,10 @@ impl<'a> Arena<'a> {
                                 mismatch: ContractMismatch::Callable { function: None },
                             });
                         }
+                    } else {
+                        frame.dynamic = true;
                     }
-                    pending.pop();
-                    if !pending.is_empty() {
-                        path.pop();
-                    }
+                    finish_check(&mut pending, &mut path, &mut proved);
                     continue;
                 }
                 let expected_view = match contract {
@@ -612,6 +618,9 @@ impl<'a> Arena<'a> {
                         Some((AggType::Array { elem_type_id }, 1))
                     }
                 };
+                if actual.is_none() && expected_view.is_some() {
+                    frame.dynamic = true;
+                }
                 if let (Some(actual), Some((expected_descriptor, count))) = (actual, expected_view)
                 {
                     if actual.descriptor != Descriptor::Aggregate(expected_descriptor) {
@@ -627,9 +636,12 @@ impl<'a> Arena<'a> {
                             },
                         });
                     }
-                    if !frame.entered && self.check_proven.contains(&(frame.expected, frame.actual))
+                    if !frame.entered
+                        && let Some(&dynamic) =
+                            self.check_proven.get(&(frame.expected, frame.actual))
                     {
                         frame.next = count;
+                        frame.dynamic = dynamic;
                     }
                     frame.entered = true;
                     if frame.next < count {
@@ -641,31 +653,48 @@ impl<'a> Arena<'a> {
                             Contract::Array { element, .. } => Some(element),
                             _ => None,
                         };
-                        if let (Some(expected), Some(actual)) = (child, actual.child(index)) {
-                            path.push(ContractPath::Member(index));
-                            pending.push(Check {
-                                expected,
-                                actual,
-                                next: 0,
-                                entered: false,
-                            });
+                        match (child, actual.child(index)) {
+                            (Some(expected), Some(actual)) => {
+                                path.push(ContractPath::Member(index));
+                                pending.push(Check {
+                                    expected,
+                                    actual,
+                                    next: 0,
+                                    entered: false,
+                                    dynamic: false,
+                                });
+                            }
+                            // The contract constrains a member no fact knows.
+                            (Some(_), None) => frame.dynamic = true,
+                            (None, _) => {}
                         }
                         continue;
                     }
                 }
-                self.check_proven.insert((frame.expected, frame.actual));
-                pending.pop();
-                if !pending.is_empty() {
-                    path.pop();
-                }
+                self.check_proven
+                    .insert((frame.expected, frame.actual), frame.dynamic);
+                finish_check(&mut pending, &mut path, &mut proved);
             }
-            Ok(())
+            Ok(proved)
         })();
         pending.clear();
         path.clear();
         self.check_frames = pending;
         self.check_path = path;
         result
+    }
+}
+
+/// Pops a finished check, handing an obligation it left to its parent, or to the whole check
+/// once it is the root.
+fn finish_check(pending: &mut Vec<Check>, path: &mut Vec<ContractPath>, proved: &mut bool) {
+    let finished = pending.pop().expect("a check is running");
+    match pending.last_mut() {
+        Some(parent) => {
+            parent.dynamic |= finished.dynamic;
+            path.pop();
+        }
+        None => *proved = !finished.dynamic,
     }
 }
 
@@ -904,7 +933,8 @@ fn validate(
     instr: &Instr,
     types: RegisterTypes<'_>,
     state: &RefinementState,
-) -> Result<(), VerifyError> {
+) -> Result<bool, VerifyError> {
+    let mut proved = true;
     let projection = match instr {
         Instr::TupleGet { dst, tuple, index } => Some((*dst, *tuple, *index, AggKind::Tuple)),
         Instr::StructGet {
@@ -992,7 +1022,7 @@ fn validate(
                 )
                 .enumerate()
             {
-                arena
+                proved &= arena
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
@@ -1025,7 +1055,7 @@ fn validate(
                 });
             }
             for (index, (&reg, &contract)) in args.iter().zip(arg_contracts).enumerate() {
-                arena
+                proved &= arena
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
@@ -1048,7 +1078,7 @@ fn validate(
             let signature = &arena.program.call_sigs[call_sig.0 as usize];
             let arg_contracts = arena.program.call_sig_arg_contracts(signature).unwrap();
             for (index, (&reg, &contract)) in args.iter().zip(arg_contracts).enumerate() {
-                arena
+                proved &= arena
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
@@ -1132,7 +1162,7 @@ fn validate(
                 )
                 .enumerate()
             {
-                arena
+                proved &= arena
                     .check(contract, arena.fact(state, types, reg))
                     .map_err(|error| VerifyError::ContractMismatch {
                         func: func_id,
@@ -1147,9 +1177,14 @@ fn validate(
         }
         _ => {}
     }
-    Ok(())
+    Ok(proved)
 }
 
+/// Checks every reachable instruction's contracts against the facts flowing into it.
+///
+/// Returns, for each decoded instruction, whether the contracts at its boundary are proved:
+/// whether every value a call passes, or a return returns, is known to satisfy its contract,
+/// so that the VM need not check it again. An unreachable instruction is not proved.
 pub(super) fn verify_flow(
     program: &Program,
     func_id: FuncId,
@@ -1157,26 +1192,32 @@ pub(super) fn verify_flow(
     reachable: &[bool],
     types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
-) -> Result<(), VerifyError> {
+) -> Result<Vec<bool>, VerifyError> {
     if !types
         .iter()
         .any(|kind| matches!(kind, ValueType::Agg | ValueType::Func | ValueType::Closure))
     {
-        return Ok(());
+        // Every contract on these kinds is a kind contract, which register types prove.
+        return Ok(alloc::vec![true; decoded.len()]);
     }
+    let mut proofs = alloc::vec![false; decoded.len()];
     let (mut arena, inputs, outputs) =
         solve_flow(program, func_id, blocks, reachable, types, decoded);
     for (index, (block, mut state)) in blocks.iter().zip(inputs).enumerate() {
         if !reachable[index] {
             continue;
         }
-        for di in &decoded[block.instr_start..block.instr_end] {
-            validate(&mut arena, func_id, di.offset, &di.instr, types, &state)?;
+        for (offset, di) in decoded[block.instr_start..block.instr_end]
+            .iter()
+            .enumerate()
+        {
+            proofs[block.instr_start + offset] =
+                validate(&mut arena, func_id, di.offset, &di.instr, types, &state)?;
             transfer(&mut arena, &di.instr, types, &mut state);
         }
         debug_assert_eq!(state, outputs[index], "shape OUT mismatch");
     }
-    Ok(())
+    Ok(proofs)
 }
 
 fn solve_flow<'a>(
