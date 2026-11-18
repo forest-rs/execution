@@ -190,7 +190,7 @@ impl TapeObserver for Observe {
             .expect("selected capture start")
             .elapsed()
             .as_nanos();
-        // Retention is an application policy; this demo keeps at most three selected invocations.
+        // Retention is an application policy; this demo keeps at most three selected turns.
         if self.captures.len() == 3 {
             self.captures.remove(0);
         }

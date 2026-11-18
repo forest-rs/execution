@@ -15,7 +15,7 @@ use execution_tape::{
     recording::{InstructionCapture, RecordLimits, Recorder, RegisterWatch},
     trace::TraceSink,
     value::{Obj, ObjHandle, Value},
-    vm::{ComputationId, ExecutionWork, Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{ComputationId, ExecutionWork, Limits, RunStatus, Turn, TurnOptions, TurnOutcome, Vm},
 };
 use std::{
     cell::RefCell,
@@ -45,9 +45,9 @@ pub(super) struct Guest {
     vm: Option<Vm<NoHost>>,
     /// The guest, saved between polls; `None` once it has returned.
     computation: Option<ComputationId>,
-    /// The recorder every invocation of the guest shares; taken when the task retires.
+    /// The recorder every turn of the guest shares; taken when the task retires.
     capture: Option<Rc<RefCell<Recorder>>>,
-    /// Work the guest's invocations admitted so far: each poll's has a fresh allowance.
+    /// Work the guest's turns admitted so far: each poll's has a fresh allowance.
     spent: ExecutionWork,
     request: Option<Request>,
     compiled: Compiled,
@@ -99,19 +99,20 @@ impl Guest {
         let mask = capture.mask();
         let mut vm = Vm::new(NoHost, Limits::default());
         let unit = vm.install(Arc::clone(compiled.target.program())).unwrap();
-        let computation = compiled
-            .target
+        // Each turn borrows a handle of the shared recorder.
+        let mut sink = Rc::clone(&capture);
+        let turn = vm
             .start(
-                &mut vm,
-                unit,
+                compiled.target.at(unit),
                 vec![Value::Str(path.clone())],
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
-                    .trace_owned(mask, capture.clone()),
+                    .trace(mask, &mut sink),
             )
-            .map_err(|error| SceneError::Vm(Box::new(error)))?
-            .save()
-            .expect("a guest that has not run yet waits");
+            .map_err(|error| SceneError::Vm(Box::new(error)))?;
+        let Ok(TurnOutcome::Saved(computation)) = turn.finish() else {
+            return Err(SceneError::Expected("a guest that has not run yet saves"));
+        };
         let index = evidence.borrow_mut().start(
             NodeAttempt {
                 node: access.node(),
@@ -140,9 +141,10 @@ impl Guest {
         outputs: &mut Vec<SceneValue>,
         access: &mut NodeAccess<'_, SceneValue>,
     ) -> Result<Poll<()>, SceneError> {
-        // Each poll is one invocation of the saved guest, with the same recorder.
+        // Each poll is one turn of the saved guest, lent a handle of the same recorder.
         let capture = self.capture.as_ref().expect("active task");
         let mask = capture.mask();
+        let mut sink = Rc::clone(capture);
         // The ID stays with the task until the computation is resumed under it.
         let computation = self.computation.expect("saved guest");
         let mut invocation = self
@@ -151,16 +153,16 @@ impl Guest {
             .expect("active task")
             .resume(
                 computation,
-                InvocationOptions::default()
+                TurnOptions::default()
                     .yield_host_calls()
-                    .trace_owned(mask, Rc::clone(capture)),
+                    .trace(mask, &mut sink),
             )
             .map_err(|_| SceneError::Expected("the guest saved by the previous poll"))?;
         self.computation = None;
-        // Work spent before this poll; `self.spent` adds this invocation's as it goes, so a
+        // Work spent before this poll; `self.spent` adds this turn's as it goes, so a
         // poll that fails still reports what it ran.
         let before = self.spent;
-        let status = invocation.resume(u64::MAX);
+        let status = invocation.drive(u64::MAX);
         self.spent = spent(before, &invocation);
         match status.map_err(|error| SceneError::Vm(Box::new(error)))? {
             RunStatus::AwaitingHost => {}
@@ -199,7 +201,10 @@ impl Guest {
         }
         let reply = match self.request.as_mut().expect("I/O admitted").poll(cx) {
             Poll::Pending => {
-                self.computation = Some(invocation.save().expect("waiting at its request"));
+                let Ok(TurnOutcome::Saved(id)) = invocation.finish() else {
+                    return Err(SceneError::Expected("a guest waiting at its request saves"));
+                };
+                self.computation = Some(id);
                 return Ok(Poll::Pending);
             }
             Poll::Ready(reply) => reply,
@@ -243,15 +248,16 @@ impl Guest {
             Ok(root) => request.complete(&mut [root], Ok(0)),
             Err(error) => request.complete(&mut [], Err(error)),
         };
-        let status = completed.and_then(|()| invocation.resume(u64::MAX));
+        let status = completed.and_then(|()| invocation.drive(u64::MAX));
         self.spent = spent(before, &invocation);
         if status.map_err(|error| SceneError::Vm(Box::new(error)))? != RunStatus::Complete {
             return Err(SceneError::Expected("completed asset guest"));
         }
         let (work, fuel) = (self.spent.data, self.spent.fuel);
         let owner = Some(Arc::clone(invocation.program()));
-        let returned = invocation.take_outputs().expect("successful guest");
-        drop(invocation);
+        let Ok(TurnOutcome::Returned(returned)) = invocation.finish() else {
+            return Err(SceneError::Expected("a successful guest returns"));
+        };
         // The task is done with its VM: move the result out of it without copying payloads.
         let snapshot = self
             .vm
@@ -283,18 +289,18 @@ impl Guest {
     expect(unused_variables, reason = "rendering needs the observatory")
 )]
 fn capture_snapshot<'vm>(
-    invocation: Invocation<'vm, NoHost>,
+    invocation: Turn<'vm, NoHost>,
     compiled: &Compiled,
     evidence: &Rc<RefCell<Evidence>>,
     index: usize,
-) -> Result<Invocation<'vm, NoHost>, SceneError> {
+) -> Result<Turn<'vm, NoHost>, SceneError> {
     #[cfg(feature = "observatory")]
     {
         let mut view = execution_tape_observatory::LiveExplorer::new(invocation)
             .sources(&compiled.sources)
             .map_err(|error| SceneError::Observation(error.to_string()))?;
         let result = view.render_text(120, 38);
-        let invocation = view.into_invocation();
+        let invocation = view.into_turn();
         evidence.borrow_mut().snapshots.push((
             index,
             result.map_err(|error| SceneError::Observation(error.to_string()))?,
@@ -307,8 +313,8 @@ fn capture_snapshot<'vm>(
     ))
 }
 
-/// Work admitted before `invocation` plus its own.
-fn spent(before: ExecutionWork, invocation: &Invocation<'_, NoHost>) -> ExecutionWork {
+/// Work admitted before `turn` plus its own.
+fn spent(before: ExecutionWork, invocation: &Turn<'_, NoHost>) -> ExecutionWork {
     before
         .checked_add(invocation.work())
         .expect("guest work fits u64")

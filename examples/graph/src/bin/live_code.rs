@@ -15,7 +15,7 @@ use execution_tape::{
     source::{SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping},
     trace::TraceSink,
     value::{FuncId, Obj, ObjHandle, Value},
-    vm::{Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{Limits, RunStatus, Turn, TurnOptions, Vm},
 };
 use std::{
     cell::RefCell,
@@ -236,13 +236,12 @@ fn invoke(callback: &Callback, host: &Cells) -> Result<i64> {
         RecordLimits::default(),
     );
     let unit = vm.install(Arc::clone(callback.target.program())).unwrap();
-    let mut call = callback.target.start(
-        &mut vm,
-        unit,
+    let mut call = vm.start(
+        callback.target.at(unit),
         vec![],
-        InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+        TurnOptions::default().trace(recorder.mask(), &mut recorder),
     )?;
-    while call.resume(1)? == RunStatus::Suspended {}
+    while call.drive(1)? == RunStatus::Suspended {}
     let answer = returned(call.result().unwrap().map_err(Clone::clone)?)?;
     drop(call);
     checked_recording(recorder.finish(), answer, host)?;
@@ -258,13 +257,13 @@ enum View {
 
 #[cfg(feature = "observatory")]
 fn finish_paused<'a>(
-    mut call: Invocation<'a, Cells>,
+    mut call: Turn<'a, Cells>,
     sources: &'a SourceMap,
     view: View,
 ) -> Result<(Option<i64>, Option<String>)> {
     use execution_tape_observatory::{LiveExplorer, ObjectView};
     if view == View::None {
-        call.resume(u64::MAX)?;
+        call.drive(u64::MAX)?;
         return Ok((
             Some(returned(call.result().unwrap().map_err(Clone::clone)?)?),
             None,
@@ -289,7 +288,7 @@ fn finish_paused<'a>(
         explorer.run()?;
     } else {
         print!("{snapshot}");
-        explorer.resume(u64::MAX)?;
+        explorer.drive(u64::MAX)?;
     }
     let answer = explorer
         .result()
@@ -301,14 +300,14 @@ fn finish_paused<'a>(
 }
 #[cfg(not(feature = "observatory"))]
 fn finish_paused(
-    mut call: Invocation<'_, Cells>,
+    mut call: Turn<'_, Cells>,
     _: &SourceMap,
     view: View,
 ) -> Result<(Option<i64>, Option<String>)> {
     if view != View::None {
         return Err("--snapshot/--interactive requires --features observatory".into());
     }
-    call.resume(u64::MAX)?;
+    call.drive(u64::MAX)?;
     Ok((
         Some(returned(call.result().unwrap().map_err(Clone::clone)?)?),
         None,
@@ -345,14 +344,13 @@ fn run(view: View, old: &Revision, new: &Revision) -> Result<Story> {
     let mut vm = Vm::new(host.clone(), Limits::default());
     let mut recorder = Recorder::new(Arc::clone(first.target.program()), RecordLimits::default());
     let unit = vm.install(Arc::clone(first.target.program())).unwrap();
-    let mut paused = first.target.start(
-        &mut vm,
-        unit,
+    let mut paused = vm.start(
+        first.target.at(unit),
         vec![],
-        InvocationOptions::default().trace(recorder.mask(), &mut recorder),
+        TurnOptions::default().trace(recorder.mask(), &mut recorder),
     )?;
     assert_eq!(
-        paused.resume(2)?,
+        paused.drive(2)?,
         RunStatus::Suspended,
         "old callback must pause before its host effect"
     ); // receiver + delta, before host effect
@@ -434,7 +432,7 @@ fn run(view: View, old: &Revision, new: &Revision) -> Result<Story> {
         );
         checked_recording(recorder.finish(), result, &host)?;
     } else {
-        // Leaving the interactive view early cancels the old invocation. No return/replay
+        // Leaving the interactive view early cancels the old turn. No return/replay
         // is fabricated for it, and its host effect has not been rolled back.
         drop(recorder);
     }

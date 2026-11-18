@@ -25,7 +25,7 @@ pub(super) struct Attempt {
     pub asset: String,
     pub request: Option<usize>,
     pub location: Option<TraceLocation>,
-    /// Fuel the guest had spent when its request was admitted, across all its invocations.
+    /// Fuel the guest had spent when its request was admitted, across all its turns.
     pub fuel_waiting: Option<u64>,
     /// Fuel the guest had spent by its latest poll.
     pub fuel_latest: Option<u64>,
