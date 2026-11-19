@@ -4640,6 +4640,98 @@
       ]
     },
     {
+      "name": "ObjUtf8Next",
+      "mnemonic": "obj.utf8_next",
+      "prefix": "0xFC",
+      "byte": "0x22",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(scalar, next, missing) = decode(host.object_bytes(obj), pos)`: the UTF-8 scalar starting at byte `pos` (`u32`) and the position after it (`u64`); `missing` (`bool`) is true, with `scalar = u32::MAX` and `next = pos`, when no well-formed scalar starts there (traps when the host has no bytes for the object).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "scalar",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "next",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "missing",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "obj",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "index",
+          "encoding": "reg_u32_uleb",
+          "field": "pos",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "ObjUtf8Prev",
+      "mnemonic": "obj.utf8_prev",
+      "prefix": "0xFC",
+      "byte": "0x23",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(scalar, prev, missing) = decode_back(host.object_bytes(obj), pos)`: the UTF-8 scalar ending at byte `pos` (`u32`) and the position where it starts (`u64`); `missing` (`bool`) is true, with `scalar = u32::MAX` and `prev = pos`, when no well-formed scalar ends there (traps when the host has no bytes for the object).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "scalar",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "prev",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "missing",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "obj",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "index",
+          "encoding": "reg_u32_uleb",
+          "field": "pos",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "ConstI32",
       "mnemonic": "const.i32",
       "prefix": "0xFD",

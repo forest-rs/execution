@@ -16,6 +16,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Decode UTF-8 from a host object's bytes without a host call. `obj.utf8_next scalar, next,
+  missing, obj, pos` (`0xFC 0x22`) decodes the scalar starting at byte `pos` of the bytes
+  `Host::object_bytes` lends, and `obj.utf8_prev` (`0xFC 0x23`) the one ending there. A
+  position with no well-formed scalar (out of bounds, inside one or malformed) sets the
+  `missing` flag instead of trapping, so a guest ends a scan or signals its own error by
+  branching on it. In the `utf8_scan` group of the `object_bytes` bench a scan costs about
+  20 ns per scalar of any width, against about 80 ns with a read-and-advance host call.
 - Read a host object's bytes without a host call. `Host::object_bytes(obj, read)` lends an
   object's bytes, such as a string's UTF-8, to one instruction's `read` closure, so a host
   behind a `RefCell` or lock can lend them too; by default no object has bytes.

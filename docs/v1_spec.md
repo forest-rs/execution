@@ -1249,6 +1249,26 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
     (`Recording::object_bytes`, charged to `RecordLimits::payload_bytes`). Later reads in that
     span are not recorded: replay answers them from the same copy, applying the same rule.
     Replay reads the copies instead of asking a host.
+- `obj.utf8_next r_scalar, r_next, r_missing, r_obj, r_pos` and
+  `obj.utf8_prev r_scalar, r_prev, r_missing, r_obj, r_pos`
+  - `r_obj` holds an `Obj` of any host type, `r_pos` and `r_next`/`r_prev` are `U64`,
+    `r_scalar` is `U32` and `r_missing` is `Bool`. Both decode one Unicode scalar of the bytes
+    `Host::object_bytes` lends, as `obj.bytes_get` reads them: `obj.utf8_next` the scalar
+    that starts at byte `pos`, writing the position after it, and `obj.utf8_prev` the scalar
+    that ends at `pos`, writing the position where it starts.
+  - The bytes need not be UTF-8. When no well-formed scalar (as `core::str::from_utf8`
+    accepts) starts, or ends, at `pos`, because it is out of bounds, inside a scalar or at
+    malformed bytes, the instruction writes `missing = true`, `scalar = 0xFFFF_FFFF` (no
+    scalar) and leaves the position at `pos`. Otherwise `missing` is false. A guest branches
+    on `missing` to end a scan or to signal its own error, so a decode that fails is not a
+    trap; `pos` and the destination position may be the same register.
+  - On an object whose host type guarantees well-formed UTF-8, a position a decode returned
+    is a scalar boundary, so `obj.utf8_next` below the length (or `obj.utf8_prev` above zero)
+    always succeeds, and a guest may skip the branch. If that guarantee is wrong, the guest
+    reads `0xFFFF_FFFF` and an unmoved position as data: memory stays safe, because the VM
+    checks every decode, but a loop that relies on progress runs until its fuel is exhausted.
+  - No host call happens. Fuel cost: one instruction. Traps with `NoObjectBytes { object }`
+    when the host has no bytes for the object. Observed and recorded as `obj.bytes_get` is.
 
 ## Opcode encodings
 The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and
@@ -1369,9 +1389,12 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x14 f64.cos dst, a`
 - `0xFC 0x15 f64.atan2 dst, y, x`
 
-Host object bytes (`0xFC 0x20`; see [Host object queries](#host-object-queries)):
+Host object bytes and UTF-8 decoding (`0xFC 0x20`; see
+[Host object queries](#host-object-queries)):
 - `0xFC 0x20 obj.bytes_len dst, obj`
 - `0xFC 0x21 obj.bytes_get dst, obj, index`
+- `0xFC 0x22 obj.utf8_next scalar, next, missing, obj, pos`
+- `0xFC 0x23 obj.utf8_prev scalar, prev, missing, obj, pos`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits

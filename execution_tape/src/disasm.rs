@@ -921,7 +921,19 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.dst = Some(dst);
             view.srcs = vec![a];
         }
-        Instr::I64AddOvf { dst, a, b, .. }
+        Instr::ObjUtf8Next {
+            scalar: dst,
+            obj: a,
+            pos: b,
+            ..
+        }
+        | Instr::ObjUtf8Prev {
+            scalar: dst,
+            obj: a,
+            pos: b,
+            ..
+        }
+        | Instr::I64AddOvf { dst, a, b, .. }
         | Instr::I64SubOvf { dst, a, b, .. }
         | Instr::I64MulOvf { dst, a, b, .. }
         | Instr::U64AddOvf { dst, a, b, .. }
@@ -1738,7 +1750,8 @@ fn fmt_instr_with_labels(
             fmt_continuation(f, iv.program, &iv.decoded.instr)?;
         }
         Operands::Simple => {
-            // Most instructions write one register; overflow-checked arithmetic writes two.
+            // Most instructions write one register; overflow-checked arithmetic writes two
+            // and UTF-8 decoding three.
             let mut writes = iv.writes();
             if let Some(dst) = writes.next() {
                 write!(f, " ")?;
@@ -1933,7 +1946,8 @@ impl fmt::Display for InstrView<'_> {
                 fmt_continuation(f, self.program, &self.decoded.instr)?;
             }
             Operands::Simple => {
-                // Most instructions write one register; overflow-checked arithmetic writes two.
+                // Most instructions write one register; overflow-checked arithmetic writes two
+                // and UTF-8 decoding three.
                 let mut writes = self.writes();
                 if let Some(dst) = writes.next() {
                     write!(f, " ")?;

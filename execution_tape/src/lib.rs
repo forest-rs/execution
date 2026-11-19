@@ -800,6 +800,7 @@ mod register_operands;
 pub mod source;
 pub mod trace;
 pub(crate) mod typed;
+mod utf8;
 pub mod value;
 pub mod verifier;
 pub mod vm;

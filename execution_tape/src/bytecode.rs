@@ -341,6 +341,22 @@ pub(crate) enum Instr {
     ObjBytesLen { dst: u32, obj: u32 },
     /// `dst = host.object_bytes(obj)[index]` (`Obj`, `u64` -> `u64`).
     ObjBytesGet { dst: u32, obj: u32, index: u32 },
+    /// `(scalar, next, missing) = utf8_next(host.object_bytes(obj), pos)`.
+    ObjUtf8Next {
+        scalar: u32,
+        next: u32,
+        missing: u32,
+        obj: u32,
+        pos: u32,
+    },
+    /// `(scalar, prev, missing) = utf8_prev(host.object_bytes(obj), pos)`.
+    ObjUtf8Prev {
+        scalar: u32,
+        prev: u32,
+        missing: u32,
+        obj: u32,
+        pos: u32,
+    },
     /// `dst = i32`.
     ConstI32 { dst: u32, imm: i32 },
     /// `dst = u32`.

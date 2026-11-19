@@ -2338,6 +2338,61 @@ impl Asm {
         self
     }
 
+    /// Encodes `obj.utf8_next scalar, next, missing, obj, pos`: the UTF-8 scalar that starts
+    /// at byte `pos` of the bytes the host exposes for the object in `obj`
+    /// ([`Host::object_bytes`](crate::host::Host::object_bytes)), and the position after it.
+    ///
+    /// `scalar` is a `u32` register, `next` and `pos` are `u64` registers and `missing` is a
+    /// `bool` register; `obj` may hold an object of any host type. When no well-formed scalar
+    /// starts at `pos`, because it is at or past the end, inside a scalar or at malformed bytes,
+    /// the instruction writes `missing = true`, `scalar = u32::MAX` and `next = pos` instead of
+    /// trapping, so the guest branches on `missing`. It traps with
+    /// [`Trap::NoObjectBytes`](crate::vm::Trap::NoObjectBytes) when the host has no bytes for
+    /// the object.
+    pub fn obj_utf8_next(
+        &mut self,
+        scalar: Reg,
+        next: Reg,
+        missing: Reg,
+        obj: Reg,
+        pos: Reg,
+    ) -> &mut Self {
+        self.opcode(Opcode::ObjUtf8Next);
+        self.reg(scalar);
+        self.reg(next);
+        self.reg(missing);
+        self.reg(obj);
+        self.reg(pos);
+        self
+    }
+
+    /// Encodes `obj.utf8_prev scalar, prev, missing, obj, pos`: the UTF-8 scalar that ends at
+    /// byte `pos` of the bytes the host exposes for the object in `obj`
+    /// ([`Host::object_bytes`](crate::host::Host::object_bytes)), and the position where it
+    /// starts.
+    ///
+    /// Registers are typed as for [`Self::obj_utf8_next`]. When no well-formed scalar ends at
+    /// `pos`, because it is at the start, past the end, inside a scalar or after malformed
+    /// bytes, the instruction writes `missing = true`, `scalar = u32::MAX` and `prev = pos`.
+    /// It traps with [`Trap::NoObjectBytes`](crate::vm::Trap::NoObjectBytes) when the host has
+    /// no bytes for the object.
+    pub fn obj_utf8_prev(
+        &mut self,
+        scalar: Reg,
+        prev: Reg,
+        missing: Reg,
+        obj: Reg,
+        pos: Reg,
+    ) -> &mut Self {
+        self.opcode(Opcode::ObjUtf8Prev);
+        self.reg(scalar);
+        self.reg(prev);
+        self.reg(missing);
+        self.reg(obj);
+        self.reg(pos);
+        self
+    }
+
     /// Encodes `const.i32 dst, imm_sleb`.
     pub fn const_i32(&mut self, dst: Reg, imm: i32) -> &mut Self {
         self.opcode(Opcode::ConstI32);

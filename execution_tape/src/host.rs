@@ -918,8 +918,9 @@ pub trait Host {
         None
     }
 
-    /// Calls `read` with the bytes of `object` that `obj.bytes_len` and `obj.bytes_get` read,
-    /// or with `None` when the host exposes none for it, and returns what `read` returns.
+    /// Calls `read` with the bytes of `object` that `obj.bytes_len`, `obj.bytes_get`,
+    /// `obj.utf8_next` and `obj.utf8_prev` read, or with `None` when the host exposes none for
+    /// it, and returns what `read` returns.
     ///
     /// Guest code reads a host-owned buffer, such as a string's UTF-8, without a host call per
     /// byte. Like [`Self::object_key`], the VM calls this directly, once per instruction, for

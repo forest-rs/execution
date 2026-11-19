@@ -163,6 +163,8 @@ impl Instr {
             Self::F64Atan2 { .. } => Opcode::F64Atan2,
             Self::ObjBytesLen { .. } => Opcode::ObjBytesLen,
             Self::ObjBytesGet { .. } => Opcode::ObjBytesGet,
+            Self::ObjUtf8Next { .. } => Opcode::ObjUtf8Next,
+            Self::ObjUtf8Prev { .. } => Opcode::ObjUtf8Prev,
             Self::ConstI32 { .. } => Opcode::ConstI32,
             Self::I32Add { .. } => Opcode::I32Add,
             Self::I32Sub { .. } => Opcode::I32Sub,

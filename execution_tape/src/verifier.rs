@@ -2824,6 +2824,32 @@ fn verify_function_bytecode(
                 obj: map_object(*obj)?,
                 index: map_u64(*index)?,
             },
+            Instr::ObjUtf8Next {
+                scalar,
+                next,
+                missing,
+                obj,
+                pos,
+            } => ExecInstr::ObjUtf8Next {
+                scalar: map_u32(*scalar)?,
+                next: map_u64(*next)?,
+                missing: map_bool(*missing)?,
+                obj: map_object(*obj)?,
+                pos: map_u64(*pos)?,
+            },
+            Instr::ObjUtf8Prev {
+                scalar,
+                prev,
+                missing,
+                obj,
+                pos,
+            } => ExecInstr::ObjUtf8Prev {
+                scalar: map_u32(*scalar)?,
+                prev: map_u64(*prev)?,
+                missing: map_bool(*missing)?,
+                obj: map_object(*obj)?,
+                pos: map_u64(*pos)?,
+            },
             Instr::ConstI32 { dst, imm } => ExecInstr::ConstI32 {
                 dst: map_i32(*dst)?,
                 imm: *imm,
@@ -4711,6 +4737,10 @@ fn validate_instr_types(
         Instr::ObjBytesGet { obj, index, .. } => {
             check_object(func_id, pc, *obj, t(*obj))?;
             check_expected(func_id, pc, *index, t(*index), ValueType::U64)?;
+        }
+        Instr::ObjUtf8Next { obj, pos, .. } | Instr::ObjUtf8Prev { obj, pos, .. } => {
+            check_object(func_id, pc, *obj, t(*obj))?;
+            check_expected(func_id, pc, *pos, t(*pos), ValueType::U64)?;
         }
         Instr::ConstI32 { .. } | Instr::ConstU32 { .. } | Instr::ConstF32 { .. } => {}
         Instr::I32Add { a, b, .. } => {
