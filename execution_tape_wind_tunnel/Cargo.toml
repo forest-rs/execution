@@ -108,3 +108,7 @@ harness = false
 [[bench]]
 name = "object_dispatch"
 harness = false
+
+[[bench]]
+name = "object_bytes"
+harness = false

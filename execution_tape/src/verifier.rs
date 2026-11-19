@@ -2815,6 +2815,15 @@ fn verify_function_bytecode(
                     _ => unreachable!("an object register is declared `Obj`"),
                 },
             },
+            Instr::ObjBytesLen { dst, obj } => ExecInstr::ObjBytesLen {
+                dst: map_u64(*dst)?,
+                obj: map_object(*obj)?,
+            },
+            Instr::ObjBytesGet { dst, obj, index } => ExecInstr::ObjBytesGet {
+                dst: map_u64(*dst)?,
+                obj: map_object(*obj)?,
+                index: map_u64(*index)?,
+            },
             Instr::ConstI32 { dst, imm } => ExecInstr::ConstI32 {
                 dst: map_i32(*dst)?,
                 imm: *imm,
@@ -4697,6 +4706,11 @@ fn validate_instr_types(
         Instr::ObjConvert { dst, obj } => {
             check_object(func_id, pc, *dst, t(*dst))?;
             check_object(func_id, pc, *obj, t(*obj))?;
+        }
+        Instr::ObjBytesLen { obj, .. } => check_object(func_id, pc, *obj, t(*obj))?,
+        Instr::ObjBytesGet { obj, index, .. } => {
+            check_object(func_id, pc, *obj, t(*obj))?;
+            check_expected(func_id, pc, *index, t(*index), ValueType::U64)?;
         }
         Instr::ConstI32 { .. } | Instr::ConstU32 { .. } | Instr::ConstF32 { .. } => {}
         Instr::I32Add { a, b, .. } => {

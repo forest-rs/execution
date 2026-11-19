@@ -275,6 +275,9 @@ struct State {
     calls: usize,
     /// Recorded host object queries answered and checked.
     queries: usize,
+    /// The recorded bytes of each object read since host code last ran, as the recording
+    /// kept them, by [`super::object_id`].
+    object_bytes_seen: BTreeMap<(u64, u64), usize>,
     location: Option<TraceLocation>,
     candidate: bool,
     thrown: usize,
@@ -1032,6 +1035,8 @@ impl RecordedHost<'_> {
 /// recorded answers.
 struct NoReplayEffects<'a> {
     queries: &'a [RecordedObjectQuery],
+    /// The recorded bytes that [`ObjectAnswer::Bytes`] indexes.
+    object_bytes: &'a [Arc<[u8]>],
     state: Rc<RefCell<State>>,
 }
 impl NoReplayEffects<'_> {
@@ -1060,7 +1065,7 @@ impl Host for NoReplayEffects<'_> {
     fn object_key(&self, _: Obj) -> Option<u64> {
         match self.next_answer()? {
             ObjectAnswer::Key(key) => key,
-            ObjectAnswer::Converted { .. } => None,
+            ObjectAnswer::Converted { .. } | ObjectAnswer::Bytes(_) => None,
         }
     }
 
@@ -1068,8 +1073,34 @@ impl Host for NoReplayEffects<'_> {
     fn convert_object(&self, _: Obj, _: crate::program::HostTypeId) -> Option<Obj> {
         match self.next_answer()? {
             ObjectAnswer::Converted { converted, .. } => converted,
-            ObjectAnswer::Key(_) => None,
+            ObjectAnswer::Key(_) | ObjectAnswer::Bytes(_) => None,
         }
+    }
+
+    /// The recorded copy of the object's bytes: the one an earlier read since host code last
+    /// ran delivered, or else the next query's, checked like [`Self::object_key`]'s keys.
+    fn object_bytes<R>(&self, object: Obj, read: impl FnOnce(Option<&[u8]>) -> R) -> R {
+        read(self.recorded_bytes(object))
+    }
+}
+
+impl NoReplayEffects<'_> {
+    /// See [`Host::object_bytes`] on this type.
+    fn recorded_bytes(&self, object: Obj) -> Option<&[u8]> {
+        let seen = self
+            .state
+            .borrow()
+            .object_bytes_seen
+            .get(&super::object_id(object))
+            .copied();
+        let index = match seen {
+            Some(index) => index,
+            None => match self.next_answer()? {
+                ObjectAnswer::Bytes(index) => index?,
+                ObjectAnswer::Key(_) | ObjectAnswer::Converted { .. } => return None,
+            },
+        };
+        self.object_bytes.get(index).map(|bytes| &**bytes)
     }
 }
 
@@ -1277,6 +1308,7 @@ impl TraceSink for Check<'_> {
     }
     fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
         let mut state = self.state.borrow_mut();
+        super::expire_object_bytes(&mut state.object_bytes_seen, &event);
         if state.error.is_some() {
             return;
         }
@@ -1358,6 +1390,34 @@ impl TraceSink for Check<'_> {
                     object,
                     ObjectAnswer::Converted { to, converted },
                 )?,
+                ValueEvent::ObjectBytes {
+                    location,
+                    object,
+                    bytes,
+                } => {
+                    let id = super::object_id(object);
+                    // A read the window's first read answered was not recorded.
+                    if bytes.is_none() || !state.object_bytes_seen.contains_key(&id) {
+                        // Replay delivered the copy the next recorded answer names, if any.
+                        let index = match self.record.queries.get(state.queries) {
+                            Some(RecordedObjectQuery {
+                                answer: ObjectAnswer::Bytes(index),
+                                ..
+                            }) if bytes.is_some() => *index,
+                            _ => None,
+                        };
+                        check_query(
+                            self.record,
+                            &mut state,
+                            location,
+                            object,
+                            ObjectAnswer::Bytes(index),
+                        )?;
+                        if let Some(index) = index {
+                            state.object_bytes_seen.insert(id, index);
+                        }
+                    }
+                }
                 ValueEvent::CallbackEnter {
                     location,
                     callee,
@@ -1664,6 +1724,7 @@ impl Recording {
         let mut vm = Vm::new(
             NoReplayEffects {
                 queries: &self.queries,
+                object_bytes: &self.object_bytes,
                 state: Rc::clone(&state),
             },
             entry.limits.clone(),
@@ -2065,7 +2126,8 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
             },
         ) => al == bl && au == bu && ar == br,
         (Trap::AggError(a), Trap::AggError(b)) => a == b,
-        (Trap::NoObjectKey { object: a }, Trap::NoObjectKey { object: b }) => a == b,
+        (Trap::NoObjectKey { object: a }, Trap::NoObjectKey { object: b })
+        | (Trap::NoObjectBytes { object: a }, Trap::NoObjectBytes { object: b }) => a == b,
         (
             Trap::NoObjectConversion {
                 object: a,

@@ -387,6 +387,12 @@ pub enum Trap {
         /// The host's answer: `None`, or an object of another host type.
         converted: Option<Obj>,
     },
+    /// `obj.bytes_len` or `obj.bytes_get` read an object the host exposes no bytes for:
+    /// [`Host::object_bytes`] returned `None`.
+    NoObjectBytes {
+        /// The object.
+        object: Obj,
+    },
 
     /// Index out of bounds (bytes/string ops).
     IndexOutOfBounds,
@@ -565,6 +571,11 @@ impl fmt::Display for Trap {
                 }
                 Ok(())
             }
+            Self::NoObjectBytes { object } => write!(
+                f,
+                "the host has no bytes for object {:#x} of host type {:#x}",
+                object.handle.0, object.host_type.0
+            ),
             Self::IndexOutOfBounds => write!(f, "index out of bounds"),
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
@@ -1265,6 +1276,31 @@ impl<'a> TraceCtx<'a> {
         );
         debug_assert!(self.scopes.is_empty(), "every entered scope must close");
     }
+}
+
+/// Runs one instruction's `read` on `object`'s bytes, borrowed from `host`
+/// ([`Host::object_bytes`]), after reporting the host's answer to value observers.
+///
+/// The slice is borrowed only while `read` runs. `None` means the host has no bytes for the
+/// object. `read` answers a small value rather than a [`Trap`], which keeps the hot path's
+/// returns in registers.
+#[inline(always)]
+fn read_object_bytes<H: Host, P: TracePolicy, R>(
+    host: &H,
+    trace: &mut TraceCtx<'_>,
+    program: &Program,
+    location: TraceLocation,
+    object: Obj,
+    read: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
+    host.object_bytes(object, |bytes| {
+        P::values(trace, program, || ValueEvent::ObjectBytes {
+            location,
+            object,
+            bytes,
+        });
+        bytes.map(read)
+    })
 }
 
 trait TracePolicy {
@@ -2657,6 +2693,44 @@ impl<H: Host> Vm<H> {
                         ));
                     };
                     ctx.write_obj(base, *dst, result);
+                }
+                ExecInstr::ObjBytesLen { dst, obj } => {
+                    let object = ctx.read_obj(base, *obj);
+                    let len = read_object_bytes::<H, P, _>(
+                        &self.host,
+                        trace,
+                        program_ref,
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        },
+                        object,
+                        |bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                    )
+                    .ok_or_else(|| {
+                        ctx.trap(func_id, pc, span_id, Trap::NoObjectBytes { object })
+                    })?;
+                    ctx.write_u64(base, *dst, len);
+                }
+                ExecInstr::ObjBytesGet { dst, obj, index } => {
+                    let object = ctx.read_obj(base, *obj);
+                    let index = usize::try_from(ctx.read_u64(base, *index)).unwrap_or(usize::MAX);
+                    let byte = read_object_bytes::<H, P, _>(
+                        &self.host,
+                        trace,
+                        program_ref,
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        },
+                        object,
+                        |bytes| bytes.get(index).copied(),
+                    )
+                    .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::NoObjectBytes { object }))?
+                    .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?;
+                    ctx.write_u64(base, *dst, u64::from(byte));
                 }
                 ExecInstr::ConstI32 { dst, imm } => {
                     ctx.write_i32(base, *dst, *imm);

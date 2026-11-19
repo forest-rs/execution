@@ -680,6 +680,15 @@ pub(crate) enum ExecInstr {
         /// The destination register's host type.
         to: HostTypeId,
     },
+    ObjBytesLen {
+        dst: U64Reg,
+        obj: ObjReg,
+    },
+    ObjBytesGet {
+        dst: U64Reg,
+        obj: ObjReg,
+        index: U64Reg,
+    },
     ConstI32 {
         dst: I32Reg,
         imm: i32,

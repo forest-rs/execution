@@ -238,6 +238,12 @@ another representation, such as an untyped boxed receiver unboxed for the method
 it, for about 3 ns against about 44 ns as a host call. Keys and conversions must be pure and
 fixed for their object's life; recordings keep each answer, so replay needs no host.
 
+A host can likewise expose an object's bytes, such as a string's UTF-8, through
+`Host::object_bytes`, which `obj.bytes_len` and `obj.bytes_get` read, so a guest scans text
+without a host call per byte: about 4 ns per byte against about 50 ns through a host import.
+The slice is borrowed for one instruction only, so guests keep offsets and the host may move
+its buffers between instructions.
+
 ### Guarded links
 A guarded link is an inline cache for a dynamic send. Its callers pass `u64` keys with each call,
 such as the classes of the arguments a generic dispatches on (read with `obj.key`), and

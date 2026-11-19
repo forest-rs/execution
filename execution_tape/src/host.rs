@@ -917,6 +917,52 @@ pub trait Host {
         let _ = (object, to);
         None
     }
+
+    /// Calls `read` with the bytes of `object` that `obj.bytes_len` and `obj.bytes_get` read,
+    /// or with `None` when the host exposes none for it, and returns what `read` returns.
+    ///
+    /// Guest code reads a host-owned buffer, such as a string's UTF-8, without a host call per
+    /// byte. Like [`Self::object_key`], the VM calls this directly, once per instruction, for
+    /// one unit of fuel, and `read` is that instruction's work on the bytes. The borrow ends
+    /// when `read` returns, so the VM cannot keep the slice past the instruction: guests hold
+    /// offsets, never pointers, and a host may move or compact its buffers between
+    /// instructions, as a moving collector does. A host that keeps its state behind a
+    /// `RefCell` or lock borrows it around `read`. `read` does not call the host, but value
+    /// observers of [`ValueEvent::ObjectBytes`](crate::trace::ValueEvent::ObjectBytes) run inside it, while that borrow is held, so a
+    /// trace sink that shares the host's state must not borrow it mutably there.
+    ///
+    /// The bytes must depend only on the object and the host's state, and must not change
+    /// while the object lives: a guest may read a length once and index later, or keep an
+    /// offset it found valid, so a host whose objects can change exposes immutable snapshots
+    /// or nothing. The VM does not check this, but it checks every index against the slice it
+    /// is given, so a host that breaks the rule gives guests wrong bytes or traps, never memory
+    /// unsafety. A host that wraps another should forward this.
+    ///
+    /// Recordings copy an object's bytes at its first read and replay reads the copy, so replay
+    /// does not need the host. Later reads of the object are not recorded until host code the
+    /// recording sees runs, because a guest can only receive a handle the host freed and reused
+    /// through such host code, or through `obj.convert`, which recordings also account for.
+    /// After either, the next read is recorded again. A host that changes a live object's
+    /// bytes, which this contract forbids, can get replays that diverge.
+    ///
+    /// The method requires `Self: Sized` so that `dyn Host` stays usable; a trait object has
+    /// no object bytes.
+    ///
+    /// `None` makes the instruction trap with [`Trap::NoObjectBytes`]: as with a missing key,
+    /// the verifier proved the register holds an object, so an object without bytes is a stale
+    /// handle or a host that does not expose that type. A host whose objects may legitimately
+    /// lack bytes passes an empty slice for them. By default no object has bytes;
+    /// [`BoundHost::with_object_bytes`] answers for a bound host.
+    ///
+    /// [`Trap::NoObjectBytes`]: crate::vm::Trap::NoObjectBytes
+    /// [`BoundHost::with_object_bytes`]: crate::host_binding::BoundHost::with_object_bytes
+    fn object_bytes<R>(&self, object: Obj, read: impl FnOnce(Option<&[u8]>) -> R) -> R
+    where
+        Self: Sized,
+    {
+        let _ = object;
+        read(None)
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
