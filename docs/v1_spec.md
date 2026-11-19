@@ -1177,6 +1177,18 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
     as a host object query (`Recording::object_queries`, bounded by
     `RecordLimits::object_queries`), and replay delivers them in order instead of asking a host,
     checking each query's location and object.
+- `obj.convert r_dst, r_obj`
+  - Both registers hold `Obj`s, of any host types. Writes `Host::convert_object(obj, to)`, where
+    `to` is `r_dst`'s declared host type: the same value in another representation, such as a
+    boxed value unboxed to the object it holds, or boxed again. The host must answer from the
+    object and `to` alone, the same way for as long as the object lives; the VM does not check
+    this.
+  - No host call happens, as for `obj.key`. Fuel cost: one instruction.
+  - Traps with `NoObjectConversion { object, to, converted }` when the host returns `None` or an object of
+    another host type, which the register could not hold. Guests test what they convert first,
+    usually with `obj.key`; a conversion that must allocate or fail recoverably is a host call.
+  - Observed as `ValueEvent::ObjectConversion`, including refusals, and recorded and replayed as a
+    host object query like `obj.key`.
 
 ## Opcode encodings
 The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and
@@ -1286,6 +1298,7 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x0B f64.round_half_away dst, a` (ties away from zero)
 - `0xFC 0x0C f64.clamp dst, a, lo, hi` (traps with `ClampBoundsInvalid` unless `lo <= hi`)
 - `0xFC 0x0D obj.key dst, obj` (see [Host object queries](#host-object-queries))
+- `0xFC 0x0E obj.convert dst, obj` (see [Host object queries](#host-object-queries))
 
 `f64` math intrinsics (`0xFC 0x10..=0x1F`, ordered like the `f32` block at `0xFD 0xA0`; see
 [Math intrinsics](#math-intrinsics)):
@@ -1538,9 +1551,10 @@ The embedder provides a `Host` that can:
   - optional access sink for incremental-execution dependency recording
   - ability to charge extra fuel
 
-The embedder may also answer `Host::object_key(obj)` for `obj.key`, outside any host call: a pure
-query of the object's key, with no context, effects or fuel of its own.
-`BoundHost::with_object_key` supplies it for a bound host.
+The embedder may also answer `Host::object_key(obj)` for `obj.key` and
+`Host::convert_object(obj, to)` for `obj.convert`, outside any host call: pure queries about an
+object, with no context, effects or fuel of their own. `BoundHost::with_object_key` and
+`BoundHost::with_object_conversion` supply them for a bound host.
 
 The embedder owns:
 - `Obj` handle creation/lifetimes

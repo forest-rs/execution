@@ -4341,6 +4341,31 @@
       ]
     },
     {
+      "name": "ObjConvert",
+      "mnemonic": "obj.convert",
+      "prefix": "0xFC",
+      "byte": "0x0E",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = host.convert_object(obj, dst's host type)`: the same value as an object of another host type, such as a boxed value unboxed (traps when the host has none, or answers with another host type).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "obj",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "F64Pow",
       "mnemonic": "f64.pow",
       "prefix": "0xFC",

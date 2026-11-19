@@ -16,6 +16,15 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Convert a host object's representation without a host call. `obj.convert dst, obj`
+  (`0xFC 0x0E`) writes `Host::convert_object(obj, to)`, where `to` is `dst`'s host type, so a
+  dynamic language unboxes an untyped receiver for the method that takes it, or boxes an
+  object to pass it as untyped, without a host call: about 3 ns against 44 ns in the
+  `object_dispatch` bench, and within a nanosecond of methods that accepted the boxed form.
+  `None`, or an object of another host type, traps with `Trap::NoObjectConversion`;
+  `BoundHost::with_object_conversion` answers for a bound host. Conversions are observed as
+  `ValueEvent::ObjectConversion` and recorded and replayed as host object queries
+  (`ObjectAnswer::Converted`).
 - Read a host object's key without a host call. `obj.key dst, obj` (`0xFC 0x0D`) writes the
   `u64` that `Host::object_key(obj)` returns, such as the object's class, so a dynamic
   language tests a receiver's class with `obj.key`, `u64.eq` and `br` instead of asking the

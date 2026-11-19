@@ -23,7 +23,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
-use crate::program::{HostSigId, Pc, Program, SpanId, ValueType};
+use crate::program::{HostSigId, HostTypeId, Pc, Program, SpanId, ValueType};
 use crate::value::{FuncId, Obj, Value};
 use crate::verifier::{HostCallSite, VerifiedProgram, write_location};
 
@@ -217,6 +217,10 @@ pub type HostCallback<S> =
 /// A host's answer to `obj.key` for one object, from its per-instance state
 /// ([`Host::object_key`]).
 pub type ObjectKeyCallback<S> = fn(&S, Obj) -> Option<u64>;
+
+/// A host's answer to `obj.convert` for one object and destination host type, from its
+/// per-instance state ([`Host::convert_object`]).
+pub type ObjectConversionCallback<S> = fn(&S, Obj, HostTypeId) -> Option<Obj>;
 
 struct Operation<S> {
     signature: HostSig,
@@ -665,6 +669,7 @@ impl<S> HostBindings<S> {
             tables: Arc::clone(&self.tables),
             state,
             object_key: None,
+            convert_object: None,
         }
     }
 
@@ -691,6 +696,7 @@ pub struct BoundHost<S> {
     tables: Arc<[Table<S>]>,
     state: S,
     object_key: Option<ObjectKeyCallback<S>>,
+    convert_object: Option<ObjectConversionCallback<S>>,
 }
 
 impl<S> fmt::Debug for BoundHost<S> {
@@ -721,6 +727,14 @@ impl<S> BoundHost<S> {
     #[must_use]
     pub fn with_object_key(mut self, callback: ObjectKeyCallback<S>) -> Self {
         self.object_key = Some(callback);
+        self
+    }
+
+    /// Answers `obj.convert` with `callback` ([`Host::convert_object`]), for every unit this
+    /// host serves. Without one, nothing converts.
+    #[must_use]
+    pub fn with_object_conversion(mut self, callback: ObjectConversionCallback<S>) -> Self {
+        self.convert_object = Some(callback);
         self
     }
 }
@@ -761,6 +775,12 @@ impl<S> Host for BoundHost<S> {
     /// The answer of the callback given to [`Self::with_object_key`], or `None` without one.
     fn object_key(&self, object: Obj) -> Option<u64> {
         self.object_key?(&self.state, object)
+    }
+
+    /// The answer of the callback given to [`Self::with_object_conversion`], or `None`
+    /// without one.
+    fn convert_object(&self, object: Obj, to: HostTypeId) -> Option<Obj> {
+        self.convert_object?(&self.state, object, to)
     }
 }
 

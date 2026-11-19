@@ -374,6 +374,17 @@ pub enum Trap {
         /// The object.
         object: Obj,
     },
+    /// `obj.convert` read an object the host cannot convert to the destination's host type:
+    /// [`Host::convert_object`] returned `None`, or an object of another host type.
+    NoObjectConversion {
+        /// The object.
+        object: Obj,
+        /// The destination's host type.
+        to: crate::program::HostTypeId,
+        /// The host's answer: `None`, or an object of another host type.
+        converted: Option<Obj>,
+    },
+
     /// Index out of bounds (bytes/string ops).
     IndexOutOfBounds,
     /// String slice indices were not on UTF-8 character boundaries.
@@ -532,6 +543,25 @@ impl fmt::Display for Trap {
                 "the host has no key for object {:#x} of host type {:#x}",
                 object.handle.0, object.host_type.0
             ),
+            Self::NoObjectConversion {
+                object,
+                to,
+                converted,
+            } => {
+                write!(
+                    f,
+                    "the host cannot convert object {:#x} of host type {:#x} to host type {:#x}",
+                    object.handle.0, object.host_type.0, to.0
+                )?;
+                if let Some(converted) = converted {
+                    write!(
+                        f,
+                        ": it answered with host type {:#x}",
+                        converted.host_type.0
+                    )?;
+                }
+                Ok(())
+            }
             Self::IndexOutOfBounds => write!(f, "index out of bounds"),
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
@@ -2596,6 +2626,34 @@ impl<H: Host> Vm<H> {
                         ctx.trap(func_id, pc, span_id, Trap::NoObjectKey { object })
                     })?;
                     ctx.write_u64(base, *dst, key);
+                }
+                ExecInstr::ObjConvert { dst, obj, to } => {
+                    let object = ctx.read_obj(base, *obj);
+                    let converted = self.host.convert_object(object, *to);
+                    P::values(trace, program_ref, || ValueEvent::ObjectConversion {
+                        location: TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        },
+                        object,
+                        to: *to,
+                        converted,
+                    });
+                    // The destination register holds only objects of its declared host type.
+                    let Some(result) = converted.filter(|result| result.host_type == *to) else {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::NoObjectConversion {
+                                object,
+                                to: *to,
+                                converted,
+                            },
+                        ));
+                    };
+                    ctx.write_obj(base, *dst, result);
                 }
                 ExecInstr::ConstI32 { dst, imm } => {
                     ctx.write_i32(base, *dst, *imm);
