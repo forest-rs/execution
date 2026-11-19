@@ -387,7 +387,8 @@ pub enum Trap {
         /// The host's answer: `None`, or an object of another host type.
         converted: Option<Obj>,
     },
-    /// `obj.bytes_len` or `obj.bytes_get` read an object the host exposes no bytes for:
+    /// `obj.bytes_len`, `obj.bytes_get`, `obj.utf8_next` or `obj.utf8_prev` read an object the
+    /// host exposes no bytes for:
     /// [`Host::object_bytes`] returned `None`.
     NoObjectBytes {
         /// The object.
@@ -2731,6 +2732,49 @@ impl<H: Host> Vm<H> {
                     .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::NoObjectBytes { object }))?
                     .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?;
                     ctx.write_u64(base, *dst, u64::from(byte));
+                }
+                ExecInstr::ObjUtf8Next {
+                    scalar,
+                    next,
+                    missing,
+                    obj,
+                    pos,
+                }
+                | ExecInstr::ObjUtf8Prev {
+                    scalar,
+                    prev: next,
+                    missing,
+                    obj,
+                    pos,
+                } => {
+                    let object = ctx.read_obj(base, *obj);
+                    let at = ctx.read_u64(base, *pos);
+                    let forward = matches!(instr, ExecInstr::ObjUtf8Next { .. });
+                    let decoded = read_object_bytes::<H, P, _>(
+                        &self.host,
+                        trace,
+                        program_ref,
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        },
+                        object,
+                        |bytes| {
+                            if forward {
+                                crate::utf8::next(bytes, at)
+                            } else {
+                                crate::utf8::prev(bytes, at)
+                            }
+                        },
+                    )
+                    .ok_or_else(|| {
+                        ctx.trap(func_id, pc, span_id, Trap::NoObjectBytes { object })
+                    })?;
+                    let (decoded_scalar, moved) = decoded.unwrap_or((u32::MAX, at));
+                    ctx.write_u32(base, *scalar, decoded_scalar);
+                    ctx.write_u64(base, *next, moved);
+                    ctx.write_bool(base, *missing, decoded.is_none());
                 }
                 ExecInstr::ConstI32 { dst, imm } => {
                     ctx.write_i32(base, *dst, *imm);

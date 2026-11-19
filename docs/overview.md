@@ -242,7 +242,9 @@ A host can likewise expose an object's bytes, such as a string's UTF-8, through
 `Host::object_bytes`, which `obj.bytes_len` and `obj.bytes_get` read, so a guest scans text
 without a host call per byte: about 4 ns per byte against about 50 ns through a host import.
 The slice is borrowed for one instruction only, so guests keep offsets and the host may move
-its buffers between instructions.
+its buffers between instructions. `obj.utf8_next` and `obj.utf8_prev` decode one UTF-8 scalar
+at a byte position and report a position with no scalar through a flag instead of a trap, so a
+tokenizer's scan costs about 20 ns per scalar against about 80 ns with a host call per scalar.
 
 ### Guarded links
 A guarded link is an inline cache for a dynamic send. Its callers pass `u64` keys with each call,

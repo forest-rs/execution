@@ -689,6 +689,20 @@ pub(crate) enum ExecInstr {
         obj: ObjReg,
         index: U64Reg,
     },
+    ObjUtf8Next {
+        scalar: U32Reg,
+        next: U64Reg,
+        missing: BoolReg,
+        obj: ObjReg,
+        pos: U64Reg,
+    },
+    ObjUtf8Prev {
+        scalar: U32Reg,
+        prev: U64Reg,
+        missing: BoolReg,
+        obj: ObjReg,
+        pos: U64Reg,
+    },
     ConstI32 {
         dst: I32Reg,
         imm: i32,

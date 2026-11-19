@@ -1507,6 +1507,34 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 index,
             }
         },
+        Opcode::ObjUtf8Next => {
+            let scalar = crate::codec_primitives::read_reg(r)?;
+            let next = crate::codec_primitives::read_reg(r)?;
+            let missing = crate::codec_primitives::read_reg(r)?;
+            let obj = crate::codec_primitives::read_reg(r)?;
+            let pos = crate::codec_primitives::read_reg(r)?;
+            Instr::ObjUtf8Next {
+                scalar,
+                next,
+                missing,
+                obj,
+                pos,
+            }
+        },
+        Opcode::ObjUtf8Prev => {
+            let scalar = crate::codec_primitives::read_reg(r)?;
+            let prev = crate::codec_primitives::read_reg(r)?;
+            let missing = crate::codec_primitives::read_reg(r)?;
+            let obj = crate::codec_primitives::read_reg(r)?;
+            let pos = crate::codec_primitives::read_reg(r)?;
+            Instr::ObjUtf8Prev {
+                scalar,
+                prev,
+                missing,
+                obj,
+                pos,
+            }
+        },
         Opcode::ConstI32 => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let imm = crate::codec_primitives::read_i32_sleb(r)?;
