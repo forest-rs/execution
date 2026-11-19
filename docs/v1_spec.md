@@ -171,7 +171,9 @@ promotion rules live in its compiler.
 - `handle: u64` (embedder-defined identity)
 
 Constraints:
-- No guest equality/hash/ordering operations on objects.
+- No guest equality/hash/ordering operations on objects. A guest can read an object's *key*
+  with `obj.key` (see [Host object queries](#host-object-queries)): a `u64` the embedder
+  chooses, such as the object's class, which guests compare as ordinary integers.
 - No portable runtime value archive is defined. Snapshots and recordings may retain opaque
   tokens, but do not reconstruct external object state.
 - Host calls may accept/return `Obj` values, and the verifier checks that host signatures match.
@@ -330,9 +332,10 @@ form and no second spelling of an opcode, so an opcode's bytes identify it exact
 
 - `0xFC` (`OpcodePrefix::Extended`): general extension space. Assigned so far: `u64` bit
   operations from `0x00`, stack switching from `0x05`, `f64` exact operations (`round_half_away`,
-  `clamp`) from `0x0B`, and the `f64` math intrinsics in the block `0x10..=0x1F`, in the same
-  order as the `f32` ones at `0xFD 0xA0` (`0xFC 0x10` is `f64.pow` as `0xFD 0xA0` is
-  `f32.pow`). New instruction families take the next free byte outside that block.
+  `clamp`) from `0x0B`, host object queries from `0x0D`, and the `f64` math intrinsics in the
+  block `0x10..=0x1F`, in the same order as the `f32` ones at `0xFD 0xA0` (`0xFC 0x10` is
+  `f64.pow` as `0xFD 0xA0` is `f32.pow`). New instruction families take the next free byte
+  outside that block.
 - `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
   (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` with its math intrinsics from `0xA0`,
   conversions from `0xC0` with the checked conversions from `0xE0`).
@@ -1159,6 +1162,22 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
       invalid return. Refined payload contracts are checked through the calling unit's binding of
       the tag, or else the unit that declared it.
 
+### Host object queries
+- `obj.key r_dst, r_obj`
+  - `r_obj` holds an `Obj` of any host type and `r_dst` is `U64`. Writes the key
+    `Host::object_key(obj)` returns: whatever the embedder dispatches on, such as the object's
+    class. The host must answer from the object alone, and give an object the same key for as
+    long as it lives; the VM does not check this.
+  - No host call happens: no symbol, signature, host-call count or request. A turn that yields
+    host calls does not stop. Fuel cost: one instruction.
+  - Traps with `NoObjectKey { object }` when the host returns `None`. The verifier proved the
+    register holds an object, so a missing key means a stale handle or a host that does not key
+    that type; a host whose objects may lack a key returns a key of its own for them.
+  - Observed as `ValueEvent::ObjectKey`, including `None` answers. Recordings keep every answer
+    as a host object query (`Recording::object_queries`, bounded by
+    `RecordLimits::object_queries`), and replay delivers them in order instead of asking a host,
+    checking each query's location and object.
+
 ## Opcode encodings
 The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and
 encodings. `execution_tape/src/opcode.rs` exposes the generated `Opcode` mapping. For register
@@ -1266,6 +1285,7 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x0A cont.drop cont`
 - `0xFC 0x0B f64.round_half_away dst, a` (ties away from zero)
 - `0xFC 0x0C f64.clamp dst, a, lo, hi` (traps with `ClampBoundsInvalid` unless `lo <= hi`)
+- `0xFC 0x0D obj.key dst, obj` (see [Host object queries](#host-object-queries))
 
 `f64` math intrinsics (`0xFC 0x10..=0x1F`, ordered like the `f32` block at `0xFD 0xA0`; see
 [Math intrinsics](#math-intrinsics)):
@@ -1517,6 +1537,10 @@ The embedder provides a `Host` that can:
   - read-only VM context, including program metadata and tuple/struct/array reads for `Agg` arguments
   - optional access sink for incremental-execution dependency recording
   - ability to charge extra fuel
+
+The embedder may also answer `Host::object_key(obj)` for `obj.key`, outside any host call: a pure
+query of the object's key, with no context, effects or fuel of its own.
+`BoundHost::with_object_key` supplies it for a bound host.
 
 The embedder owns:
 - `Obj` handle creation/lifetimes

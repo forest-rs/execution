@@ -368,6 +368,12 @@ pub enum Trap {
     /// `f32.clamp` or `f64.clamp` bounds were not ordered: `lo <= hi` was false, because
     /// `lo > hi` or a bound was NaN.
     ClampBoundsInvalid,
+    /// `obj.key` read an object the host has no key for: [`Host::object_key`] returned
+    /// `None`.
+    NoObjectKey {
+        /// The object.
+        object: Obj,
+    },
     /// Index out of bounds (bytes/string ops).
     IndexOutOfBounds,
     /// String slice indices were not on UTF-8 character boundaries.
@@ -521,6 +527,11 @@ impl fmt::Display for Trap {
             Self::IntDivOverflow => write!(f, "integer division overflow"),
             Self::FloatToIntInvalid => write!(f, "float to int invalid"),
             Self::ClampBoundsInvalid => write!(f, "clamp bounds invalid"),
+            Self::NoObjectKey { object } => write!(
+                f,
+                "the host has no key for object {:#x} of host type {:#x}",
+                object.handle.0, object.host_type.0
+            ),
             Self::IndexOutOfBounds => write!(f, "index out of bounds"),
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
@@ -2568,6 +2579,23 @@ impl<H: Host> Vm<H> {
                 ExecInstr::U64Rotr { dst, a, b } => {
                     let sh = (ctx.read_u64(base, *b) & 63) as u32;
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a).rotate_right(sh));
+                }
+                ExecInstr::ObjKey { dst, obj } => {
+                    let object = ctx.read_obj(base, *obj);
+                    let key = self.host.object_key(object);
+                    P::values(trace, program_ref, || ValueEvent::ObjectKey {
+                        location: TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        },
+                        object,
+                        key,
+                    });
+                    let key = key.ok_or_else(|| {
+                        ctx.trap(func_id, pc, span_id, Trap::NoObjectKey { object })
+                    })?;
+                    ctx.write_u64(base, *dst, key);
                 }
                 ExecInstr::ConstI32 { dst, imm } => {
                     ctx.write_i32(base, *dst, *imm);

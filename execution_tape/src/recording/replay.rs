@@ -6,13 +6,13 @@ use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::program::{HostSigId, LinkId, Pc, Program, SpanId};
 use crate::recording::control::Action;
 use crate::recording::{
-    AggregateId, Answer, CallOutcome, CaptureFault, End, RecordedRelink, RecordedValue, Recording,
-    Store, TagRecord, UnitRecord,
+    AggregateId, Answer, CallOutcome, CaptureFault, End, ObjectAnswer, RecordedObjectQuery,
+    RecordedRelink, RecordedValue, Recording, Store, TagRecord, UnitRecord,
 };
 use crate::trace::{
     ScopeKind, SuspensionAnswer, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
-use crate::value::{AggHandle, AggType, Closure, FuncRef, TagRef, UnitId, Value};
+use crate::value::{AggHandle, AggType, Closure, FuncRef, Obj, TagRef, UnitId, Value};
 use crate::verifier::VerifiedProgram;
 use crate::vm::{InstallError, RelinkError, Trap, TrapInfo, Units, Vm};
 use alloc::collections::BTreeMap;
@@ -123,6 +123,21 @@ pub enum Divergence {
     },
     /// A recorded instruction, successor, completion or activation differs.
     Instruction,
+    /// The number of host object queries, such as `obj.key` reads, differs.
+    ObjectQueries {
+        /// Recorded count.
+        expected: usize,
+        /// Observed count, including an extra query.
+        actual: usize,
+    },
+    /// A host object query, such as an `obj.key` read, asked about another object than the
+    /// recorded one.
+    Object {
+        /// Recorded object.
+        expected: Obj,
+        /// Object the replay read.
+        actual: Obj,
+    },
 }
 
 /// Boundary being checked when replay diverged.
@@ -160,6 +175,12 @@ pub enum ReplayBoundary {
     /// Checking a suspension yielded to the embedding, or delivering its recorded answer.
     Suspension {
         /// Zero-based ordinal, also indexing [`Recording::suspensions`].
+        index: usize,
+    },
+    /// Checking a host object query, such as an `obj.key` read, and delivering its recorded
+    /// answer.
+    ObjectQuery {
+        /// Zero-based ordinal, also indexing [`Recording::object_queries`].
         index: usize,
     },
     /// Checking the top-level return candidate before heap commit.
@@ -243,6 +264,8 @@ struct State {
     inverse: BTreeMap<u32, AggregateId>,
     initial_count: u32,
     calls: usize,
+    /// Recorded host object queries answered and checked.
+    queries: usize,
     location: Option<TraceLocation>,
     candidate: bool,
     thrown: usize,
@@ -464,7 +487,7 @@ enum Delivery {
 fn restore_construction(
     record: &Recording,
     state: &mut State,
-    request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects>,
+    request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects<'_>>,
     work: crate::vm::DataWork,
     constructed: &[AggregateId],
 ) -> Result<(), ReplayError> {
@@ -603,7 +626,7 @@ fn check_relink(
 /// Points every link of `unit` where the recording found it, checking that each now does.
 fn restore_links(
     state: &State,
-    vm: &mut Vm<NoReplayEffects>,
+    vm: &mut Vm<NoReplayEffects<'_>>,
     unit: &UnitRecord,
 ) -> Result<(), ReplayError> {
     for (index, &expected) in unit.links.iter().enumerate() {
@@ -623,6 +646,45 @@ fn restore_links(
             }));
         }
     }
+    Ok(())
+}
+
+/// Checks a host object query against the next recorded one, whose answer the replay host
+/// delivered, and counts it.
+fn check_query(
+    record: &Recording,
+    state: &mut State,
+    location: TraceLocation,
+    object: Obj,
+    answer: ObjectAnswer,
+) -> Result<(), ReplayError> {
+    let index = state.queries;
+    state.boundary = ReplayBoundary::ObjectQuery { index };
+    state.location = Some(location);
+    let recorded = record.queries.get(index).ok_or_else(|| {
+        state.mismatch(Divergence::ObjectQueries {
+            expected: record.queries.len(),
+            actual: index + 1,
+        })
+    })?;
+    if recorded.location != location {
+        return Err(state.mismatch(Divergence::Location {
+            expected: recorded.location,
+            actual: Some(location),
+        }));
+    }
+    if recorded.object != object {
+        return Err(state.mismatch(Divergence::Object {
+            expected: recorded.object,
+            actual: object,
+        }));
+    }
+    // The location fixes the instruction, and so the kind of query.
+    debug_assert_eq!(
+        recorded.answer, answer,
+        "replay delivered the recorded answer"
+    );
+    state.queries += 1;
     Ok(())
 }
 
@@ -646,7 +708,7 @@ trait Installs {
         None
     }
 }
-impl Installs for crate::vm::PendingHostCall<'_, '_, NoReplayEffects> {
+impl Installs for crate::vm::PendingHostCall<'_, '_, NoReplayEffects<'_>> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         Self::install(self, program)
     }
@@ -657,7 +719,7 @@ impl Installs for crate::vm::PendingHostCall<'_, '_, NoReplayEffects> {
         Self::units(self)
     }
 }
-impl Installs for crate::vm::PendingSuspension<'_, '_, NoReplayEffects> {
+impl Installs for crate::vm::PendingSuspension<'_, '_, NoReplayEffects<'_>> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         Self::install(self, program)
     }
@@ -784,7 +846,7 @@ impl RecordedHost<'_> {
     /// The recorded answer to the suspension waiting now, after repeating installs before it.
     fn answer(
         &mut self,
-        pending: &mut crate::vm::PendingSuspension<'_, '_, NoReplayEffects>,
+        pending: &mut crate::vm::PendingSuspension<'_, '_, NoReplayEffects<'_>>,
     ) -> Result<Reply, ReplayError> {
         self.install_due(pending)?;
         let mut state = self.state.borrow_mut();
@@ -820,7 +882,7 @@ impl RecordedHost<'_> {
 
     fn invoke(
         &mut self,
-        request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects>,
+        request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects<'_>>,
     ) -> Result<Delivery, ReplayError> {
         self.install_due(request)?;
         let mut state = self.state.borrow_mut();
@@ -922,8 +984,21 @@ impl RecordedHost<'_> {
     }
 }
 
-struct NoReplayEffects;
-impl Host for NoReplayEffects {
+/// The replay VM's host: it has no effects, and answers only host object queries, with
+/// recorded answers.
+struct NoReplayEffects<'a> {
+    queries: &'a [RecordedObjectQuery],
+    state: Rc<RefCell<State>>,
+}
+impl NoReplayEffects<'_> {
+    fn next_answer(&self) -> Option<ObjectAnswer> {
+        let state = self.state.borrow();
+        self.queries
+            .get(state.queries)
+            .map(|recorded| recorded.answer)
+    }
+}
+impl Host for NoReplayEffects<'_> {
     fn call(
         &mut self,
         _: &str,
@@ -933,6 +1008,15 @@ impl Host for NoReplayEffects {
         _: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
         unreachable!("checked replay delivers recorded outcomes through yielded host requests")
+    }
+
+    /// The next recorded key. The checking sink compares the query with the record when it
+    /// is observed, and counts it; a query beyond the record, or of another kind, gets no key
+    /// and diverges there.
+    fn object_key(&self, _: Obj) -> Option<u64> {
+        match self.next_answer()? {
+            ObjectAnswer::Key(key) => key,
+        }
     }
 }
 
@@ -1198,6 +1282,17 @@ impl TraceSink for Check<'_> {
                     state.calls += 1;
                     state.sequence += 1;
                 }
+                ValueEvent::ObjectKey {
+                    location,
+                    object,
+                    key,
+                } => check_query(
+                    self.record,
+                    &mut state,
+                    location,
+                    object,
+                    ObjectAnswer::Key(key),
+                )?,
                 ValueEvent::CallbackEnter {
                     location,
                     callee,
@@ -1501,7 +1596,13 @@ impl Recording {
             record: self,
             state: Rc::clone(&state),
         };
-        let mut vm = Vm::new(NoReplayEffects, entry.limits.clone());
+        let mut vm = Vm::new(
+            NoReplayEffects {
+                queries: &self.queries,
+                state: Rc::clone(&state),
+            },
+            entry.limits.clone(),
+        );
         // Frames the recorded VM's other computations held count against its frame limit.
         vm.reserve_frames(entry.resident_frames);
         // Rebuild the units and tags that existed at entry, in their original order.
@@ -1746,6 +1847,12 @@ impl Recording {
                 actual: state.calls,
             }));
         }
+        if state.queries != self.queries.len() {
+            return Err(state.mismatch(Divergence::ObjectQueries {
+                expected: self.queries.len(),
+                actual: state.queries,
+            }));
+        }
         if state.commands != self.commands.len() {
             return Err(state.mismatch(Divergence::ControlCommands {
                 expected: self.commands.len(),
@@ -1893,6 +2000,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
             },
         ) => al == bl && au == bu && ar == br,
         (Trap::AggError(a), Trap::AggError(b)) => a == b,
+        (Trap::NoObjectKey { object: a }, Trap::NoObjectKey { object: b }) => a == b,
         (
             Trap::CallableSignatureMismatch {
                 signature: a,
@@ -2368,6 +2476,137 @@ mod tests {
                 expected: 2,
                 actual: 1
             }
+        );
+    }
+
+    /// Keys every object by its handle.
+    struct Keys;
+    impl Host for Keys {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            _: &[ValueRef<'_>],
+            _: &mut [Value],
+            _: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            Err(HostError::UnknownSymbol)
+        }
+        fn object_key(&self, object: Obj) -> Option<u64> {
+            Some(object.handle.0)
+        }
+    }
+
+    /// A recording of `f(obj) = key(obj) + key(obj)`.
+    fn keyed_recording() -> Recording {
+        let object = ValueType::Obj(crate::program::HostTypeId(1));
+        let mut builder = ProgramBuilder::new();
+        let mut body = Asm::new();
+        body.set_register_types(vec![
+            ValueType::Unit,
+            object,
+            ValueType::U64,
+            ValueType::U64,
+        ]);
+        body.obj_key(Reg(2), Reg(1))
+            .obj_key(Reg(3), Reg(1))
+            .u64_add(Reg(2), Reg(2), Reg(3))
+            .ret(Reg::EFFECT, &[Reg(2)]);
+        builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![object],
+                    ret_types: vec![ValueType::U64],
+                },
+            )
+            .unwrap();
+        let program = Arc::new(builder.build_verified().unwrap());
+        let mut vm = Vm::new(Keys, Limits::default());
+        let unit = vm.install(Arc::clone(&program)).unwrap();
+        let mut recorder = Recorder::new(program, RecordLimits::default());
+        let arg = Value::Obj(Obj {
+            host_type: crate::program::HostTypeId(1),
+            handle: crate::value::ObjHandle(4),
+        });
+        vm.run(
+            FuncRef::new(unit, FuncId(0)),
+            &[arg],
+            recorder.mask(),
+            Some(&mut recorder),
+        )
+        .unwrap();
+        let recording = recorder.finish();
+        assert!(recording.replay().is_ok());
+        recording
+    }
+
+    #[test]
+    fn changed_object_queries_diverge_where_they_are_read() {
+        let diverged = |record: &Recording| match record.replay() {
+            Err(ReplayError::Diverged {
+                boundary, reason, ..
+            }) => (boundary, reason),
+            other => panic!("changed queries must diverge: {other:?}"),
+        };
+
+        // A query the replay makes beyond the record.
+        let mut record = keyed_recording();
+        record.queries.pop();
+        assert_eq!(
+            diverged(&record),
+            (
+                ReplayBoundary::ObjectQuery { index: 1 },
+                Divergence::ObjectQueries {
+                    expected: 1,
+                    actual: 2
+                }
+            )
+        );
+
+        // A recorded query the replay never makes.
+        let mut record = keyed_recording();
+        let extra = record.queries[1];
+        record.queries.push(extra);
+        assert_eq!(
+            diverged(&record),
+            (
+                ReplayBoundary::Completion,
+                Divergence::ObjectQueries {
+                    expected: 3,
+                    actual: 2
+                }
+            )
+        );
+
+        // Another object at the same instruction.
+        let mut record = keyed_recording();
+        let actual = record.queries[0].object;
+        record.queries[0].object.handle.0 += 1;
+        assert_eq!(
+            diverged(&record),
+            (
+                ReplayBoundary::ObjectQuery { index: 0 },
+                Divergence::Object {
+                    expected: record.queries[0].object,
+                    actual
+                }
+            )
+        );
+
+        // The same object at another instruction.
+        let mut record = keyed_recording();
+        let actual = record.queries[1].location;
+        record.queries[1].location.pc.0 += 1;
+        assert_eq!(
+            diverged(&record),
+            (
+                ReplayBoundary::ObjectQuery { index: 1 },
+                Divergence::Location {
+                    expected: record.queries[1].location,
+                    actual: Some(actual)
+                }
+            )
         );
     }
 

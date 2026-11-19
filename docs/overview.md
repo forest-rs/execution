@@ -228,6 +228,14 @@ with live replacement can call a statically selected method directly, at roughly
 every unit's current targets. Relinking keeps no history, so it never grows the VM; a recording
 snapshots the targets at entry and replay restores them.
 
+### Object keys
+A host object stays opaque, but its host can give it a *key*: a `u64` such as its class, which
+`obj.key` reads through `Host::object_key` with no host call, request or marshalling, for about
+the cost of any other instruction. A dynamic language tests a receiver's class with `obj.key`,
+`u64.eq` and `br`, and calls the method it guessed through a link, leaving the host only the
+sends it guessed wrong. A key must be pure and fixed for its object's life; recordings keep each
+answer, so replay needs no host.
+
 Function references name their installed unit, and struct/array type IDs are resolved to shapes
 interned in the VM heap when a program is installed, so equal layouts are the same runtime type
 across programs. Unit IDs and aggregate handles belong to one VM. The graph's `TapeValue` adapter

@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use crate::program::{HostSigId, Pc, Program, SpanId, ValueType};
-use crate::value::{FuncId, Value};
+use crate::value::{FuncId, Obj, Value};
 use crate::verifier::{HostCallSite, VerifiedProgram, write_location};
 
 /// A host operation's symbol and complete signature, declared once and shared by the program
@@ -213,6 +213,10 @@ impl ImportHint {
 /// A host operation with mutable per-instance state and the ordinary host ABI.
 pub type HostCallback<S> =
     fn(&mut S, &[ValueRef<'_>], &mut [Value], HostContext<'_, '_>) -> Result<u64, HostError>;
+
+/// A host's answer to `obj.key` for one object, from its per-instance state
+/// ([`Host::object_key`]).
+pub type ObjectKeyCallback<S> = fn(&S, Obj) -> Option<u64>;
 
 struct Operation<S> {
     signature: HostSig,
@@ -660,6 +664,7 @@ impl<S> HostBindings<S> {
         BoundHost {
             tables: Arc::clone(&self.tables),
             state,
+            object_key: None,
         }
     }
 
@@ -685,6 +690,7 @@ impl<S> HostBindings<S> {
 pub struct BoundHost<S> {
     tables: Arc<[Table<S>]>,
     state: S,
+    object_key: Option<ObjectKeyCallback<S>>,
 }
 
 impl<S> fmt::Debug for BoundHost<S> {
@@ -705,6 +711,17 @@ impl<S> BoundHost<S> {
     /// Returns mutable instance state; accessible through [`crate::vm::Vm::host_mut`] between runs.
     pub fn state_mut(&mut self) -> &mut S {
         &mut self.state
+    }
+
+    /// Answers `obj.key` with `callback` ([`Host::object_key`]), for every unit this host
+    /// serves. Without one, no object has a key.
+    ///
+    /// Keys belong to the host's objects, not to a bound program, so the answer is the
+    /// instance's: every program calling the host reads the same keys.
+    #[must_use]
+    pub fn with_object_key(mut self, callback: ObjectKeyCallback<S>) -> Self {
+        self.object_key = Some(callback);
+        self
     }
 }
 
@@ -739,6 +756,11 @@ impl<S> Host for BoundHost<S> {
                 .binary_search_by(|(marked, hash)| (&**marked, *hash).cmp(&(symbol, sig_hash)))
                 .is_ok()
         })
+    }
+
+    /// The answer of the callback given to [`Self::with_object_key`], or `None` without one.
+    fn object_key(&self, object: Obj) -> Option<u64> {
+        self.object_key?(&self.state, object)
     }
 }
 

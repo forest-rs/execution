@@ -862,6 +862,36 @@ pub trait Host {
         let _ = (symbol, sig_hash);
         false
     }
+
+    /// The key of `object` that `obj.key` reads, or `None` when the host has none for it.
+    ///
+    /// A key is whatever `u64` the embedding dispatches on, such as the object's class. Guests
+    /// compare keys with ordinary `u64` instructions, so `obj.key` followed by `u64.eq` and
+    /// `br` tests an object's class without a host call. The VM calls this directly: there is
+    /// no symbol, argument marshalling, host-call allowance or request, and the instruction
+    /// costs one unit of fuel like any other.
+    ///
+    /// The answer must depend only on the object, and must stay the same for as long as the
+    /// object lives: guests and embeddings keep keys and compare them later, as a guarded link
+    /// does, and no resource access is recorded for a key. A language that redefines a class
+    /// gives the redefined class's new instances a new key and leaves existing ones theirs.
+    /// The VM does not check any of this. The answer also must not depend on who asks, so a
+    /// host that wraps another should forward this. Recordings capture each answer and replay
+    /// delivers it again, so replay does not need the host.
+    ///
+    /// `None` makes `obj.key` trap with [`Trap::NoObjectKey`]: the verifier proved the register
+    /// holds an object of the host type, so an object without a key is a stale handle or a
+    /// host that does not key that type, and a sentinel would quietly send every test down its
+    /// "no" branch instead. A host whose objects may legitimately lack a key returns a key of
+    /// its own choosing for them. By default no object has a key;
+    /// [`BoundHost::with_object_key`](crate::host_binding::BoundHost::with_object_key) answers
+    /// for a bound host.
+    ///
+    /// [`Trap::NoObjectKey`]: crate::vm::Trap::NoObjectKey
+    fn object_key(&self, object: Obj) -> Option<u64> {
+        let _ = object;
+        None
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

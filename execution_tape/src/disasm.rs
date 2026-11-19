@@ -856,6 +856,7 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::F64Nearest { dst, a }
         | Instr::F64Sqrt { dst, a }
         | Instr::U64Clz { dst, a }
+        | Instr::ObjKey { dst, obj: a }
         | Instr::U64Ctz { dst, a }
         | Instr::U64Popcnt { dst, a }
         | Instr::BoolNot { dst, a } => {

@@ -70,6 +70,7 @@ impl VerifyError {
             | Self::CallIndirectSigMalformed { func, .. }
             | Self::MissingRegisterTypes { func, .. }
             | Self::RegisterTypeMismatch { func, .. }
+            | Self::ObjectRegisterRequired { func, .. }
             | Self::UnknownAggregateShape { func, .. }
             | Self::CallCalleeArgTypesOutOfBounds { func, .. }
             | Self::CallCalleeRetTypesOutOfBounds { func, .. }
@@ -138,6 +139,7 @@ impl VerifyError {
             | Self::CallIndirectContractMismatch { pc, .. }
             | Self::CallIndirectSigMalformed { pc, .. }
             | Self::UnknownAggregateShape { pc, .. }
+            | Self::ObjectRegisterRequired { pc, .. }
             | Self::CallCalleeArgTypesOutOfBounds { pc, .. }
             | Self::CallCalleeRetTypesOutOfBounds { pc, .. }
             | Self::MissingTerminator { pc, .. }
@@ -198,6 +200,7 @@ impl VerifyError {
             | Self::UninitializedRead { reg, .. }
             | Self::ThrowPayloadMismatch { reg, .. }
             | Self::RegisterTypeMismatch { reg, .. }
+            | Self::ObjectRegisterRequired { reg, .. }
             | Self::UnknownAggregateShape { reg, .. }
             | Self::BlockDeclaration {
                 error:

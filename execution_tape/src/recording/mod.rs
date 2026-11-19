@@ -47,6 +47,11 @@
 //! outcome, so replay delivers the same tag and payload instead of running the host again.
 //! Callbacks abandoned by an exception keep no recorded return.
 //!
+//! Host object queries that instructions answer without a host call, such as the keys `obj.key`
+//! reads, are retained in execution order ([`Recording::object_queries`]). Replay answers each
+//! from the recording instead of asking a host, and checks that the same instruction asked
+//! about the same object.
+//!
 //! ```
 //! use std::sync::Arc;
 //! use execution_tape::{
@@ -99,7 +104,8 @@
 //! immutable nodes until root commit; this lets replay resolve a host return even when that node
 //! was never an entry argument. Final heap compaction does not change recording identities.
 //!
-//! Capture limits bound value/node/host-call/activation counts and copied payload bytes. They do not measure
+//! Capture limits bound value/node/host-call/activation/object-query counts and copied payload
+//! bytes. They do not measure
 //! vector capacity, allocator overhead, the shared program or opaque custom-error payload sizes.
 //! Exceeding a budget stops value/graph retention while live execution continues. The final VM
 //! trap is still retained when its payload budget permits. Missing entry/completion,
@@ -157,7 +163,7 @@ mod values;
 use crate::host::HostError;
 use crate::program::{HostSigId, LinkId, RegionId, ValueType};
 use crate::trace::TraceLocation;
-use crate::value::{AggHandle, FuncRef, TagRef, UnitId};
+use crate::value::{AggHandle, FuncRef, Obj, TagRef, UnitId};
 use crate::verifier::VerifiedProgram;
 use crate::vm::{Limits, TrapInfo};
 use alloc::boxed::Box;
@@ -199,6 +205,9 @@ pub struct RecordLimits {
     pub call_frames: usize,
     /// Maximum copied bytes in distinct byte/string contents and trap symbol text.
     pub payload_bytes: usize,
+    /// Maximum host object queries answered without a host call, such as `obj.key`
+    /// ([`crate::host::Host::object_key`]).
+    pub object_queries: usize,
 }
 
 impl Default for RecordLimits {
@@ -211,6 +220,7 @@ impl Default for RecordLimits {
             suspensions: 10_000,
             call_frames: 100_000,
             payload_bytes: 64 * 1024 * 1024,
+            object_queries: 1_000_000,
         }
     }
 }
@@ -233,6 +243,8 @@ pub enum CaptureResource {
     CallFrames,
     /// Copied byte/string contents and trap symbol text.
     PayloadBytes,
+    /// Host object queries, such as `obj.key`.
+    ObjectQueries,
 }
 
 /// Why a recording cannot be replayed as a complete turn.
@@ -342,6 +354,28 @@ pub struct RecordedRelink {
     pub target: FuncRef,
     /// The observation sequence before which the link was repointed.
     pub relinked: usize,
+}
+
+/// One host object query an instruction answered without a host call, such as `obj.key`,
+/// which replay answers again instead of asking a host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RecordedObjectQuery {
+    /// The querying instruction.
+    pub location: TraceLocation,
+    /// The object asked about.
+    pub object: Obj,
+    /// The host's answer.
+    pub answer: ObjectAnswer,
+}
+
+/// A host's answer to a [`RecordedObjectQuery`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ObjectAnswer {
+    /// The key `obj.key` read ([`crate::host::Host::object_key`]); `None` trapped with
+    /// [`crate::vm::Trap::NoObjectKey`].
+    Key(Option<u64>),
 }
 
 /// Where a recorded computation was saved and then resumed in a new turn.
@@ -535,6 +569,8 @@ pub struct RecordStats {
     pub call_frames: usize,
     /// Copied byte/string contents and trap symbol text, counted once per retained allocation.
     pub payload_bytes: usize,
+    /// Retained host object queries, such as `obj.key` answers.
+    pub object_queries: usize,
 }
 
 #[derive(Debug)]
@@ -627,6 +663,7 @@ pub struct Recording {
     initial: Vec<AggregateId>,
     entry: Option<Entry>,
     calls: Vec<Call>,
+    queries: Vec<RecordedObjectQuery>,
     commands: Vec<control::Command>,
     suspensions: Vec<Yielded>,
     frames: Vec<frames::Frame>,
@@ -802,6 +839,13 @@ impl Recording {
         })
     }
 
+    /// The host object queries instructions answered without a host call, such as the keys
+    /// `obj.key` read, in execution order.
+    #[must_use]
+    pub fn object_queries(&self) -> &[RecordedObjectQuery] {
+        &self.queries
+    }
+
     /// Iterates captured embedding commands in admission order, without expanding value graphs.
     /// Sequence numbers interleave commands, callback returns and host outcomes.
     pub fn control_commands(&self) -> impl ExactSizeIterator<Item = ControlCommand<'_>> {
@@ -913,6 +957,7 @@ impl Recording {
             suspensions: self.suspensions.len(),
             call_frames: self.frames.len(),
             payload_bytes: self.arena.payload_bytes,
+            object_queries: self.queries.len(),
         }
     }
 }
