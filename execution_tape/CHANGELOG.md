@@ -16,6 +16,19 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Read a host object's bytes without a host call. `Host::object_bytes(obj, read)` lends an
+  object's bytes, such as a string's UTF-8, to one instruction's `read` closure, so a host
+  behind a `RefCell` or lock can lend them too; by default no object has bytes.
+  `obj.bytes_len dst, obj` (`0xFC 0x20`) writes their length and `obj.bytes_get dst, obj,
+  index` (`0xFC 0x21`) one byte, so a guest scans host text without a host call per byte:
+  about 4 ns per byte against 50 ns through a host import in the `object_bytes` bench, and
+  no slower than `bytes.get` on a tape `Bytes` value (about 7 ns). The VM never keeps the
+  slice past the instruction, so a host may move its buffers between instructions. `None`
+  traps with `Trap::NoObjectBytes`, an index past the end with `Trap::IndexOutOfBounds`;
+  `BoundHost::with_object_bytes` answers for a bound host. Reads are observed as
+  `ValueEvent::ObjectBytes`. Recordings keep the first read of each object since host code
+  last ran as a host object query (`ObjectAnswer::Bytes`) with a copy of its bytes
+  (`Recording::object_bytes`), so a scan costs one record and replay needs no host.
 - Guarded links: inline caches for dynamic sends. `ProgramBuilder::declare_guarded_link(name,
   target, key_count, fallback)` declares a link whose callers pass 1 to 4 `u64` keys, such as
   receiver classes from `obj.key`; `call.link.guard` (`0x57`) calls the link's target when the

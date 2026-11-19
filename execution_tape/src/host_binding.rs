@@ -222,6 +222,10 @@ pub type ObjectKeyCallback<S> = fn(&S, Obj) -> Option<u64>;
 /// per-instance state ([`Host::convert_object`]).
 pub type ObjectConversionCallback<S> = fn(&S, Obj, HostTypeId) -> Option<Obj>;
 
+/// A host's answer to `obj.bytes_len` and `obj.bytes_get` for one object, borrowed from its
+/// per-instance state ([`Host::object_bytes`]).
+pub type ObjectBytesCallback<S> = fn(&S, Obj) -> Option<&[u8]>;
+
 struct Operation<S> {
     signature: HostSig,
     callback: HostCallback<S>,
@@ -670,6 +674,7 @@ impl<S> HostBindings<S> {
             state,
             object_key: None,
             convert_object: None,
+            object_bytes: None,
         }
     }
 
@@ -697,6 +702,7 @@ pub struct BoundHost<S> {
     state: S,
     object_key: Option<ObjectKeyCallback<S>>,
     convert_object: Option<ObjectConversionCallback<S>>,
+    object_bytes: Option<ObjectBytesCallback<S>>,
 }
 
 impl<S> fmt::Debug for BoundHost<S> {
@@ -735,6 +741,14 @@ impl<S> BoundHost<S> {
     #[must_use]
     pub fn with_object_conversion(mut self, callback: ObjectConversionCallback<S>) -> Self {
         self.convert_object = Some(callback);
+        self
+    }
+
+    /// Answers `obj.bytes_len` and `obj.bytes_get` with `callback` ([`Host::object_bytes`]),
+    /// for every unit this host serves. Without one, no object has bytes.
+    #[must_use]
+    pub fn with_object_bytes(mut self, callback: ObjectBytesCallback<S>) -> Self {
+        self.object_bytes = Some(callback);
         self
     }
 }
@@ -781,6 +795,15 @@ impl<S> Host for BoundHost<S> {
     /// without one.
     fn convert_object(&self, object: Obj, to: HostTypeId) -> Option<Obj> {
         self.convert_object?(&self.state, object, to)
+    }
+
+    /// Reads the answer of the callback given to [`Self::with_object_bytes`], or `None`
+    /// without one.
+    fn object_bytes<R>(&self, object: Obj, read: impl FnOnce(Option<&[u8]>) -> R) -> R {
+        read(
+            self.object_bytes
+                .and_then(|callback| callback(&self.state, object)),
+        )
     }
 }
 

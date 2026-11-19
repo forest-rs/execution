@@ -300,18 +300,19 @@ impl Builder {
                 };
                 RecordedValue::Str(value)
             }
-            ValueRef::Bytes(value) => {
-                let value = if let Some((key, ())) = self.bytes.get_key_value(value) {
-                    Arc::clone(key)
-                } else {
-                    self.charge(value.len())?;
-                    let value: Arc<[u8]> = Arc::from(value);
-                    self.bytes.insert(Arc::clone(&value), ());
-                    value
-                };
-                RecordedValue::Bytes(value)
-            }
+            ValueRef::Bytes(value) => RecordedValue::Bytes(self.intern_bytes(value)?),
         })
+    }
+
+    /// Shares `value` with equal recorded contents, charging its length only when it is new.
+    pub(crate) fn intern_bytes(&mut self, value: &[u8]) -> Result<Arc<[u8]>, CaptureFault> {
+        if let Some((key, ())) = self.bytes.get_key_value(value) {
+            return Ok(Arc::clone(key));
+        }
+        self.charge(value.len())?;
+        let value: Arc<[u8]> = Arc::from(value);
+        self.bytes.insert(Arc::clone(&value), ());
+        Ok(value)
     }
 
     fn handle(&mut self, handle: AggHandle, heap: &AggHeap) -> Result<AggregateId, CaptureFault> {

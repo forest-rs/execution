@@ -20,6 +20,7 @@ use crate::trace::{
 use crate::value::{FuncRef, UnitId};
 use crate::verifier::VerifiedProgram;
 use crate::vm::{LinkGuard, StackId, StoreEvent, Trap, Units};
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -43,6 +44,14 @@ pub struct Recorder {
     entry: Option<Entry>,
     calls: Vec<Call>,
     queries: Vec<RecordedObjectQuery>,
+    /// Distinct object bytes that queries answered, which [`ObjectAnswer::Bytes`] indexes.
+    object_bytes: Vec<Arc<[u8]>>,
+    /// Index of each distinct content in `object_bytes`.
+    object_bytes_index: BTreeMap<Arc<[u8]>, usize>,
+    /// The bytes of each object read since host code last ran, by [`super::object_id`]. Later
+    /// reads of them are not recorded; replay keeps the same map
+    /// ([`super::expire_object_bytes`]).
+    object_bytes_seen: BTreeMap<(u64, u64), usize>,
     commands: Vec<Command>,
     suspensions: Vec<Yielded>,
     sequence: usize,
@@ -94,6 +103,9 @@ impl Recorder {
             entry: None,
             calls: Vec::new(),
             queries: Vec::new(),
+            object_bytes: Vec::new(),
+            object_bytes_index: BTreeMap::new(),
+            object_bytes_seen: BTreeMap::new(),
             commands: Vec::new(),
             suspensions: Vec::new(),
             sequence: 0,
@@ -173,6 +185,7 @@ impl Recorder {
             entry: self.entry,
             calls: self.calls,
             queries: self.queries,
+            object_bytes: self.object_bytes,
             commands: self.commands,
             suspensions: self.suspensions,
             frames: self.frames,
@@ -359,6 +372,17 @@ impl Recorder {
         object: crate::value::Obj,
         answer: ObjectAnswer,
     ) -> Result<(), CaptureFault> {
+        self.admit_query(location)?;
+        self.queries.push(RecordedObjectQuery {
+            location,
+            object,
+            answer,
+        });
+        Ok(())
+    }
+
+    /// Checks that a host object query may be recorded at `location` now.
+    fn admit_query(&self, location: TraceLocation) -> Result<(), CaptureFault> {
         if self.entry.is_none() || self.end.is_some() || self.candidate.is_some() {
             return Err(CaptureFault::InvalidSequence);
         }
@@ -368,13 +392,38 @@ impl Recorder {
                 limit: self.builder.limits.object_queries,
             });
         }
-        self.check_location(location)?;
-        self.queries.push(RecordedObjectQuery {
-            location,
-            object,
-            answer,
-        });
-        Ok(())
+        self.check_location(location)
+    }
+
+    /// Records a read of `object`'s bytes, unless an earlier read since host code last ran
+    /// already did.
+    fn object_bytes(
+        &mut self,
+        location: TraceLocation,
+        object: crate::value::Obj,
+        bytes: Option<&[u8]>,
+    ) -> Result<(), CaptureFault> {
+        let id = super::object_id(object);
+        if bytes.is_some() && self.object_bytes_seen.contains_key(&id) {
+            return Ok(());
+        }
+        self.admit_query(location)?;
+        let index = match bytes {
+            None => None,
+            Some(bytes) => Some(if let Some(&index) = self.object_bytes_index.get(bytes) {
+                index
+            } else {
+                let bytes = self.builder.intern_bytes(bytes)?;
+                let index = self.object_bytes.len();
+                self.object_bytes_index.insert(Arc::clone(&bytes), index);
+                self.object_bytes.push(bytes);
+                index
+            }),
+        };
+        if let Some(index) = index {
+            self.object_bytes_seen.insert(id, index);
+        }
+        self.query(location, object, ObjectAnswer::Bytes(index))
     }
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
@@ -552,6 +601,11 @@ impl Recorder {
                 to,
                 converted,
             } => self.query(location, object, ObjectAnswer::Converted { to, converted })?,
+            ValueEvent::ObjectBytes {
+                location,
+                object,
+                bytes,
+            } => self.object_bytes(location, object, bytes)?,
             ValueEvent::SuspensionYielded {
                 location,
                 tag,
@@ -887,6 +941,7 @@ impl TraceSink for Recorder {
     }
 
     fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+        super::expire_object_bytes(&mut self.object_bytes_seen, &event);
         let unit = match event {
             ValueEvent::Entry { entry, units, .. } => {
                 if self.units.is_empty() && self.fault.is_none() {
@@ -1007,7 +1062,8 @@ impl TraceSink for Recorder {
             | ValueEvent::SuspensionYielded { location, .. }
             | ValueEvent::SuspensionAnswered { location, .. }
             | ValueEvent::ObjectKey { location, .. }
-            | ValueEvent::ObjectConversion { location, .. } => location.unit,
+            | ValueEvent::ObjectConversion { location, .. }
+            | ValueEvent::ObjectBytes { location, .. } => location.unit,
         };
         let location = match event {
             ValueEvent::Entry { .. }
@@ -1026,7 +1082,8 @@ impl TraceSink for Recorder {
             | ValueEvent::SuspensionYielded { location, .. }
             | ValueEvent::SuspensionAnswered { location, .. }
             | ValueEvent::ObjectKey { location, .. }
-            | ValueEvent::ObjectConversion { location, .. } => Some(location),
+            | ValueEvent::ObjectConversion { location, .. }
+            | ValueEvent::ObjectBytes { location, .. } => Some(location),
         };
         if self.check_at(program, unit)
             && let Err(error) = self.capture(event)

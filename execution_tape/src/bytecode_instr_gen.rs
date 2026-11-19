@@ -161,6 +161,8 @@ impl Instr {
             Self::F64Sin { .. } => Opcode::F64Sin,
             Self::F64Cos { .. } => Opcode::F64Cos,
             Self::F64Atan2 { .. } => Opcode::F64Atan2,
+            Self::ObjBytesLen { .. } => Opcode::ObjBytesLen,
+            Self::ObjBytesGet { .. } => Opcode::ObjBytesGet,
             Self::ConstI32 { .. } => Opcode::ConstI32,
             Self::I32Add { .. } => Opcode::I32Add,
             Self::I32Sub { .. } => Opcode::I32Sub,

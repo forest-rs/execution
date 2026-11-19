@@ -162,11 +162,12 @@ mod values;
 
 use crate::host::HostError;
 use crate::program::{HostSigId, LinkId, RegionId, ValueType};
-use crate::trace::TraceLocation;
+use crate::trace::{TraceLocation, ValueEvent};
 use crate::value::{AggHandle, FuncRef, Obj, TagRef, UnitId};
 use crate::verifier::VerifiedProgram;
 use crate::vm::{Limits, LinkGuard, TrapInfo};
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -361,8 +362,8 @@ pub struct RecordedRelink {
     pub relinked: usize,
 }
 
-/// One host object query an instruction answered without a host call, `obj.key` or
-/// `obj.convert`, which replay answers again instead of asking a host.
+/// One host object query an instruction answered without a host call, such as `obj.key`,
+/// `obj.convert` or `obj.bytes_get`, which replay answers again instead of asking a host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RecordedObjectQuery {
@@ -389,6 +390,69 @@ pub enum ObjectAnswer {
         /// The host's answer.
         converted: Option<Obj>,
     },
+    /// The bytes an instruction such as `obj.bytes_get` read
+    /// ([`crate::host::Host::object_bytes`]), as an index into
+    /// [`Recording::object_bytes`]; `None` trapped with [`crate::vm::Trap::NoObjectBytes`].
+    ///
+    /// Only the first read of an object since host code last ran is recorded: an object's
+    /// bytes cannot change while only guest code runs, so replay answers its later reads with
+    /// the same copy until it sees host code run where the recording did. Later reads are not
+    /// checked against the recording, so a replay that diverges among them is reported at the
+    /// next recorded boundary or at its outcome.
+    Bytes(Option<usize>),
+}
+
+/// Forgets the object bytes in `seen` that `event` may have invalidated, so the next read of
+/// those objects is recorded again.
+///
+/// Recording and replay both apply this rule, so they agree on which reads are recorded.
+/// After host code may have run, any handle may name another object. A conversion's answer
+/// names an object the guest may not have read before under that handle, so it is forgotten
+/// too, even though conversions are pure.
+fn expire_object_bytes(seen: &mut BTreeMap<(u64, u64), usize>, event: &ValueEvent<'_>) {
+    if host_may_run(event) {
+        seen.clear();
+    } else if let ValueEvent::ObjectConversion {
+        converted: Some(converted),
+        ..
+    } = event
+    {
+        seen.remove(&object_id(*converted));
+    }
+}
+
+/// Whether host code may run between the guest code before `event` and the guest code after
+/// it, so a handle may name another object afterwards.
+///
+/// A host's object byte queries are pure and an object's bytes do not change while it lives,
+/// and a guest can only receive a handle the host reused through host code these events
+/// report, or through a conversion, which [`expire_object_bytes`] also handles.
+fn host_may_run(event: &ValueEvent<'_>) -> bool {
+    match event {
+        ValueEvent::Entry { .. }
+        | ValueEvent::Installed { .. }
+        | ValueEvent::Relinked { .. }
+        | ValueEvent::Collected { .. }
+        | ValueEvent::Saved { .. }
+        | ValueEvent::Resumed { .. }
+        | ValueEvent::HostCall { .. }
+        | ValueEvent::CallbackEnter { .. }
+        | ValueEvent::CallbackReturn { .. }
+        | ValueEvent::SuspensionYielded { .. }
+        | ValueEvent::SuspensionAnswered { .. } => true,
+        ValueEvent::ObjectKey { .. }
+        | ValueEvent::ObjectConversion { .. }
+        | ValueEvent::ObjectBytes { .. }
+        | ValueEvent::ReturnCandidate { .. }
+        | ValueEvent::Thrown { .. }
+        | ValueEvent::Rethrown { .. }
+        | ValueEvent::Caught { .. } => false,
+    }
+}
+
+/// An object's identity as a map key: its host type and handle.
+fn object_id(object: Obj) -> (u64, u64) {
+    (object.host_type.0, object.handle.0)
 }
 
 /// Where a recorded computation was saved and then resumed in a new turn.
@@ -678,6 +742,7 @@ pub struct Recording {
     entry: Option<Entry>,
     calls: Vec<Call>,
     queries: Vec<RecordedObjectQuery>,
+    object_bytes: Vec<Arc<[u8]>>,
     commands: Vec<control::Command>,
     suspensions: Vec<Yielded>,
     frames: Vec<frames::Frame>,
@@ -858,6 +923,16 @@ impl Recording {
     #[must_use]
     pub fn object_queries(&self) -> &[RecordedObjectQuery] {
         &self.queries
+    }
+
+    /// The distinct bytes host object queries answered, in the order first read, which
+    /// [`ObjectAnswer::Bytes`] indexes. Each is counted once against
+    /// [`RecordLimits::payload_bytes`]. After host code runs, the first read of each object
+    /// compares its bytes with these copies to share an equal one, so recording a guest that
+    /// alternates host calls with reads of a large object costs time in its size per call.
+    #[must_use]
+    pub fn object_bytes(&self) -> &[Arc<[u8]>] {
+        &self.object_bytes
     }
 
     /// Iterates captured embedding commands in admission order, without expanding value graphs.

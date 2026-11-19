@@ -888,6 +888,7 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::U64Clz { dst, a }
         | Instr::ObjKey { dst, obj: a }
         | Instr::ObjConvert { dst, obj: a }
+        | Instr::ObjBytesLen { dst, obj: a }
         | Instr::U64Ctz { dst, a }
         | Instr::U64Popcnt { dst, a }
         | Instr::BoolNot { dst, a } => {
@@ -1118,7 +1119,12 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.dst = Some(dst);
             view.srcs = vec![a, b];
         }
-        Instr::BytesGet { dst, bytes, index } => {
+        Instr::BytesGet { dst, bytes, index }
+        | Instr::ObjBytesGet {
+            dst,
+            obj: bytes,
+            index,
+        } => {
             view.dst = Some(dst);
             view.srcs = vec![bytes, index];
         }

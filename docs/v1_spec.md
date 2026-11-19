@@ -332,10 +332,10 @@ form and no second spelling of an opcode, so an opcode's bytes identify it exact
 
 - `0xFC` (`OpcodePrefix::Extended`): general extension space. Assigned so far: `u64` bit
   operations from `0x00`, stack switching from `0x05`, `f64` exact operations (`round_half_away`,
-  `clamp`) from `0x0B`, host object queries from `0x0D`, and the `f64` math intrinsics in the
+  `clamp`) from `0x0B`, host object queries from `0x0D`, the `f64` math intrinsics in the
   block `0x10..=0x1F`, in the same order as the `f32` ones at `0xFD 0xA0` (`0xFC 0x10` is
-  `f64.pow` as `0xFD 0xA0` is `f32.pow`). New instruction families take the next free byte
-  outside that block.
+  `f64.pow` as `0xFD 0xA0` is `f32.pow`), and host object bytes from `0x20`. New instruction
+  families take the next free byte outside that block.
 - `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
   (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` with its math intrinsics from `0xA0`,
   conversions from `0xC0` with the checked conversions from `0xE0`).
@@ -1229,6 +1229,26 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
     usually with `obj.key`; a conversion that must allocate or fail recoverably is a host call.
   - Observed as `ValueEvent::ObjectConversion`, including refusals, and recorded and replayed as a
     host object query like `obj.key`.
+- `obj.bytes_len r_dst, r_obj` and `obj.bytes_get r_dst, r_obj, r_index`
+  - `r_obj` holds an `Obj` of any host type; `r_index` and `r_dst` are `U64`. Both read the
+    bytes the host lends through `Host::object_bytes(obj, read)`, such as a string's UTF-8:
+    `obj.bytes_len` writes their length and `obj.bytes_get` the byte at `index`, in `0..=255`.
+  - The host lends the slice to the instruction's `read` closure only, so the VM cannot keep
+    it: guests hold offsets, not pointers, and a host may move the bytes between
+    instructions. A host behind a `RefCell` or lock borrows it around `read`. The host
+    must answer from the object and its own state alone, and must not change an object's
+    bytes while it lives; the VM does not check this, but checks every index against the
+    slice it is given.
+  - No host call happens, as for `obj.key`. Fuel cost: one instruction.
+  - `obj.bytes_get` traps with `IndexOutOfBounds` when `index` is not below the length. Both
+    trap with `NoObjectBytes { object }` when the host returns `None`; a host whose objects
+    may lack bytes passes an empty slice for them.
+  - Observed as `ValueEvent::ObjectBytes` on every read, including `None` answers. A
+    recording keeps the first read of each object since host code last ran as a host object
+    query, like `obj.key`, with a copy of its bytes shared with equal contents
+    (`Recording::object_bytes`, charged to `RecordLimits::payload_bytes`). Later reads in that
+    span are not recorded: replay answers them from the same copy, applying the same rule.
+    Replay reads the copies instead of asking a host.
 
 ## Opcode encodings
 The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and
@@ -1348,6 +1368,10 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x13 f64.sin dst, a`
 - `0xFC 0x14 f64.cos dst, a`
 - `0xFC 0x15 f64.atan2 dst, y, x`
+
+Host object bytes (`0xFC 0x20`; see [Host object queries](#host-object-queries)):
+- `0xFC 0x20 obj.bytes_len dst, obj`
+- `0xFC 0x21 obj.bytes_get dst, obj, index`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits
@@ -1593,10 +1617,12 @@ The embedder provides a `Host` that can:
   - optional access sink for incremental-execution dependency recording
   - ability to charge extra fuel
 
-The embedder may also answer `Host::object_key(obj)` for `obj.key` and
-`Host::convert_object(obj, to)` for `obj.convert`, outside any host call: pure queries about an
-object, with no context, effects or fuel of their own. `BoundHost::with_object_key` and
-`BoundHost::with_object_conversion` supply them for a bound host.
+The embedder may also answer `Host::object_key(obj)` for `obj.key`,
+`Host::convert_object(obj, to)` for `obj.convert` and `Host::object_bytes(obj, read)` for
+`obj.bytes_len` and `obj.bytes_get`, outside any host call: pure queries about an object, with
+no context, effects or fuel of their own. `BoundHost::with_object_key`,
+`BoundHost::with_object_conversion` and `BoundHost::with_object_bytes` supply them for a bound
+host.
 
 The embedder owns:
 - `Obj` handle creation/lifetimes

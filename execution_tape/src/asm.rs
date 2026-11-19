@@ -2309,6 +2309,35 @@ impl Asm {
         self
     }
 
+    /// Encodes `obj.bytes_len dst, obj`: the length of the bytes the host exposes for the
+    /// object in `obj` ([`Host::object_bytes`](crate::host::Host::object_bytes)).
+    ///
+    /// `obj` may hold an object of any host type; `dst` is a `u64` register. The instruction
+    /// traps with [`Trap::NoObjectBytes`](crate::vm::Trap::NoObjectBytes) when the host has no
+    /// bytes for the object.
+    pub fn obj_bytes_len(&mut self, dst: Reg, obj: Reg) -> &mut Self {
+        self.opcode(Opcode::ObjBytesLen);
+        self.reg(dst);
+        self.reg(obj);
+        self
+    }
+
+    /// Encodes `obj.bytes_get dst, obj, index`: byte `index` of the bytes the host exposes
+    /// for the object in `obj` ([`Host::object_bytes`](crate::host::Host::object_bytes)).
+    ///
+    /// `obj` may hold an object of any host type; `index` and `dst` are `u64` registers, and
+    /// `dst` receives a value in `0..=255`. The instruction traps with
+    /// [`Trap::IndexOutOfBounds`](crate::vm::Trap::IndexOutOfBounds) when `index` is not
+    /// below the length, and with [`Trap::NoObjectBytes`](crate::vm::Trap::NoObjectBytes)
+    /// when the host has no bytes for the object.
+    pub fn obj_bytes_get(&mut self, dst: Reg, obj: Reg, index: Reg) -> &mut Self {
+        self.opcode(Opcode::ObjBytesGet);
+        self.reg(dst);
+        self.reg(obj);
+        self.reg(index);
+        self
+    }
+
     /// Encodes `const.i32 dst, imm_sleb`.
     pub fn const_i32(&mut self, dst: Reg, imm: i32) -> &mut Self {
         self.opcode(Opcode::ConstI32);

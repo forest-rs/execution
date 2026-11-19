@@ -549,6 +549,20 @@ pub enum ValueEvent<'a> {
         /// The host's answer.
         converted: Option<Obj>,
     },
+    /// An instruction that reads a host object's bytes, such as `obj.bytes_get`, asked the
+    /// host for them ([`crate::host::Host::object_bytes`]).
+    ///
+    /// Reported for every answer, before the instruction reads the bytes or traps on `None`,
+    /// while the host lends them: a sink must not borrow host state mutably here. Recordings
+    /// capture these answers so that replay delivers them without the host.
+    ObjectBytes {
+        /// The reading instruction.
+        location: TraceLocation,
+        /// The object.
+        object: Obj,
+        /// The host's answer, borrowed for this event only.
+        bytes: Option<&'a [u8]>,
+    },
     /// Newly materialized top-level outputs, before aggregate validation and compaction.
     ///
     /// The slice excludes any pre-existing caller output-buffer prefix. It may contain dangling
@@ -707,6 +721,16 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("object", object)
                 .field("to", to)
                 .field("converted", converted)
+                .finish(),
+            Self::ObjectBytes {
+                location,
+                object,
+                bytes,
+            } => f
+                .debug_struct("ObjectBytes")
+                .field("location", location)
+                .field("object", object)
+                .field("len", &bytes.map(<[u8]>::len))
                 .finish(),
             Self::Collected { report, aggregates } => f
                 .debug_struct("Collected")
