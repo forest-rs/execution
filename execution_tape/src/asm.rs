@@ -35,9 +35,9 @@ use crate::host_binding::HostImport;
 use crate::opcode::Opcode;
 use crate::program::{
     ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
-    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, LinkEntry, LinkId, Pc,
-    Program, RegionDef, RegionId, RegionRun, SpanEntry, SpanId, StructTypeDef, SymbolId, TagEntry,
-    TagId, TypeId, TypeTableDef, ValueType,
+    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, LinkEntry, LinkGuardEntry,
+    LinkId, MAX_GUARD_KEYS, Pc, Program, RegionDef, RegionId, RegionRun, SpanEntry, SpanId,
+    StructTypeDef, SymbolId, TagEntry, TagId, TypeId, TypeTableDef, ValueType,
 };
 use crate::value::FuncId;
 use crate::value::{Decimal, DecimalRounding};
@@ -3673,6 +3673,36 @@ impl Asm {
         self.uleb(u32::try_from(rets.len()).unwrap_or(u32::MAX));
         for &r in rets {
             self.reg(r);
+        }
+        self
+    }
+
+    /// Encodes `call.link.guard eff_out, link, eff_in, keyc, keys..., argc, args..., retc,
+    /// rets...`.
+    ///
+    /// `link` must be a guarded link ([`ProgramBuilder::declare_guarded_link`]) and `keys` as
+    /// many `u64` registers as it compares. The call runs the link's target when the calling
+    /// unit's guard for it holds these keys, or is megamorphic, and the link's fallback
+    /// otherwise, passing the fallback the link's index and the keys before `args`. Arguments
+    /// and results match the link's signature 1:1.
+    pub fn call_link_guard(
+        &mut self,
+        eff_out: Reg,
+        link: LinkId,
+        eff_in: Reg,
+        keys: &[Reg],
+        args: &[Reg],
+        rets: &[Reg],
+    ) -> &mut Self {
+        self.opcode(Opcode::CallLinkGuard);
+        self.reg(eff_out);
+        self.uleb(link.0);
+        self.reg(eff_in);
+        for list in [keys, args, rets] {
+            self.uleb(u32::try_from(list.len()).unwrap_or(u32::MAX));
+            for &r in list {
+                self.reg(r);
+            }
         }
         self
     }

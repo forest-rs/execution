@@ -151,9 +151,9 @@ fn step_description(
         }
         InstructionOutcome::Trapped => "trapped; no successful writes".into(),
         InstructionOutcome::Completed => match Opcode::from_code(step.opcode) {
-            Some(Opcode::Call | Opcode::CallIndirect | Opcode::CallLink) => {
-                "dispatched into callee; results come later".into()
-            }
+            Some(
+                Opcode::Call | Opcode::CallIndirect | Opcode::CallLink | Opcode::CallLinkGuard,
+            ) => "dispatched into callee; results come later".into(),
             Some(Opcode::Ret) => if step.next.is_some() {
                 "returned to caller"
             } else if step.parent_attempt.is_some() {

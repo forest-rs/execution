@@ -163,6 +163,12 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                             link.0,
                             name.map(|name| format!(" ({name})")).unwrap_or_default()
                         )),
+                        CallTarget::GuardedLink { link, name, .. } => lines.push(format!(
+                            "Guarded link #{}{} · the unit's current target when the keys \
+                             match its guard, the fallback otherwise",
+                            link.0,
+                            name.map(|name| format!(" ({name})")).unwrap_or_default()
+                        )),
                     }
                 }
                 if let Operands::Ret { rets, .. } = instruction.operands() {

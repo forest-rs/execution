@@ -14,7 +14,7 @@ use crate::trace::{
 };
 use crate::value::{AggHandle, AggType, Closure, FuncRef, Obj, TagRef, UnitId, Value};
 use crate::verifier::VerifiedProgram;
-use crate::vm::{InstallError, RelinkError, Trap, TrapInfo, Units, Vm};
+use crate::vm::{InstallError, LinkGuard, RelinkError, Trap, TrapInfo, Units, Vm};
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
@@ -120,6 +120,15 @@ pub enum Divergence {
         expected: TagRef,
         /// Tag the replay definition produced, if it succeeded.
         actual: Option<TagRef>,
+    },
+    /// Rebuilding the recorded VM could not give a guarded link its recorded guard: the one
+    /// [`crate::recording::RecordedUnit::guards`] or [`crate::recording::RecordedRelink::guard`]
+    /// holds.
+    Guard {
+        /// The unit whose link was guarded.
+        unit: UnitId,
+        /// The link.
+        link: LinkId,
     },
     /// A recorded instruction, successor, completion or activation differs.
     Instruction,
@@ -609,16 +618,41 @@ fn check_relink(
     relink: &RecordedRelink,
     units: Units<'_>,
 ) -> Result<(), ReplayError> {
+    check_link(
+        state,
+        units,
+        relink.unit,
+        relink.link,
+        relink.target,
+        relink.guard,
+    )
+}
+
+/// Checks that `link` of `unit` names `target` behind `guard`.
+fn check_link(
+    state: &State,
+    units: Units<'_>,
+    unit: UnitId,
+    link: LinkId,
+    target: FuncRef,
+    guard: Option<LinkGuard>,
+) -> Result<(), ReplayError> {
     let actual = units
-        .links(relink.unit)
-        .and_then(|links| links.get(relink.link.0 as usize).copied());
-    if actual != Some(relink.target) {
+        .links(unit)
+        .and_then(|links| links.get(link.0 as usize).copied());
+    if actual != Some(target) {
         return Err(state.mismatch(Divergence::Relink {
-            unit: relink.unit,
-            link: relink.link,
-            expected: relink.target,
+            unit,
+            link,
+            expected: target,
             actual,
         }));
+    }
+    let actual = units
+        .link_guards(unit)
+        .and_then(|guards| guards.get(link.0 as usize).copied());
+    if actual != Some(guard) {
+        return Err(state.mismatch(Divergence::Guard { unit, link }));
     }
     Ok(())
 }
@@ -629,22 +663,14 @@ fn restore_links(
     vm: &mut Vm<NoReplayEffects<'_>>,
     unit: &UnitRecord,
 ) -> Result<(), ReplayError> {
-    for (index, &expected) in unit.links.iter().enumerate() {
+    for (index, (&target, &guard)) in unit.links.iter().zip(&unit.guards).enumerate() {
         let link = LinkId(u32::try_from(index).expect("verified link count"));
-        // A failure leaves the old target, which the check below reports.
-        let _ = vm.relink(unit.unit, link, expected);
-        let actual = vm
-            .units()
-            .links(unit.unit)
-            .and_then(|links| links.get(index).copied());
-        if actual != Some(expected) {
-            return Err(state.mismatch(Divergence::Relink {
-                unit: unit.unit,
-                link,
-                expected,
-                actual,
-            }));
-        }
+        // A failure leaves the old target and guard, which the check below reports.
+        let _ = match guard {
+            None => vm.relink(unit.unit, link, target).map(drop),
+            Some(guard) => vm.relink_guarded(unit.unit, link, guard, target).map(drop),
+        };
+        check_link(state, vm.units(), unit.unit, link, target, guard)?;
     }
     Ok(())
 }
@@ -701,7 +727,7 @@ fn check_sequence(state: &State, expected: usize) -> Result<(), ReplayError> {
 /// Where replay repeats installs and relinks: a waiting host request or a waiting suspension.
 trait Installs {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError>;
-    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError>;
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<(), RelinkError>;
     fn units(&self) -> Units<'_>;
     /// Defines a recorded tag; only the VM between turns can.
     fn define_tag(&mut self, _tag: &TagRecord) -> Option<TagRef> {
@@ -712,8 +738,14 @@ impl Installs for crate::vm::PendingHostCall<'_, '_, NoReplayEffects<'_>> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         Self::install(self, program)
     }
-    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError> {
-        Self::relink(self, relink.unit, relink.link, relink.target)
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<(), RelinkError> {
+        let RecordedRelink {
+            unit, link, target, ..
+        } = *relink;
+        match relink.guard {
+            None => Self::relink(self, unit, link, target).map(drop),
+            Some(guard) => Self::relink_guarded(self, unit, link, guard, target).map(drop),
+        }
     }
     fn units(&self) -> Units<'_> {
         Self::units(self)
@@ -723,8 +755,14 @@ impl Installs for crate::vm::PendingSuspension<'_, '_, NoReplayEffects<'_>> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         Self::install(self, program)
     }
-    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError> {
-        Self::relink(self, relink.unit, relink.link, relink.target)
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<(), RelinkError> {
+        let RecordedRelink {
+            unit, link, target, ..
+        } = *relink;
+        match relink.guard {
+            None => Self::relink(self, unit, link, target).map(drop),
+            Some(guard) => Self::relink_guarded(self, unit, link, guard, target).map(drop),
+        }
     }
     fn units(&self) -> Units<'_> {
         Self::units(self)
@@ -734,8 +772,14 @@ impl<H: Host> Installs for Vm<H> {
     fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         Self::install(self, program)
     }
-    fn relink(&mut self, relink: &RecordedRelink) -> Result<FuncRef, RelinkError> {
-        Self::relink(self, relink.unit, relink.link, relink.target)
+    fn relink(&mut self, relink: &RecordedRelink) -> Result<(), RelinkError> {
+        let RecordedRelink {
+            unit, link, target, ..
+        } = *relink;
+        match relink.guard {
+            None => Self::relink(self, unit, link, target).map(drop),
+            Some(guard) => Self::relink_guarded(self, unit, link, guard, target).map(drop),
+        }
     }
     fn units(&self) -> Units<'_> {
         Self::units(self)

@@ -1194,18 +1194,49 @@ pub(super) fn relink_observed<H: Host>(
 ) -> Result<FuncRef, RelinkError> {
     let previous = vm.relink(unit, link, target)?;
     if previous != target {
-        let units = vm.units();
-        let program = units.program(unit).expect("relinked unit");
-        continuation
-            .trace
-            .values(program.program(), || ValueEvent::Relinked {
-                unit,
-                link,
-                target,
-                units,
-            });
+        report_relink(vm, continuation, unit, link, target, None);
     }
     Ok(previous)
+}
+
+/// Sets a guarded link's guard and target while a turn is suspended and reports the change to
+/// its trace.
+///
+/// Setting the current guard and target changes nothing and reports nothing.
+pub(super) fn relink_guarded_observed<H: Host>(
+    vm: &mut Vm<H>,
+    continuation: &mut continuation::Continuation<'_>,
+    unit: UnitId,
+    link: LinkId,
+    guard: LinkGuard,
+    target: FuncRef,
+) -> Result<(LinkGuard, FuncRef), RelinkError> {
+    let previous = vm.relink_guarded(unit, link, guard, target)?;
+    if previous != (guard, target) {
+        report_relink(vm, continuation, unit, link, target, Some(guard));
+    }
+    Ok(previous)
+}
+
+fn report_relink<H: Host>(
+    vm: &Vm<H>,
+    continuation: &mut continuation::Continuation<'_>,
+    unit: UnitId,
+    link: LinkId,
+    target: FuncRef,
+    guard: Option<LinkGuard>,
+) {
+    let units = vm.units();
+    let program = units.program(unit).expect("relinked unit");
+    continuation
+        .trace
+        .values(program.program(), || ValueEvent::Relinked {
+            unit,
+            link,
+            target,
+            guard,
+            units,
+        });
 }
 
 /// Installs `program` while a turn is suspended and reports it to the turn's trace.

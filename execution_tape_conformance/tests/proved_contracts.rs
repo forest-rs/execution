@@ -442,6 +442,93 @@ fn a_linked_call_relinked_to_another_unit_skips_only_proved_arguments() {
 }
 
 #[test]
+fn a_guarded_call_checks_unproved_arguments_at_the_target_and_the_fallback() {
+    for source in [Source::Local, Source::Host] {
+        let mut b = ProgramBuilder::new();
+        let parts = parts(&mut b);
+        let index = b.contract(Contract::Kind(ValueType::U64)).unwrap();
+        // `miss(link, key, t: (i64)) -> i64` reads the member too.
+        let mut miss = body(&[
+            ValueType::Unit,
+            ValueType::U64,
+            ValueType::U64,
+            ValueType::Agg,
+            ValueType::I64,
+        ]);
+        miss.tuple_get(Reg(4), Reg(3), 0)
+            .ret(Reg::EFFECT, &[Reg(4)]);
+        let miss = b
+            .push_function_checked(
+                miss,
+                FunctionAbi {
+                    args: vec![index.into(), index.into(), parts.single.into()],
+                    rets: vec![parts.integer.into()],
+                },
+            )
+            .unwrap();
+        let link = b.declare_guarded_link("read", parts.read, 1, miss).unwrap();
+        let mut main = body(&[
+            ValueType::Unit,
+            ValueType::Agg,
+            ValueType::I64,
+            ValueType::U64,
+        ]);
+        tuple_from(&mut main, &parts, source, Reg(1), Reg(2));
+        main.const_u64(Reg(3), 5)
+            .call_link_guard(
+                Reg::EFFECT,
+                link,
+                Reg::EFFECT,
+                &[Reg(3)],
+                &[Reg(1)],
+                &[Reg(2)],
+            )
+            .ret(Reg::EFFECT, &[Reg(2)]);
+        let entry = b.push_function_checked(main, entry_abi()).unwrap();
+        let program = Arc::new(b.build_verified().unwrap());
+        assert_eq!(
+            proofs(&program, entry, Opcode::CallLinkGuard),
+            [source == Source::Local]
+        );
+        // Unfilled, the call enters the fallback; megamorphic, the target.
+        for megamorphic in [false, true] {
+            for (value, good) in [(Value::I64(7), true), (Value::Str("seven".into()), false)] {
+                let mut vm = Vm::new(Maker(value, None), Limits::default());
+                let unit = vm.install(Arc::clone(&program)).unwrap();
+                if megamorphic {
+                    vm.relink_guarded(
+                        unit,
+                        link,
+                        execution_tape::vm::LinkGuard::Megamorphic,
+                        FuncRef::new(unit, parts.read),
+                    )
+                    .unwrap();
+                }
+                let result = vm.run(
+                    FuncRef::new(unit, entry),
+                    &[],
+                    execution_tape::trace::TraceMask::NONE,
+                    None,
+                );
+                match (source, good) {
+                    (Source::Local, _) | (Source::Host, true) => {
+                        assert_eq!(result.unwrap(), [Value::I64(7)], "{megamorphic}");
+                    }
+                    (Source::Host, false) => {
+                        let trap = result.unwrap_err();
+                        assert!(
+                            matches!(trap.trap, Trap::ContractMismatch { .. }),
+                            "{megamorphic}: {trap:?}"
+                        );
+                        assert_eq!(trap.func, entry, "refused at the call");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_continuation_root_returns_without_checking_only_proved_results() {
     check_path(|source| {
         let mut b = ProgramBuilder::new();

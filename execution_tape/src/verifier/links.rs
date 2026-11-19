@@ -12,9 +12,10 @@ use alloc::collections::BTreeMap;
 
 use super::VerifyError;
 use super::metadata::MetadataTable;
-use crate::contract::ContractKinds;
+use crate::contract::{Contract, ContractId, ContractKinds};
 use crate::format::DecodeError;
-use crate::program::{LinkId, Program};
+use crate::program::{LinkGuardEntry, LinkId, MAX_GUARD_KEYS, Pc, Program, ValueType};
+use crate::value::FuncId;
 
 fn malformed(link: usize) -> VerifyError {
     VerifyError::InvalidMetadata {
@@ -48,6 +49,11 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
             .functions
             .get(entry.target.0 as usize)
             .ok_or(malformed(index))?;
+        let link_args = program.call_sig_arg_contracts(signature).ok();
+        let link_rets = program.call_sig_ret_contracts(signature).ok();
+        if let Some(guard) = entry.guard {
+            verify_guard(program, LinkId(link), guard, link_args, link_rets)?;
+        }
         // Contract IDs are normalized within a program, so equal signatures have equal IDs. A
         // malformed target signature is the function's error, which its own checks report.
         let (Ok(args), Ok(rets)) = (
@@ -56,15 +62,75 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
         ) else {
             continue;
         };
-        let same = program.call_sig_arg_contracts(signature).ok() == Some(args)
-            && program.call_sig_ret_contracts(signature).ok() == Some(rets);
-        if !same {
+        if link_args != Some(args) || link_rets != Some(rets) {
             return Err(VerifyError::LinkSignatureMismatch {
                 link: LinkId(link),
                 call_sig: entry.call_sig,
                 target: entry.target,
             });
         }
+    }
+    Ok(())
+}
+
+/// Checks a guarded link's key count and that its fallback takes a plain `u64` link index and
+/// keys before the link's arguments, with the same contracts, and returns its results.
+fn verify_guard(
+    program: &Program,
+    link: LinkId,
+    guard: LinkGuardEntry,
+    link_args: Option<&[ContractId]>,
+    link_rets: Option<&[ContractId]>,
+) -> Result<(), VerifyError> {
+    let keys = guard.key_count as usize;
+    let fallback = program
+        .functions
+        .get(guard.fallback.0 as usize)
+        .filter(|_| (1..=MAX_GUARD_KEYS).contains(&keys))
+        .ok_or(VerifyError::LinkGuardInvalid { link })?;
+    let mismatch = VerifyError::LinkFallbackMismatch {
+        link,
+        fallback: guard.fallback,
+    };
+    let (Ok(args), Ok(rets), Some(link_args), Some(link_rets)) = (
+        program.function_contracts(fallback.arg_types),
+        program.function_contracts(fallback.ret_types),
+        link_args,
+        link_rets,
+    ) else {
+        return Err(mismatch);
+    };
+    let Some((prefix, rest)) = args.split_at_checked(1 + keys) else {
+        return Err(mismatch);
+    };
+    let plain_u64 =
+        |&id: &ContractId| program.contracts.get(id) == Some(Contract::Kind(ValueType::U64));
+    if !prefix.iter().all(plain_u64) || rest != link_args || rets != link_rets {
+        return Err(mismatch);
+    }
+    Ok(())
+}
+
+/// Checks that a call passes as many guard keys as `link` compares: none for an unguarded link.
+pub(super) fn check_keys(
+    program: &Program,
+    func: FuncId,
+    pc: u32,
+    link: LinkId,
+    actual: usize,
+) -> Result<(), VerifyError> {
+    let expected = program
+        .link(link)
+        .and_then(|entry| entry.guard)
+        .map_or(0, |guard| guard.key_count as usize);
+    if expected != actual {
+        return Err(VerifyError::LinkGuardKeys {
+            func,
+            pc: Pc(pc),
+            link,
+            expected,
+            actual,
+        });
     }
     Ok(())
 }

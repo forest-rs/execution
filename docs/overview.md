@@ -238,6 +238,18 @@ another representation, such as an untyped boxed receiver unboxed for the method
 it, for about 3 ns against about 44 ns as a host call. Keys and conversions must be pure and
 fixed for their object's life; recordings keep each answer, so replay needs no host.
 
+### Guarded links
+A guarded link is an inline cache for a dynamic send. Its callers pass `u64` keys with each call,
+such as the classes of the arguments a generic dispatches on (read with `obj.key`), and
+`call.link.guard` calls the link's target when they match the calling unit's guard, and the
+link's declared fallback otherwise. The fallback receives the link's index and the keys, so the
+embedding learns which site missed with which keys; while that request waits it fills the guard
+with `relink_guarded`, the same signature-checked, recorded operation as `relink`. A guard can
+also be emptied, when new code replaces the methods it cached, or made megamorphic, sending every
+call to a general dispatcher. The guard only chooses between two verified functions with the
+link's contracts, so changing it needs no reverification and keeps proved arguments proved.
+`Units::guarded_link` reports each site's keys, target and misses.
+
 Function references name their installed unit, and struct/array type IDs are resolved to shapes
 interned in the VM heap when a program is installed, so equal layouts are the same runtime type
 across programs. Unit IDs and aggregate handles belong to one VM. The graph's `TapeValue` adapter

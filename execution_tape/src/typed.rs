@@ -1490,6 +1490,17 @@ pub(crate) enum ExecInstr {
         /// target the link can name has that signature, so entering it checks none of them again.
         args_proved: bool,
     },
+    /// Call a guarded link's target when `keys` match the calling unit's guard for `link`, and
+    /// the link's fallback, with the link index and keys first, otherwise.
+    CallLinkGuard {
+        link: LinkId,
+        keys: VRegSlice,
+        args: VRegSlice,
+        rets: VRegSlice,
+        /// As for [`Self::CallLink`]: the fallback takes the same contracts for these
+        /// arguments, after plain `u64` link index and keys.
+        args_proved: bool,
+    },
     ClosureNew {
         dst: ClosureReg,
         func: FuncReg,
@@ -1806,7 +1817,8 @@ impl ExecInstr {
             Self::Call { args_proved, .. }
             | Self::CallIndirectFunc { args_proved, .. }
             | Self::CallIndirectClosure { args_proved, .. }
-            | Self::CallLink { args_proved, .. } => *args_proved = true,
+            | Self::CallLink { args_proved, .. }
+            | Self::CallLinkGuard { args_proved, .. } => *args_proved = true,
             Self::Ret { rets_proved, .. } => *rets_proved = true,
             _ => {}
         }
@@ -1818,7 +1830,8 @@ impl ExecInstr {
             Self::Call { args_proved, .. }
             | Self::CallIndirectFunc { args_proved, .. }
             | Self::CallIndirectClosure { args_proved, .. }
-            | Self::CallLink { args_proved, .. } => *args_proved,
+            | Self::CallLink { args_proved, .. }
+            | Self::CallLinkGuard { args_proved, .. } => *args_proved,
             Self::Ret { rets_proved, .. } => *rets_proved,
             _ => false,
         }

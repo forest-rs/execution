@@ -431,9 +431,11 @@ Callbacks and recording are opt-in; source lookup is separate optional metadata.
 - `15 = tag_imports` (optional)
 - `16 = tag_results` (optional)
 - `17 = links` (optional)
+- `18 = link_guards` (optional)
 
 Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs`, `13 = tags`,
-`14 = regions`, `15 = tag_imports`, `16 = tag_results` and `17 = links` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
+`14 = regions`, `15 = tag_imports`, `16 = tag_results`, `17 = links` and `18 = link_guards` are
+optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -684,6 +686,32 @@ the entry and keeps no history, so it is not a `StoreEvent`; a recording snapsho
 target when its invocation starts and records each relink made while it waits, and replay
 restores and repeats them. An invocation can relink only while a host request or suspension
 waits, never between scheduling quanta, so replay can repeat every relink at the same point.
+
+## Link guards (optional)
+Makes links *guarded*: inline caches for dynamic sends, called with `call.link.guard`. The section
+is omitted when no link is guarded:
+- `count: ULEB128`
+- repeated `count` times, in strictly increasing link order:
+  - `link_id: ULEB128` (an entry of `links`)
+  - `keys: ULEB128` (how many `u64` keys each call passes, `1..=4`)
+  - `fallback_func_id: ULEB128` (a function of this program)
+
+The fallback takes a `u64` link index, then `keys` `u64` keys, then the link's arguments, and
+returns the link's results; verification requires its argument contracts to be the plain `U64`
+kind contract for the index and keys, and the link's call signature's contracts for the rest,
+and its result contracts to be the link's.
+
+Installing the program gives the unit a *guard* for each guarded link, which starts unfilled.
+`call.link.guard` calls the link's target when its keys match the calling unit's guard, and the
+fallback otherwise. `Vm::relink_guarded(unit, link, guard, target)`, or the same operation on a
+waiting host request or suspension, sets the guard and repoints the link together: the target is
+checked as for `Vm::relink`, and a guard of keys must hold as many as the link compares. A guard
+is `Unfilled` (every call takes the fallback), `Keys(k)` (calls whose keys equal `k` reach the
+target) or `Megamorphic` (every call reaches the target). `Vm::relink` refuses a guarded link and
+`relink_guarded` an unguarded one. Like relinks, guard changes keep no history; recordings
+snapshot every guard at entry with the link targets and repeat each change made while a request
+or suspension waits, or while the computation is saved. `Units::guarded_link` reports a guarded link's guard, target, fallback and
+the calls that took the fallback.
 
 ## Regions (optional)
 Protected regions attach catch clauses to instructions. Each function owns a region tree and a
@@ -1034,6 +1062,18 @@ NaN `a` gives a NaN). They are exact and do not use `libm`.
   - The target runs its own unit's program. No signature check happens at the call: the link's
     initial target was verified and every relink checked the target's canonical signature.
     Argument contracts are checked at callee entry and results at return, as for every call.
+  - Threads `eff` like `call`. Fuel cost: one instruction.
+- `call_link_guard r_eff_out, link_id, r_eff_in, keys..., args... -> rets...`
+  - `link_id` names a guarded link (see [Link guards](#link-guards-optional)) and `keys` are as
+    many `U64` registers as it compares; `call_link` cannot name a guarded link.
+  - When the calling unit's guard for the link is `Keys` equal to `keys`, or `Megamorphic`,
+    calls the link's target exactly as `call_link` does. Otherwise calls the link's fallback, a
+    function of the calling unit, with the link index and `keys` before `args`, and counts a
+    miss.
+  - Arguments and results match the link's call signature, and are verified and proved against
+    it, as for `call_link`. The fallback takes the same contracts for `args` after plain `u64`s,
+    so a proof covers whichever function the call enters, and changing the guard or target needs
+    no reverification.
   - Threads `eff` like `call`. Fuel cost: one instruction.
 - `closure_new r_dst, r_func, r_env`
   - Builds a `Closure` pairing the `Func` in `r_func` with a captured environment aggregate in `r_env`.
@@ -1474,6 +1514,8 @@ Checked conversions (`0xE0..`; `dst` and the `bool` flag are both written, see
 - `0x55 closure_new dst, func, env`
 - `0x56 call_link eff_out, link_id, eff_in, argc, args..., retc, rets...` (a single byte: a
   devirtualized call is as frequent as `call`)
+- `0x57 call_link_guard eff_out, link_id, eff_in, keyc, keys..., argc, args..., retc, rets...` (a
+  single byte: a dynamic language's sends are as frequent as calls)
 
 ### Aggregates
 Construction (all allocate):

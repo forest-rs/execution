@@ -796,7 +796,7 @@ fn transfer(
                 replacements.push((reg, arena.import(id)));
             }
         }
-        Instr::CallLink { link, rets, .. } => {
+        Instr::CallLink { link, rets, .. } | Instr::CallLinkGuard { link, rets, .. } => {
             let link = arena.program.link(LinkId(*link)).expect("verified link");
             for (&reg, &id) in rets.iter().zip(
                 arena
@@ -1068,8 +1068,9 @@ fn validate(
                     })?;
             }
         }
-        Instr::CallLink { link, args, .. } => {
-            // Any target the link can name takes exactly these argument contracts.
+        Instr::CallLink { link, args, .. } | Instr::CallLinkGuard { link, args, .. } => {
+            // Any target the link can name takes exactly these argument contracts, and so does
+            // a guarded link's fallback, after its link index and keys.
             let call_sig = arena
                 .program
                 .link(LinkId(*link))

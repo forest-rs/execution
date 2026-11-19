@@ -577,6 +577,22 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 rets,
             }
         },
+        Opcode::CallLinkGuard => {
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let link = crate::codec_primitives::read_u32_uleb(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let keys = crate::codec_primitives::read_reg_list(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            let rets = crate::codec_primitives::read_reg_list(r)?;
+            Instr::CallLinkGuard {
+                eff_out,
+                link,
+                eff_in,
+                keys,
+                args,
+                rets,
+            }
+        },
         Opcode::TupleNew => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let values = crate::codec_primitives::read_reg_list(r)?;

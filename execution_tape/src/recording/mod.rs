@@ -165,7 +165,7 @@ use crate::program::{HostSigId, LinkId, RegionId, ValueType};
 use crate::trace::TraceLocation;
 use crate::value::{AggHandle, FuncRef, Obj, TagRef, UnitId};
 use crate::verifier::VerifiedProgram;
-use crate::vm::{Limits, TrapInfo};
+use crate::vm::{Limits, LinkGuard, TrapInfo};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -320,6 +320,9 @@ pub struct RecordedUnit<'a> {
     /// [`crate::program::LinkId`] order: at entry for a unit installed before the turn,
     /// and at installation otherwise.
     pub links: &'a [FuncRef],
+    /// The guard of each link at the same point, in [`crate::program::LinkId`] order; `None`
+    /// for an unguarded link.
+    pub guards: &'a [Option<LinkGuard>],
     /// The observation sequence before which the unit was installed while the turn was
     /// suspended, or `None` for a unit installed before the turn started.
     pub installed: Option<usize>,
@@ -352,6 +355,8 @@ pub struct RecordedRelink {
     pub link: LinkId,
     /// The function the link named from then on.
     pub target: FuncRef,
+    /// The guard of a guarded link from then on; `None` for an unguarded link.
+    pub guard: Option<LinkGuard>,
     /// The observation sequence before which the link was repointed.
     pub relinked: usize,
 }
@@ -422,6 +427,7 @@ struct UnitRecord {
     program: Arc<VerifiedProgram>,
     tags: Box<[TagRef]>,
     links: Box<[FuncRef]>,
+    guards: Box<[Option<LinkGuard>]>,
     installed: Option<usize>,
 }
 #[derive(Debug)]
@@ -977,6 +983,7 @@ impl UnitRecord {
             program: &self.program,
             tags: &self.tags,
             links: &self.links,
+            guards: &self.guards,
             installed: self.installed,
         }
     }

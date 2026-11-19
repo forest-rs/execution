@@ -43,6 +43,7 @@ fn raises(instr: &Instr) -> Option<Raises> {
         Instr::Call { .. }
         | Instr::CallIndirect { .. }
         | Instr::CallLink { .. }
+        | Instr::CallLinkGuard { .. }
         | Instr::HostCall { .. }
         | Instr::ThrowRef { .. }
         | Instr::Resume { .. }

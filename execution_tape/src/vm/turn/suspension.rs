@@ -220,6 +220,29 @@ impl<H: Host> PendingSuspension<'_, '_, H> {
         )
     }
 
+    /// Sets the guard of guarded `link` of `unit` and points the link at `target` while the
+    /// suspension waits, returning the guard and target they replace.
+    ///
+    /// This is [`Vm::relink_guarded`] during a turn. A language that installs replacement code
+    /// here empties or refills the guarded links of older units, as it repoints their links.
+    /// Recordings repeat it here.
+    pub fn relink_guarded(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        guard: LinkGuard,
+        target: FuncRef,
+    ) -> Result<(LinkGuard, FuncRef), RelinkError> {
+        relink_guarded_observed(
+            self.running.vm,
+            self.running.continuation,
+            unit,
+            link,
+            guard,
+            target,
+        )
+    }
+
     /// Borrows host state for read-only inspection while the suspension waits.
     #[must_use]
     pub fn host(&self) -> &H {

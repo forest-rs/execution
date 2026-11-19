@@ -270,6 +270,16 @@ pub enum CallTarget<'a> {
         /// Best-effort resolved link name.
         name: Option<&'a str>,
     },
+    /// A guarded link's target when the keys match the calling unit's guard, and its fallback
+    /// otherwise.
+    GuardedLink {
+        /// Link table id.
+        link: LinkId,
+        /// Best-effort resolved link name.
+        name: Option<&'a str>,
+        /// Guard key registers.
+        keys: RegList<'a>,
+    },
 }
 
 /// Disassembled instruction operands.
@@ -439,7 +449,9 @@ impl<'a> InstrView<'a> {
         if let Instr::Throw { tag, .. } = &self.decoded.instr {
             return Some(InputIndex::Tag(TagId(*tag)));
         }
-        if let Instr::CallLink { link, .. } = &self.decoded.instr {
+        if let Instr::CallLink { link, .. } | Instr::CallLinkGuard { link, .. } =
+            &self.decoded.instr
+        {
             return Some(InputIndex::Link(LinkId(*link)));
         }
         let operands = self.opcode().operands();
@@ -620,6 +632,24 @@ impl<'a> InstrView<'a> {
                     callee: CallTarget::Link {
                         link: LinkId(*link),
                         name: self.program.link_name(LinkId(*link)),
+                    },
+                    eff_in: Reg(*eff_in),
+                    args: RegList::new(args),
+                    rets: RegList::new(rets),
+                }),
+                Instr::CallLinkGuard {
+                    eff_out,
+                    link,
+                    eff_in,
+                    keys,
+                    args,
+                    rets,
+                } => Operands::Call(CallOperands {
+                    eff_out: Reg(*eff_out),
+                    callee: CallTarget::GuardedLink {
+                        link: LinkId(*link),
+                        name: self.program.link_name(LinkId(*link)),
+                        keys: RegList::new(keys),
                     },
                     eff_in: Reg(*eff_in),
                     args: RegList::new(args),
@@ -1780,6 +1810,12 @@ fn fmt_instr_with_labels(
                     call_sig_for_annotation = iv.program.link(link).map(|entry| entry.call_sig);
                     fmt_link(f, link, name)?;
                 }
+                CallTarget::GuardedLink { link, name, keys } => {
+                    call_sig_for_annotation = iv.program.link(link).map(|entry| entry.call_sig);
+                    fmt_link(f, link, name)?;
+                    write!(f, ", keys=")?;
+                    fmt_reg_list(f, keys.raw())?;
+                }
             }
             write!(f, ", eff_in=")?;
             fmt_reg(f, call.eff_in)?;
@@ -1965,6 +2001,13 @@ impl fmt::Display for InstrView<'_> {
                         call_sig_for_annotation =
                             self.program.link(link).map(|entry| entry.call_sig);
                         fmt_link(f, link, name)?;
+                    }
+                    CallTarget::GuardedLink { link, name, keys } => {
+                        call_sig_for_annotation =
+                            self.program.link(link).map(|entry| entry.call_sig);
+                        fmt_link(f, link, name)?;
+                        write!(f, ", keys=")?;
+                        fmt_reg_list(f, keys.raw())?;
                     }
                 }
                 write!(f, ", eff_in=")?;

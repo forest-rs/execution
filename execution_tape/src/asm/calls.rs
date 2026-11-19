@@ -97,6 +97,24 @@ pub enum CallBuildError {
     EffectRegister,
     /// Allocating the results would exceed the source register address space.
     RegisterSpace,
+    /// A call passes another number of guard keys than its link compares: a guarded link is
+    /// called with [`ProgramBuilder::emit_guarded_call`] and its keys, any other target
+    /// without keys.
+    GuardKeys {
+        /// The link, or `None` when the target is not a link.
+        link: Option<LinkId>,
+        /// How many keys the target compares; zero unless it is a guarded link.
+        expected: usize,
+        /// How many keys the call passes.
+        actual: usize,
+    },
+    /// A guard key register is not declared `u64`.
+    GuardKeyKind {
+        /// The key register.
+        register: Reg,
+        /// Its declared kind.
+        actual: ValueType,
+    },
 }
 impl fmt::Display for CallBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -148,6 +166,25 @@ impl fmt::Display for CallBuildError {
             Self::RegisterSpace => {
                 f.write_str("call results exceed the u32 register address space")
             }
+            Self::GuardKeys {
+                link: Some(link),
+                expected,
+                actual,
+            } => write!(
+                f,
+                "link#{} compares {expected} guard keys, the call passes {actual}",
+                link.0
+            ),
+            Self::GuardKeys {
+                link: None, actual, ..
+            } => write!(
+                f,
+                "only a guarded link takes guard keys, the call passes {actual}"
+            ),
+            Self::GuardKeyKind { register, actual } => write!(
+                f,
+                "guard key {register} must be declared U64, register declares {actual:?}"
+            ),
         }
     }
 }
@@ -376,6 +413,7 @@ impl ProgramBuilder {
         let results = self.check_call(
             body,
             target,
+            &[],
             args.iter().map(|&register| CallArg::Register(register)),
             N,
             0,
@@ -441,12 +479,39 @@ impl ProgramBuilder {
             .iter()
             .filter(|arg| !matches!(arg, CallArg::Register(_)))
             .count();
-        self.check_call(body, target, operands.iter().copied(), N, constants)?;
+        self.check_call(body, target, &[], operands.iter().copied(), N, constants)?;
         let registers: Vec<Reg> = operands
             .into_iter()
             .map(|arg| self.emit_const(body, arg))
             .collect();
         self.emit_call(body, target, &registers)
+    }
+
+    /// Emits a `call.link.guard` through a guarded link, allocating its result registers from
+    /// the link's signature.
+    ///
+    /// `keys` are `u64` registers, as many as the link compares (see
+    /// [`Self::declare_guarded_link`]); the call reaches the link's target when they match the
+    /// calling unit's guard, and its fallback otherwise. This checks what [`Self::emit_call`]
+    /// checks, and the keys, before mutation.
+    pub fn emit_guarded_call<const N: usize>(
+        &self,
+        body: &mut Asm,
+        link: LinkId,
+        keys: &[Reg],
+        args: &[Reg],
+    ) -> Result<[Reg; N], CallBuildError> {
+        let results = self.check_call(
+            body,
+            CallTarget::Link(link),
+            keys,
+            args.iter().map(|&register| CallArg::Register(register)),
+            N,
+            0,
+        )?;
+        let results = core::array::from_fn(|index| body.alloc_register(results.get(index)));
+        body.call_link_guard(Reg::EFFECT, link, Reg::EFFECT, keys, args, &results);
+        Ok(results)
     }
 
     /// Loads a constant into a fresh register of `body` and returns the register, for any number
@@ -528,10 +593,36 @@ impl ProgramBuilder {
         &'s self,
         body: &Asm,
         target: CallTarget,
+        keys: &[Reg],
         args: impl ExactSizeIterator<Item = CallArg<'s>>,
         result_count: usize,
         temporaries: usize,
     ) -> Result<Kinds<'s>, CallBuildError> {
+        let guarded = match target {
+            CallTarget::Link(id) => self
+                .links
+                .get(id.0 as usize)
+                .and_then(|link| link.guard)
+                .map(|guard| (id, guard.key_count as usize)),
+            _ => None,
+        };
+        let expected = guarded.map_or(0, |(_, keys)| keys);
+        if keys.len() != expected {
+            return Err(CallBuildError::GuardKeys {
+                link: guarded.map(|(link, _)| link),
+                expected,
+                actual: keys.len(),
+            });
+        }
+        for &register in keys {
+            let actual = *body
+                .register_types
+                .get(register.0 as usize)
+                .ok_or(CallBuildError::Register(register))?;
+            if actual != ValueType::U64 {
+                return Err(CallBuildError::GuardKeyKind { register, actual });
+            }
+        }
         let (parameters, results) = match target {
             CallTarget::Function(id) => {
                 let function = self

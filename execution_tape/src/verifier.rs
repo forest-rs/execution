@@ -609,6 +609,34 @@ pub enum VerifyError {
         /// The function the link names when installed.
         target: FuncId,
     },
+    /// A guarded link compares no keys or more than [`crate::program::MAX_GUARD_KEYS`], or
+    /// its fallback is not a function of the program.
+    LinkGuardInvalid {
+        /// The link.
+        link: LinkId,
+    },
+    /// A guarded link's fallback does not take a `u64` link index, then the link's keys as
+    /// `u64`s, then the link's arguments, or does not return the link's results.
+    LinkFallbackMismatch {
+        /// The link.
+        link: LinkId,
+        /// The fallback.
+        fallback: FuncId,
+    },
+    /// A call passes another number of guard keys than its link compares: `call.link` names a
+    /// guarded link, or `call.link.guard` an unguarded one or with the wrong number of keys.
+    LinkGuardKeys {
+        /// Function index within the program.
+        func: FuncId,
+        /// Byte offset of the instruction.
+        pc: Pc,
+        /// The link.
+        link: LinkId,
+        /// Keys the link compares; zero for an unguarded link.
+        expected: usize,
+        /// Keys the instruction passes; zero for `call.link`.
+        actual: usize,
+    },
     /// A `call.link` references a link outside the program's link table.
     LinkOutOfBounds {
         /// Function index within the program.
@@ -986,6 +1014,26 @@ impl VerifyError {
                 "link#{link} declares call_sig {call_sig}, but its target f{target} has a different signature"
             ),
             Self::LinkOutOfBounds { link, .. } => write!(f, "call.link: link#{link} out of bounds"),
+            Self::LinkGuardInvalid { link } => write!(
+                f,
+                "guarded link#{link} must compare 1 to {} keys and fall back to a function of \
+                 the program",
+                crate::program::MAX_GUARD_KEYS
+            ),
+            Self::LinkFallbackMismatch { link, fallback } => write!(
+                f,
+                "guarded link#{link} falls back to f{fallback}, which must take a u64 link index, \
+                 its keys as u64s and the link's arguments, and return the link's results"
+            ),
+            Self::LinkGuardKeys {
+                link,
+                expected,
+                actual,
+                ..
+            } => write!(
+                f,
+                "link#{link} compares {expected} guard keys, the call passes {actual}"
+            ),
             Self::DuplicateTagName { tag, first, name } => write!(
                 f,
                 "tag#{tag} reuses the name \"{name}\" already declared by tag#{first}"
@@ -1735,7 +1783,7 @@ fn verify_id_operands_in_bounds(
             });
         }
 
-        if let Instr::CallLink { link, .. } = &di.instr
+        if let Instr::CallLink { link, .. } | Instr::CallLinkGuard { link, .. } = &di.instr
             && program.link(LinkId(*link)).is_none()
         {
             err = Some(VerifyError::LinkOutOfBounds {
@@ -3735,6 +3783,24 @@ fn verify_function_bytecode(
                     args_proved: false,
                 }
             }
+            Instr::CallLinkGuard {
+                eff_out,
+                link,
+                eff_in,
+                keys,
+                args,
+                rets,
+            } => {
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
+                ExecInstr::CallLinkGuard {
+                    link: LinkId(*link),
+                    keys: push_vregs(keys)?,
+                    args: push_vregs(args)?,
+                    rets: push_vregs(rets)?,
+                    args_proved: false,
+                }
+            }
             Instr::ClosureNew { dst, func, env } => ExecInstr::ClosureNew {
                 dst: map_closure(*dst)?,
                 func: map_func(*func)?,
@@ -4126,7 +4192,10 @@ fn lint_function_bytecode(
             let opcode = di.opcode;
             let is_call_like = opcode.is_call_like();
             let mut call_rets: Option<&[u32]> = None;
-            if let Instr::Call { rets, .. } | Instr::CallLink { rets, .. } = &di.instr {
+            if let Instr::Call { rets, .. }
+            | Instr::CallLink { rets, .. }
+            | Instr::CallLinkGuard { rets, .. } = &di.instr
+            {
                 call_rets = Some(rets.as_slice());
             } else if let Instr::HostCall { rets, .. } = &di.instr {
                 call_rets = Some(rets.as_slice());
@@ -4348,6 +4417,26 @@ fn validate_instr_reads_writes(
         } => {
             require_eff_in_r0(*eff_in)?;
             require_eff_out_r0(*eff_out)?;
+            links::check_keys(program, func_id, pc, LinkId(*link), 0)?;
+            let (cs_args, cs_rets) = links::signature(program, LinkId(*link));
+            if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
+                return Err(VerifyError::CallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
+            }
+        }
+        Instr::CallLinkGuard {
+            eff_out,
+            link,
+            eff_in,
+            keys,
+            args,
+            rets,
+        } => {
+            require_eff_in_r0(*eff_in)?;
+            require_eff_out_r0(*eff_out)?;
+            links::check_keys(program, func_id, pc, LinkId(*link), keys.len())?;
             let (cs_args, cs_rets) = links::signature(program, LinkId(*link));
             if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
                 return Err(VerifyError::CallArityMismatch {
@@ -5238,6 +5327,24 @@ fn validate_instr_types(
         Instr::CallLink {
             link, args, rets, ..
         } => {
+            let (cs_args, cs_rets) = links::signature(program, LinkId(*link));
+            for (&r, &expected) in args.iter().zip(cs_args.iter()) {
+                check_expected(func_id, pc, r, t(r), expected)?;
+            }
+            for (&r, &expected) in rets.iter().zip(cs_rets.iter()) {
+                check_expected(func_id, pc, r, t(r), expected)?;
+            }
+        }
+        Instr::CallLinkGuard {
+            link,
+            keys,
+            args,
+            rets,
+            ..
+        } => {
+            for &r in keys {
+                check_expected(func_id, pc, r, t(r), ValueType::U64)?;
+            }
             let (cs_args, cs_rets) = links::signature(program, LinkId(*link));
             for (&r, &expected) in args.iter().zip(cs_args.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;

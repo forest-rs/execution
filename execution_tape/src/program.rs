@@ -908,6 +908,30 @@ pub struct LinkEntry {
     pub call_sig: CallSigId,
     /// The function of this program the link names when the program is installed.
     pub target: FuncId,
+    /// Present when the link is guarded: called with `call.link.guard`, which calls the target
+    /// only when its keys match the link's guard.
+    pub guard: Option<LinkGuardEntry>,
+}
+
+/// The most keys a guarded link compares.
+pub const MAX_GUARD_KEYS: usize = 4;
+
+/// What makes a link guarded, an inline cache for a dynamic send.
+///
+/// `call.link.guard` passes `key_count` `u64` keys beside the link's arguments, such as the classes of
+/// the receiver and the other arguments a generic function dispatches on. When the unit's guard
+/// for the link holds the same keys, the call goes to the link's target; otherwise it goes to
+/// `fallback`, which also receives the link's index and the keys, so the embedding can select a
+/// method and fill the guard with
+/// [`PendingHostCall::relink_guarded`](crate::vm::PendingHostCall::relink_guarded).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LinkGuardEntry {
+    /// How many keys each call passes: `1..=`[`MAX_GUARD_KEYS`].
+    pub key_count: u32,
+    /// The function of this program a call whose keys miss the guard calls. It takes a `u64`
+    /// link index, then `key_count` `u64` keys, then the link's arguments, and returns the link's
+    /// results.
+    pub fallback: FuncId,
 }
 
 /// An input struct type definition used to construct a [`TypeTable`].
@@ -1662,6 +1686,7 @@ impl Program {
         // 15 = tag imports (optional)
         // 16 = tag results (optional)
         // 17 = links (optional)
+        // 18 = link guards (optional)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1942,6 +1967,23 @@ impl Program {
             write_section(&mut w, SectionTag::Links, payload.as_slice());
         }
 
+        // link guard section (optional; omitted when no link is guarded)
+        if self.links.iter().any(|link| link.guard.is_some()) {
+            let mut payload = Writer::new();
+            let guarded = self
+                .links
+                .iter()
+                .enumerate()
+                .filter_map(|(index, link)| Some((index, link.guard?)));
+            payload.write_uleb128_u64(guarded.clone().count() as u64);
+            for (index, guard) in guarded {
+                payload.write_uleb128_u32(u32::try_from(index).expect("link ids fit u32"));
+                payload.write_uleb128_u32(guard.key_count);
+                payload.write_uleb128_u32(guard.fallback.0);
+            }
+            write_section(&mut w, SectionTag::LinkGuards, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -2025,6 +2067,7 @@ enum SectionTag {
     TagImports = 15,
     TagResults = 16,
     Links = 17,
+    LinkGuards = 18,
 }
 
 impl SectionTag {
@@ -2046,6 +2089,7 @@ impl SectionTag {
             15 => Some(Self::TagImports),
             16 => Some(Self::TagResults),
             17 => Some(Self::Links),
+            18 => Some(Self::LinkGuards),
             _ => None,
         }
     }
@@ -2161,6 +2205,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut tag_imports: Option<Vec<TagId>> = None;
     let mut tag_results: Option<Vec<DecodedTagResults>> = None;
     let mut links: Option<Vec<LinkEntry>> = None;
+    let mut link_guards: Option<Vec<(usize, LinkGuardEntry)>> = None;
     let mut saw_host_sigs = false;
     let mut saw_types = false;
     let mut saw_function_table = false;
@@ -2262,6 +2307,12 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                     return Err(DecodeError::DuplicateSection);
                 }
                 links = Some(decode_links(payload)?);
+            }
+            Some(SectionTag::LinkGuards) => {
+                if link_guards.is_some() {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                link_guards = Some(decode_link_guards(payload)?);
             }
             Some(SectionTag::Regions) => {
                 if saw_regions {
@@ -2627,6 +2678,11 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         }
     }
 
+    let mut links = links.unwrap_or_default();
+    for (index, guard) in link_guards.unwrap_or_default() {
+        links.get_mut(index).ok_or(DecodeError::OutOfBounds)?.guard = Some(guard);
+    }
+
     Ok(Program {
         symbols,
         symbol_data,
@@ -2636,7 +2692,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         call_sigs,
         tags,
         tag_imports: tag_imports.unwrap_or_default(),
-        links: links.unwrap_or_default(),
+        links,
         regions,
         catch_clauses,
         region_runs,
@@ -3149,7 +3205,34 @@ fn decode_links(payload: &[u8]) -> Result<Vec<LinkEntry>, DecodeError> {
             name,
             call_sig,
             target,
+            guard: None,
         });
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
+    }
+    Ok(out)
+}
+
+/// Decodes guards by link index, in strictly increasing link order.
+fn decode_link_guards(payload: &[u8]) -> Result<Vec<(usize, LinkGuardEntry)>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_count(&mut r)?;
+    let mut out: Vec<(usize, LinkGuardEntry)> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let index = r.read_uleb128_u32()? as usize;
+        if out.last().is_some_and(|&(last, _)| last >= index) {
+            return Err(DecodeError::OutOfBounds);
+        }
+        let key_count = r.read_uleb128_u32()?;
+        let fallback = FuncId(r.read_uleb128_u32()?);
+        out.push((
+            index,
+            LinkGuardEntry {
+                key_count,
+                fallback,
+            },
+        ));
     }
     if r.remaining() != 0 {
         return Err(DecodeError::OutOfBounds);

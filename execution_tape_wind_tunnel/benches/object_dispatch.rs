@@ -14,15 +14,22 @@
 //!   unboxes with a host import, `unbox_obj_convert` with `obj.convert`
 //!   ([`Host::convert_object`]), and `boxed_key` reads the key of the boxed value directly: the
 //!   floor for any scheme in which methods accept the boxed form.
+//! - The `send_` cases send a message to the object and add the method's result, the class.
+//!   `send_link` calls the method through a plain link, as a send the compiler proved does, and
+//!   is the floor for sends. `send_host_dispatch` asks a host import for the method and calls it
+//!   with `call.indirect`, as a dynamic send without a cache does. `send_open_guard` reads the
+//!   key and compares it with `u64.eq` and `br` before the plain link, a guard spelled out in
+//!   instructions; `send_guarded` reads the key and calls a guarded link that holds it, the
+//!   inline cache; `send_megamorphic` calls a guarded link that calls its target for any key.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
-use execution_tape::program::{HostTypeId, ValueType};
+use execution_tape::program::{HostTypeId, LinkId, ValueType};
 use execution_tape::trace::TraceMask;
-use execution_tape::value::{FuncId, FuncRef, Obj, ObjHandle, Value};
+use execution_tape::value::{FuncId, FuncRef, Obj, ObjHandle, UnitId, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{Limits, Vm};
+use execution_tape::vm::{GuardKeys, Limits, LinkGuard, Vm};
 use std::hint::black_box;
 
 const ITERS: u64 = 1_000;
@@ -32,8 +39,11 @@ const BOXED: HostTypeId = HostTypeId(0x424f_5845);
 const BOX_TAG: u64 = 0xFFFF_0000_0000_0000;
 const CLASS: u64 = 7;
 
-/// Objects of one class, and the same objects boxed.
-struct Classes;
+/// Objects of one class, and the same objects boxed; `dispatch` selects the method of
+/// `unit`.
+struct Classes {
+    unit: Option<UnitId>,
+}
 
 impl Host for Classes {
     fn call(
@@ -47,6 +57,10 @@ impl Host for Classes {
         match (ctx.host_sig_id().0, args) {
             (0, [ValueRef::Obj(object)]) => {
                 rets[0] = Value::U64(self.object_key(*object).ok_or(HostError::Failed)?);
+                Ok(0)
+            }
+            (2, [ValueRef::Obj(_)]) => {
+                rets[0] = Value::Func(FuncRef::new(self.unit.ok_or(HostError::Failed)?, METHOD));
                 Ok(0)
             }
             (1, [ValueRef::Obj(boxed)]) => {
@@ -85,16 +99,36 @@ enum Read {
     UnboxHostCall,
     UnboxObjConvert,
     BoxedKey,
+    SendLink,
+    SendHostDispatch,
+    SendOpenGuard,
+    SendGuarded,
+    SendMegamorphic,
 }
 
-const READS: [Read; 6] = [
+const READS: [Read; 11] = [
     Read::Loop,
     Read::HostCall,
     Read::ObjKey,
     Read::UnboxHostCall,
     Read::UnboxObjConvert,
     Read::BoxedKey,
+    Read::SendLink,
+    Read::SendHostDispatch,
+    Read::SendOpenGuard,
+    Read::SendGuarded,
+    Read::SendMegamorphic,
 ];
+
+/// The method every send reaches: `method(obj) -> u64` returns the class.
+const METHOD: FuncId = FuncId(0);
+/// The guarded links' fallback, which calls the method.
+const FALLBACK: FuncId = FuncId(1);
+/// The first loop; the others follow in [`READS`] order.
+const FIRST_LOOP: u32 = 2;
+const PLAIN: LinkId = LinkId(0);
+const GUARDED: LinkId = LinkId(1);
+const MEGAMORPHIC: LinkId = LinkId(2);
 
 impl Read {
     fn name(self) -> &'static str {
@@ -105,14 +139,19 @@ impl Read {
             Self::UnboxHostCall => "unbox_host_call",
             Self::UnboxObjConvert => "unbox_obj_convert",
             Self::BoxedKey => "boxed_key",
+            Self::SendLink => "send_link",
+            Self::SendHostDispatch => "send_host_dispatch",
+            Self::SendOpenGuard => "send_open_guard",
+            Self::SendGuarded => "send_guarded",
+            Self::SendMegamorphic => "send_megamorphic",
         }
     }
 
     /// The host type of the object the loop receives.
     fn receives(self) -> HostTypeId {
         match self {
-            Self::Loop | Self::HostCall | Self::ObjKey => OBJECTS,
             Self::UnboxHostCall | Self::UnboxObjConvert | Self::BoxedKey => BOXED,
+            _ => OBJECTS,
         }
     }
 }
@@ -136,6 +175,47 @@ fn program() -> VerifiedProgram {
             rets: vec![object],
         },
     );
+    let dispatch = b.host_sig_for(
+        "dispatch",
+        HostSig {
+            args: vec![object],
+            rets: vec![ValueType::Func],
+        },
+    );
+    let method_sig = FunctionSig {
+        arg_types: vec![object],
+        ret_types: vec![ValueType::U64],
+    };
+    let method = b.declare_function(method_sig.clone()).unwrap();
+    assert_eq!(method, METHOD);
+    let mut a = b.function_asm(method).unwrap();
+    let class = a.alloc_register(ValueType::U64);
+    a.const_u64(class, CLASS).ret(Reg::EFFECT, &[class]);
+    b.define_function(method, a).unwrap();
+    let fallback = b
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::U64, ValueType::U64, object],
+            ret_types: vec![ValueType::U64],
+        })
+        .unwrap();
+    assert_eq!(fallback, FALLBACK);
+    let mut a = b.function_asm(fallback).unwrap();
+    let class = a.alloc_register(ValueType::U64);
+    a.call(Reg::EFFECT, METHOD, Reg::EFFECT, &[Reg(3)], &[class])
+        .ret(Reg::EFFECT, &[class]);
+    b.define_function(fallback, a).unwrap();
+    assert_eq!(b.declare_link("plain", METHOD).unwrap(), PLAIN);
+    assert_eq!(
+        b.declare_guarded_link("guarded", METHOD, 1, FALLBACK)
+            .unwrap(),
+        GUARDED
+    );
+    assert_eq!(
+        b.declare_guarded_link("megamorphic", METHOD, 1, FALLBACK)
+            .unwrap(),
+        MEGAMORPHIC
+    );
+    let method_sig = b.call_sig(method_sig).unwrap();
     for read in READS {
         let function = b
             .declare_function(FunctionSig {
@@ -151,6 +231,9 @@ fn program() -> VerifiedProgram {
         let acc = a.alloc_register(ValueType::U64);
         let key = a.alloc_register(ValueType::U64);
         let unboxed = a.alloc_register(object);
+        let expected = a.alloc_register(ValueType::U64);
+        let hit = a.alloc_register(ValueType::Bool);
+        let callee = a.alloc_register(ValueType::Func);
         let (head, body, exit) = (a.label(), a.label(), a.label());
         a.const_u64(counter, 0)
             .const_u64(one, 1)
@@ -175,6 +258,49 @@ fn program() -> VerifiedProgram {
             Read::UnboxObjConvert => {
                 a.obj_convert(unboxed, receiver).obj_key(key, unboxed);
             }
+            Read::SendLink => {
+                a.call_link(Reg::EFFECT, PLAIN, Reg::EFFECT, &[receiver], &[key]);
+            }
+            Read::SendHostDispatch => {
+                a.host_call_sig_id(Reg::EFFECT, dispatch, Reg::EFFECT, &[receiver], &[callee])
+                    .call_indirect(
+                        Reg::EFFECT,
+                        method_sig,
+                        callee,
+                        Reg::EFFECT,
+                        &[receiver],
+                        &[key],
+                    );
+            }
+            Read::SendOpenGuard => {
+                let (cached, missed, join) = (a.label(), a.label(), a.label());
+                a.obj_key(key, receiver)
+                    .const_u64(expected, CLASS)
+                    .u64_eq(hit, key, expected)
+                    .br(hit, cached, missed);
+                a.place(cached).unwrap();
+                a.call_link(Reg::EFFECT, PLAIN, Reg::EFFECT, &[receiver], &[key])
+                    .jmp(join);
+                a.place(missed).unwrap();
+                a.call(Reg::EFFECT, METHOD, Reg::EFFECT, &[receiver], &[key])
+                    .jmp(join);
+                a.place(join).unwrap();
+            }
+            Read::SendGuarded | Read::SendMegamorphic => {
+                let link = if matches!(read, Read::SendGuarded) {
+                    GUARDED
+                } else {
+                    MEGAMORPHIC
+                };
+                a.obj_key(key, receiver).call_link_guard(
+                    Reg::EFFECT,
+                    link,
+                    Reg::EFFECT,
+                    &[key],
+                    &[receiver],
+                    &[key],
+                );
+            }
         }
         a.u64_add(acc, acc, key)
             .u64_add(counter, counter, one)
@@ -191,18 +317,25 @@ fn object_dispatch(c: &mut Criterion) {
         fuel: u64::MAX,
         ..Limits::default()
     };
-    let mut vm = Vm::new(Classes, limits);
+    let mut vm = Vm::new(Classes { unit: None }, limits);
     let unit = vm.install(program()).unwrap();
+    vm.host_mut().unit = Some(unit);
+    let method = FuncRef::new(unit, METHOD);
+    let keys = GuardKeys::new(&[CLASS]).unwrap();
+    vm.relink_guarded(unit, GUARDED, LinkGuard::Keys(keys), method)
+        .unwrap();
+    vm.relink_guarded(unit, MEGAMORPHIC, LinkGuard::Megamorphic, method)
+        .unwrap();
     let mut group = c.benchmark_group("object_dispatch");
     let mut out = Vec::new();
     for (index, read) in READS.iter().enumerate() {
-        let entry = FuncRef::new(unit, FuncId(index as u32));
+        let entry = FuncRef::new(unit, FuncId(FIRST_LOOP + index as u32));
         let receiver = Obj {
             host_type: OBJECTS,
             handle: ObjHandle(1),
         };
         let receiver = if read.receives() == BOXED {
-            Classes.convert_object(receiver, BOXED).unwrap()
+            vm.host().convert_object(receiver, BOXED).unwrap()
         } else {
             receiver
         };

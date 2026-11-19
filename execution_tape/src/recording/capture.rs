@@ -19,7 +19,7 @@ use crate::trace::{
 };
 use crate::value::{FuncRef, UnitId};
 use crate::verifier::VerifiedProgram;
-use crate::vm::{StackId, StoreEvent, Trap, Units};
+use crate::vm::{LinkGuard, StackId, StoreEvent, Trap, Units};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -243,15 +243,23 @@ impl Recorder {
                         return;
                     }
                     let program = units.program(unit).expect("logged unit");
-                    let links = if installed.is_some() {
-                        program
-                            .program()
-                            .links
-                            .iter()
-                            .map(|link| FuncRef::new(unit, link.target))
-                            .collect()
+                    let (links, guards) = if installed.is_some() {
+                        let links = &program.program().links;
+                        (
+                            links
+                                .iter()
+                                .map(|link| FuncRef::new(unit, link.target))
+                                .collect(),
+                            links
+                                .iter()
+                                .map(|link| link.guard.map(|_| LinkGuard::Unfilled))
+                                .collect(),
+                        )
                     } else {
-                        units.links(unit).expect("logged unit").into()
+                        (
+                            units.links(unit).expect("logged unit").into(),
+                            units.link_guards(unit).expect("logged unit").into(),
+                        )
                     };
                     self.store.push(Store::Unit(self.units.len()));
                     self.units.push(UnitRecord {
@@ -259,6 +267,7 @@ impl Recorder {
                         program: Arc::clone(program),
                         tags: units.tags(unit).expect("logged unit").into(),
                         links,
+                        guards,
                         installed,
                     });
                 }
@@ -277,27 +286,39 @@ impl Recorder {
     /// Records as relinks the links that differ from what the recording has them name, with
     /// the observation sequence before which they changed.
     fn record_relinks(&mut self, units: Units<'_>) {
-        let mut expected: Vec<Vec<FuncRef>> =
-            self.units.iter().map(|unit| unit.links.to_vec()).collect();
+        let mut expected: Vec<Vec<(FuncRef, Option<LinkGuard>)>> = self
+            .units
+            .iter()
+            .map(|unit| {
+                unit.links
+                    .iter()
+                    .copied()
+                    .zip(unit.guards.iter().copied())
+                    .collect()
+            })
+            .collect();
         for store in &self.store {
             if let Store::Relink(relink) = store {
-                expected[relink.unit.0 as usize][relink.link.0 as usize] = relink.target;
+                expected[relink.unit.0 as usize][relink.link.0 as usize] =
+                    (relink.target, relink.guard);
             }
         }
         for (index, links) in expected.into_iter().enumerate() {
             let unit = self.units[index].unit;
-            let Some(current) = units.links(unit) else {
+            let (Some(targets), Some(guards)) = (units.links(unit), units.link_guards(unit)) else {
                 self.fail(CaptureFault::ForeignUnit);
                 return;
             };
-            for (link, (&was, &now)) in links.iter().zip(current).enumerate() {
+            let current = targets.iter().copied().zip(guards.iter().copied());
+            for (link, (was, now)) in links.into_iter().zip(current).enumerate() {
                 if was != now {
                     self.store.push(Store::Relink(RecordedRelink {
                         unit,
                         link: crate::program::LinkId(
                             u32::try_from(link).expect("link ids fit u32"),
                         ),
-                        target: now,
+                        target: now.0,
+                        guard: now.1,
                         relinked: self.sequence,
                     }));
                 }
@@ -884,7 +905,11 @@ impl TraceSink for Recorder {
                 return;
             }
             ValueEvent::Relinked {
-                unit, link, target, ..
+                unit,
+                link,
+                target,
+                guard,
+                ..
             } => {
                 if self.entry.is_none() || self.end.is_some() {
                     self.fail(CaptureFault::InvalidSequence);
@@ -895,6 +920,7 @@ impl TraceSink for Recorder {
                         unit,
                         link,
                         target,
+                        guard,
                         relinked: self.sequence,
                     }));
                 } else {

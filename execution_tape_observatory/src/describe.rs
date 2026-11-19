@@ -567,6 +567,13 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
                     Some(name) => format!("call link {name}"),
                     None => format!("call link #{}", link.0),
                 },
+                CallTarget::GuardedLink { link, name, keys } => {
+                    let keys = registers(keys.iter());
+                    match name {
+                        Some(name) => format!("call guarded link {name} [keys {keys}]"),
+                        None => format!("call guarded link #{} [keys {keys}]", link.0),
+                    }
+                }
             };
             assignment(
                 call.rets,

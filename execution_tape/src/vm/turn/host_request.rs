@@ -231,6 +231,30 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             target,
         )
     }
+
+    /// Sets the guard of guarded `link` of `unit` and points the link at `target` while the
+    /// request waits, returning the guard and target they replace.
+    ///
+    /// This is [`Vm::relink_guarded`] during a turn, and how an embedding fills an inline cache:
+    /// a guarded link's fallback passes the link's index and the keys that missed to a request,
+    /// and the embedding answers it after relinking the calling unit's link with
+    /// [`LinkGuard::Keys`] and the method those keys select. Recordings repeat it here.
+    pub fn relink_guarded(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        guard: LinkGuard,
+        target: FuncRef,
+    ) -> Result<(LinkGuard, FuncRef), RelinkError> {
+        relink_guarded_observed(
+            self.running.vm,
+            self.running.continuation,
+            unit,
+            link,
+            guard,
+            target,
+        )
+    }
     /// Inspects the units installed in this request's VM.
     #[must_use]
     pub fn units(&self) -> Units<'_> {

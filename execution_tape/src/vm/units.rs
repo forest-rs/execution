@@ -21,9 +21,12 @@ use super::*;
 use crate::aggregates::AggShape;
 use crate::contract::{ContractId, ContractTableBuilder};
 use crate::host_binding::ImportHint;
-use crate::program::{CallSigId, ElemTypeId, HostSigId, LinkId, StructTypeDef, TagId, TypeId};
+use crate::program::{
+    CallSigId, ElemTypeId, HostSigId, LinkId, MAX_GUARD_KEYS, StructTypeDef, TagId, TypeId,
+};
 use crate::value::{ShapeId, TagRef};
 use alloc::collections::BTreeMap;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// A signature of canonical contracts interned once per VM, so indirect calls compare one integer.
 ///
@@ -108,6 +111,12 @@ pub(crate) struct Unit {
     link_sigs: Box<[SigId]>,
     /// Current target of each program [`LinkId`], which [`Vm::relink`] repoints.
     links: Box<[FuncRef]>,
+    /// Current guard of each guarded program [`LinkId`], which [`Vm::relink_guarded`] sets;
+    /// `None` for an unguarded link.
+    guards: Box<[Option<LinkGuard>]>,
+    /// Calls through each guarded link that took its fallback. Counted while a computation runs,
+    /// which reads the unit through a shared reference.
+    misses: Box<[AtomicUsize]>,
     /// Where each program [`HostSigId`] was last found by [`crate::host::HostContext::import_in`].
     imports: Box<[ImportHint]>,
 }
@@ -146,6 +155,23 @@ impl Unit {
     #[inline]
     pub(crate) fn link(&self, link: LinkId) -> FuncRef {
         self.links[link.0 as usize]
+    }
+
+    /// The guard of a guarded link of this unit's program; `None` for an unguarded link.
+    #[inline]
+    pub(crate) fn guard(&self, link: LinkId) -> Option<LinkGuard> {
+        self.guards[link.0 as usize]
+    }
+
+    /// Counts a call through guarded `link` that took its fallback.
+    #[inline]
+    pub(crate) fn count_miss(&self, link: LinkId) {
+        // Execution has the VM to itself, so no other count can intervene.
+        let misses = &self.misses[link.0 as usize];
+        misses.store(
+            misses.load(Ordering::Relaxed).saturating_add(1),
+            Ordering::Relaxed,
+        );
     }
 
     /// Where the host last found an import of this unit's program in its surface.
@@ -195,6 +221,8 @@ impl Unit {
             + size_of_val(&*self.tags)
             + size_of_val(&*self.link_sigs)
             + size_of_val(&*self.links)
+            + size_of_val(&*self.guards)
+            + size_of_val(&*self.misses)
             + size_of_val(&*self.imports)
     }
 
@@ -297,6 +325,8 @@ impl Unit {
             tags: Box::default(),
             link_sigs,
             links: Box::default(),
+            guards: Box::default(),
+            misses: Box::default(),
             imports,
         })
     }
@@ -459,6 +489,12 @@ impl UnitTable {
             .iter()
             .map(|link| FuncRef::new(id, link.target))
             .collect();
+        let links = &unit.program.program().links;
+        unit.guards = links
+            .iter()
+            .map(|link| link.guard.map(|_| LinkGuard::Unfilled))
+            .collect();
+        unit.misses = links.iter().map(|_| AtomicUsize::new(0)).collect();
         self.units.push(unit);
         self.log.push(StoreEvent::Installed(id));
         Ok(id)
@@ -535,6 +571,62 @@ impl UnitTable {
     ///
     /// The target must be an installed function whose canonical signature is the link's.
     pub(crate) fn relink(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        target: FuncRef,
+    ) -> Result<FuncRef, RelinkError> {
+        if self.guard_of(unit, link)?.is_some() {
+            return Err(RelinkError::Guarded { unit, link });
+        }
+        self.repoint(unit, link, target)
+    }
+
+    /// Sets the guard of guarded `link` of `unit` and points the link at `target`, returning
+    /// the guard and target they replace.
+    ///
+    /// The guard's keys must be as many as the link compares, and the target an installed
+    /// function whose canonical signature is the link's.
+    pub(crate) fn relink_guarded(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        guard: LinkGuard,
+        target: FuncRef,
+    ) -> Result<(LinkGuard, FuncRef), RelinkError> {
+        let Some(previous) = self.guard_of(unit, link)? else {
+            return Err(RelinkError::Unguarded { unit, link });
+        };
+        let expected = self.units[unit.0 as usize].program.program().links[link.0 as usize]
+            .guard
+            .map_or(0, |guard| guard.key_count as usize);
+        if let LinkGuard::Keys(keys) = guard
+            && keys.len() != expected
+        {
+            return Err(RelinkError::GuardKeys {
+                unit,
+                link,
+                expected,
+                actual: keys.len(),
+            });
+        }
+        let replaced = self.repoint(unit, link, target)?;
+        self.units[unit.0 as usize].guards[link.0 as usize] = Some(guard);
+        Ok((previous, replaced))
+    }
+
+    /// The guard of `link` of `unit`, which must exist; `None` when the link is unguarded.
+    fn guard_of(&self, unit: UnitId, link: LinkId) -> Result<Option<LinkGuard>, RelinkError> {
+        self.get(unit)
+            .ok_or(RelinkError::UnknownUnit(unit))?
+            .guards
+            .get(link.0 as usize)
+            .copied()
+            .ok_or(RelinkError::UnknownLink { unit, link })
+    }
+
+    /// Points `link` of `unit` at `target` after checking the target's signature.
+    fn repoint(
         &mut self,
         unit: UnitId,
         link: LinkId,
@@ -730,6 +822,85 @@ impl fmt::Display for LinkMismatch {
     }
 }
 
+/// The keys a guarded link's guard holds: one per key its callers pass.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GuardKeys {
+    len: u8,
+    keys: [u64; MAX_GUARD_KEYS],
+}
+
+impl GuardKeys {
+    /// These keys, or `None` for no keys or more than [`MAX_GUARD_KEYS`].
+    #[must_use]
+    pub fn new(keys: &[u64]) -> Option<Self> {
+        if !(1..=MAX_GUARD_KEYS).contains(&keys.len()) {
+            return None;
+        }
+        let mut stored = [0; MAX_GUARD_KEYS];
+        stored[..keys.len()].copy_from_slice(keys);
+        Some(Self {
+            len: u8::try_from(keys.len()).expect("at most MAX_GUARD_KEYS keys"),
+            keys: stored,
+        })
+    }
+
+    /// The keys, in the order callers pass them.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u64] {
+        &self.keys[..usize::from(self.len)]
+    }
+
+    /// How many keys there are.
+    #[must_use]
+    #[expect(clippy::len_without_is_empty, reason = "guard keys are never empty")]
+    pub fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+}
+
+impl fmt::Debug for GuardKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.as_slice()).finish()
+    }
+}
+
+/// Which calls through a guarded link reach its target; the others take its fallback.
+///
+/// Non-exhaustive: guards that hold several key tuples may follow.
+///
+/// A guarded link is an inline cache: its guard starts [`Self::Unfilled`], the embedding fills
+/// it with the keys a missed call reported and the method they select, and may give up on keys
+/// for a site that sees too many, pointing it at a general dispatcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LinkGuard {
+    /// Every call takes the fallback.
+    Unfilled,
+    /// Calls with exactly these keys reach the target.
+    Keys(GuardKeys),
+    /// Every call reaches the target, without comparing keys: the embedding judged the site
+    /// megamorphic.
+    Megamorphic,
+}
+
+/// One guarded link of an installed unit, as [`Units::guarded_link`] reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GuardedLink {
+    /// The link of the unit's program.
+    pub link: LinkId,
+    /// How many keys its callers pass.
+    pub key_count: usize,
+    /// Which calls reach the target.
+    pub guard: LinkGuard,
+    /// The function calls the guard admits reach.
+    pub target: FuncRef,
+    /// The function the other calls reach: the declared fallback, in the same unit.
+    pub fallback: FuncRef,
+    /// Calls that took the fallback since the unit was installed, saturating.
+    pub misses: u64,
+}
+
 /// Why a link could not be repointed. A rejected relink changes nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -745,6 +916,31 @@ pub enum RelinkError {
     },
     /// The target names a unit the VM did not install, or a function its program lacks.
     UnknownTarget(FuncRef),
+    /// The link is guarded: set its guard and target together with [`Vm::relink_guarded`].
+    Guarded {
+        /// The unit.
+        unit: UnitId,
+        /// The link.
+        link: LinkId,
+    },
+    /// The link is not guarded: repoint it with [`Vm::relink`].
+    Unguarded {
+        /// The unit.
+        unit: UnitId,
+        /// The link.
+        link: LinkId,
+    },
+    /// The guard holds another number of keys than the link compares.
+    GuardKeys {
+        /// The unit.
+        unit: UnitId,
+        /// The link.
+        link: LinkId,
+        /// Keys the link compares.
+        expected: usize,
+        /// Keys the guard holds.
+        actual: usize,
+    },
     /// The target's signature is not exactly the link's.
     ///
     /// Callers were verified against the link's signature, so only an identical canonical
@@ -772,6 +968,24 @@ impl fmt::Display for RelinkError {
                 f,
                 "relink target f{} of unit {} is not installed",
                 target.func.0, target.unit.0
+            ),
+            Self::Guarded { unit, link } => write!(
+                f,
+                "link#{link} of unit {} is guarded; relink it with its guard",
+                unit.0
+            ),
+            Self::Unguarded { unit, link } => {
+                write!(f, "link#{link} of unit {} is not guarded", unit.0)
+            }
+            Self::GuardKeys {
+                unit,
+                link,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "link#{link} of unit {} compares {expected} keys, the guard holds {actual}",
+                unit.0
             ),
             Self::SignatureMismatch {
                 unit,
@@ -903,6 +1117,43 @@ impl<'a> Units<'a> {
         self.table.get(unit).map(|unit| &*unit.links)
     }
 
+    /// The current guard of each link of `unit`'s program, in [`LinkId`] order: `None` for an
+    /// unguarded link.
+    #[must_use]
+    pub fn link_guards(&self, unit: UnitId) -> Option<&'a [Option<LinkGuard>]> {
+        self.table.get(unit).map(|unit| &*unit.guards)
+    }
+
+    /// Guarded `link` of `unit`: its guard, target, fallback and misses, or `None` when the
+    /// unit or a guarded link does not exist.
+    #[must_use]
+    pub fn guarded_link(&self, unit: UnitId, link: LinkId) -> Option<GuardedLink> {
+        let owner = self.table.get(unit)?;
+        let guard = (*owner.guards.get(link.0 as usize)?)?;
+        let declared = owner.program.program().link(link)?.guard?;
+        Some(GuardedLink {
+            link,
+            key_count: declared.key_count as usize,
+            guard,
+            target: owner.links[link.0 as usize],
+            fallback: FuncRef::new(unit, declared.fallback),
+            misses: u64::try_from(owner.misses[link.0 as usize].load(Ordering::Relaxed))
+                .unwrap_or(u64::MAX),
+        })
+    }
+
+    /// Every guarded link of `unit`, as [`Self::guarded_link`] reports it, in [`LinkId`] order.
+    pub fn guarded_links(&self, unit: UnitId) -> impl Iterator<Item = GuardedLink> + 'a {
+        let units = *self;
+        let count = self.table.get(unit).map_or(0, |unit| unit.guards.len());
+        (0..count).filter_map(move |index| {
+            units.guarded_link(
+                unit,
+                LinkId(u32::try_from(index).expect("verified link count")),
+            )
+        })
+    }
+
     /// Installs and tag definitions in the order they happened.
     #[must_use]
     pub fn log(&self) -> &'a [StoreEvent] {
@@ -994,5 +1245,33 @@ impl<H: Host> Vm<H> {
     #[must_use]
     pub fn units(&self) -> Units<'_> {
         Units { table: &self.units }
+    }
+
+    /// Sets the guard of guarded `link` of `unit` and points the link at `target`, returning
+    /// the guard and target they replace.
+    ///
+    /// This is [`Self::relink`] for a link declared with
+    /// [`crate::asm::ProgramBuilder::declare_guarded_link`]: `call.link.guard` instructions of
+    /// `unit` call `target` from their next execution when their keys match `guard`, and the
+    /// link's fallback otherwise. Filling a guard with the keys a missed call passed and the
+    /// method they select makes the site an inline cache; [`LinkGuard::Unfilled`] empties it
+    /// again, for example when new code replaces the methods it cached, and
+    /// [`LinkGuard::Megamorphic`] sends every call to `target`, for a site that sees too many
+    /// keys. The target is checked exactly as for [`Self::relink`], so callers stay sound
+    /// whatever the guard holds; the guard decides only which of two verified functions runs.
+    ///
+    /// [`Keys`](LinkGuard::Keys) must hold as many keys as the link compares. Relinking an
+    /// unguarded link this way is refused, as is [`Self::relink`] of a guarded one. Like
+    /// [`Self::relink`] this runs no code and keeps no history; [`Units::guarded_link`] reports
+    /// the guard with the calls that missed it, and recordings snapshot guards with targets. A
+    /// rejected relink changes nothing.
+    pub fn relink_guarded(
+        &mut self,
+        unit: UnitId,
+        link: LinkId,
+        guard: LinkGuard,
+        target: FuncRef,
+    ) -> Result<(LinkGuard, FuncRef), RelinkError> {
+        self.units.relink_guarded(unit, link, guard, target)
     }
 }
