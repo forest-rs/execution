@@ -857,6 +857,7 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::F64Sqrt { dst, a }
         | Instr::U64Clz { dst, a }
         | Instr::ObjKey { dst, obj: a }
+        | Instr::ObjConvert { dst, obj: a }
         | Instr::U64Ctz { dst, a }
         | Instr::U64Popcnt { dst, a }
         | Instr::BoolNot { dst, a } => {

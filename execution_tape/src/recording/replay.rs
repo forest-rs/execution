@@ -1016,6 +1016,15 @@ impl Host for NoReplayEffects<'_> {
     fn object_key(&self, _: Obj) -> Option<u64> {
         match self.next_answer()? {
             ObjectAnswer::Key(key) => key,
+            ObjectAnswer::Converted { .. } => None,
+        }
+    }
+
+    /// The next recorded conversion, checked like [`Self::object_key`]'s keys.
+    fn convert_object(&self, _: Obj, _: crate::program::HostTypeId) -> Option<Obj> {
+        match self.next_answer()? {
+            ObjectAnswer::Converted { converted, .. } => converted,
+            ObjectAnswer::Key(_) => None,
         }
     }
 }
@@ -1292,6 +1301,18 @@ impl TraceSink for Check<'_> {
                     location,
                     object,
                     ObjectAnswer::Key(key),
+                )?,
+                ValueEvent::ObjectConversion {
+                    location,
+                    object,
+                    to,
+                    converted,
+                } => check_query(
+                    self.record,
+                    &mut state,
+                    location,
+                    object,
+                    ObjectAnswer::Converted { to, converted },
                 )?,
                 ValueEvent::CallbackEnter {
                     location,
@@ -2001,6 +2022,18 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         ) => al == bl && au == bu && ar == br,
         (Trap::AggError(a), Trap::AggError(b)) => a == b,
         (Trap::NoObjectKey { object: a }, Trap::NoObjectKey { object: b }) => a == b,
+        (
+            Trap::NoObjectConversion {
+                object: a,
+                to: at,
+                converted: ac,
+            },
+            Trap::NoObjectConversion {
+                object: b,
+                to: bt,
+                converted: bc,
+            },
+        ) => a == b && at == bt && ac == bc,
         (
             Trap::CallableSignatureMismatch {
                 signature: a,

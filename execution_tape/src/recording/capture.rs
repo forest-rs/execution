@@ -525,6 +525,12 @@ impl Recorder {
                 object,
                 key,
             } => self.query(location, object, ObjectAnswer::Key(key))?,
+            ValueEvent::ObjectConversion {
+                location,
+                object,
+                to,
+                converted,
+            } => self.query(location, object, ObjectAnswer::Converted { to, converted })?,
             ValueEvent::SuspensionYielded {
                 location,
                 tag,
@@ -974,7 +980,8 @@ impl TraceSink for Recorder {
             | ValueEvent::Caught { location, .. }
             | ValueEvent::SuspensionYielded { location, .. }
             | ValueEvent::SuspensionAnswered { location, .. }
-            | ValueEvent::ObjectKey { location, .. } => location.unit,
+            | ValueEvent::ObjectKey { location, .. }
+            | ValueEvent::ObjectConversion { location, .. } => location.unit,
         };
         let location = match event {
             ValueEvent::Entry { .. }
@@ -992,7 +999,8 @@ impl TraceSink for Recorder {
             | ValueEvent::Caught { location, .. }
             | ValueEvent::SuspensionYielded { location, .. }
             | ValueEvent::SuspensionAnswered { location, .. }
-            | ValueEvent::ObjectKey { location, .. } => Some(location),
+            | ValueEvent::ObjectKey { location, .. }
+            | ValueEvent::ObjectConversion { location, .. } => Some(location),
         };
         if self.check_at(program, unit)
             && let Err(error) = self.capture(event)

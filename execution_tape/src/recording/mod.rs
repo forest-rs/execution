@@ -356,8 +356,8 @@ pub struct RecordedRelink {
     pub relinked: usize,
 }
 
-/// One host object query an instruction answered without a host call, such as `obj.key`,
-/// which replay answers again instead of asking a host.
+/// One host object query an instruction answered without a host call, `obj.key` or
+/// `obj.convert`, which replay answers again instead of asking a host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RecordedObjectQuery {
@@ -376,6 +376,14 @@ pub enum ObjectAnswer {
     /// The key `obj.key` read ([`crate::host::Host::object_key`]); `None` trapped with
     /// [`crate::vm::Trap::NoObjectKey`].
     Key(Option<u64>),
+    /// The object `obj.convert` produced ([`crate::host::Host::convert_object`]); `None`, or
+    /// an object of another host type, trapped with [`crate::vm::Trap::NoObjectConversion`].
+    Converted {
+        /// The destination's host type.
+        to: crate::program::HostTypeId,
+        /// The host's answer.
+        converted: Option<Obj>,
+    },
 }
 
 /// Where a recorded computation was saved and then resumed in a new turn.

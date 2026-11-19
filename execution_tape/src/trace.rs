@@ -530,6 +530,22 @@ pub enum ValueEvent<'a> {
         /// The host's answer.
         key: Option<u64>,
     },
+    /// An `obj.convert` asked the host to convert an object
+    /// ([`crate::host::Host::convert_object`]).
+    ///
+    /// Reported for every answer, before the instruction writes the result or traps on `None`
+    /// or a result of another host type. Recordings capture these answers so that replay
+    /// delivers them without the host.
+    ObjectConversion {
+        /// The `obj.convert` instruction.
+        location: TraceLocation,
+        /// The object.
+        object: Obj,
+        /// The destination's host type.
+        to: crate::program::HostTypeId,
+        /// The host's answer.
+        converted: Option<Obj>,
+    },
     /// Newly materialized top-level outputs, before aggregate validation and compaction.
     ///
     /// The slice excludes any pre-existing caller output-buffer prefix. It may contain dangling
@@ -676,6 +692,18 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("location", location)
                 .field("object", object)
                 .field("key", key)
+                .finish(),
+            Self::ObjectConversion {
+                location,
+                object,
+                to,
+                converted,
+            } => f
+                .debug_struct("ObjectConversion")
+                .field("location", location)
+                .field("object", object)
+                .field("to", to)
+                .field("converted", converted)
                 .finish(),
             Self::Collected { report, aggregates } => f
                 .debug_struct("Collected")

@@ -2295,6 +2295,20 @@ impl Asm {
         self
     }
 
+    /// Encodes `obj.convert dst, obj`: the object in `obj` as an object of `dst`'s host type,
+    /// such as a boxed value unboxed
+    /// ([`Host::convert_object`](crate::host::Host::convert_object)).
+    ///
+    /// Both registers hold objects, of any host types. The instruction traps with
+    /// [`Trap::NoObjectConversion`](crate::vm::Trap::NoObjectConversion) when the host cannot
+    /// convert the object.
+    pub fn obj_convert(&mut self, dst: Reg, obj: Reg) -> &mut Self {
+        self.opcode(Opcode::ObjConvert);
+        self.reg(dst);
+        self.reg(obj);
+        self
+    }
+
     /// Encodes `const.i32 dst, imm_sleb`.
     pub fn const_i32(&mut self, dst: Reg, imm: i32) -> &mut Self {
         self.opcode(Opcode::ConstI32);

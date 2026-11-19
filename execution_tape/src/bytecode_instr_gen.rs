@@ -153,6 +153,7 @@ impl Instr {
             Self::F64RoundHalfAway { .. } => Opcode::F64RoundHalfAway,
             Self::F64Clamp { .. } => Opcode::F64Clamp,
             Self::ObjKey { .. } => Opcode::ObjKey,
+            Self::ObjConvert { .. } => Opcode::ObjConvert,
             Self::F64Pow { .. } => Opcode::F64Pow,
             Self::F64Exp { .. } => Opcode::F64Exp,
             Self::F64Ln { .. } => Opcode::F64Ln,

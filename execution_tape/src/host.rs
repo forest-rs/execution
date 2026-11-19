@@ -16,7 +16,7 @@ use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
 use crate::host_binding::HostImport;
-use crate::program::{HostSigId, Program, ValueType};
+use crate::program::{HostSigId, HostTypeId, Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
 use crate::value::Closure;
@@ -890,6 +890,31 @@ pub trait Host {
     /// [`Trap::NoObjectKey`]: crate::vm::Trap::NoObjectKey
     fn object_key(&self, object: Obj) -> Option<u64> {
         let _ = object;
+        None
+    }
+
+    /// `object` as an object of host type `to`, for `obj.convert`, or `None` when the host
+    /// has no such conversion for it.
+    ///
+    /// A conversion changes an object's representation, not its identity: unboxing a boxed
+    /// value to the object it holds, boxing it again, or viewing an object through another
+    /// host type. A guest that knows an object's key, from `obj.key`, can convert it to the
+    /// type a method expects without a host call. Like [`Self::object_key`], the VM calls this
+    /// directly, for one unit of fuel; the answer must depend only on the object and `to`, and
+    /// stay the same for as long as the object lives, since no resource access is recorded for
+    /// it. Recordings keep it and replay delivers it, and a host that wraps another should
+    /// forward this.
+    ///
+    /// `None`, or an object whose host type is not `to`, makes `obj.convert` trap with
+    /// [`Trap::NoObjectConversion`], for the same reason a missing key traps: guests test what
+    /// they convert first. A conversion that must allocate or fail recoverably belongs in a
+    /// host call instead. By default nothing converts;
+    /// [`BoundHost::with_object_conversion`](crate::host_binding::BoundHost::with_object_conversion)
+    /// answers for a bound host.
+    ///
+    /// [`Trap::NoObjectConversion`]: crate::vm::Trap::NoObjectConversion
+    fn convert_object(&self, object: Obj, to: HostTypeId) -> Option<Obj> {
+        let _ = (object, to);
         None
     }
 }

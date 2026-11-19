@@ -233,8 +233,10 @@ A host object stays opaque, but its host can give it a *key*: a `u64` such as it
 `obj.key` reads through `Host::object_key` with no host call, request or marshalling, for about
 the cost of any other instruction. A dynamic language tests a receiver's class with `obj.key`,
 `u64.eq` and `br`, and calls the method it guessed through a link, leaving the host only the
-sends it guessed wrong. A key must be pure and fixed for its object's life; recordings keep each
-answer, so replay needs no host.
+sends it guessed wrong. `obj.convert` likewise asks `Host::convert_object` for an object in
+another representation, such as an untyped boxed receiver unboxed for the method that takes
+it, for about 3 ns against about 44 ns as a host call. Keys and conversions must be pure and
+fixed for their object's life; recordings keep each answer, so replay needs no host.
 
 Function references name their installed unit, and struct/array type IDs are resolved to shapes
 interned in the VM heap when a program is installed, so equal layouts are the same runtime type

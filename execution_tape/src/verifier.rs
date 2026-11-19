@@ -733,8 +733,8 @@ pub enum VerifyError {
         /// Required kind.
         required: ValueType,
     },
-    /// An instruction that reads a host object, such as `obj.key`, names a register that is
-    /// not declared `Obj` of any host type.
+    /// An instruction on host objects, such as `obj.key` or `obj.convert`, names a register
+    /// that is not declared `Obj` of any host type.
     ObjectRegisterRequired {
         /// Function index.
         func: FuncId,
@@ -2133,6 +2133,19 @@ fn verify_function_bytecode(
                 _ => Err(mismatch(reg, ValueType::I64)),
             }
         };
+        let map_object = |reg: u32| -> Result<ObjReg, VerifyError> {
+            match map(reg)? {
+                VReg::Obj(r) => Ok(r),
+                _ => Err(VerifyError::ObjectRegisterRequired {
+                    func: func_id,
+                    pc: Pc(pc),
+                    reg: Reg(reg),
+                    declared: register_types
+                        .get(Reg(reg))
+                        .expect("mapped register has a declared kind"),
+                }),
+            }
+        };
         let map_u64 = |reg: u32| -> Result<U64Reg, VerifyError> {
             match map(reg)? {
                 VReg::U64(r) => Ok(r),
@@ -2744,18 +2757,14 @@ fn verify_function_bytecode(
             },
             Instr::ObjKey { dst, obj } => ExecInstr::ObjKey {
                 dst: map_u64(*dst)?,
-                obj: match map(*obj)? {
-                    VReg::Obj(obj) => obj,
-                    _ => {
-                        return Err(VerifyError::ObjectRegisterRequired {
-                            func: func_id,
-                            pc: Pc(pc),
-                            reg: Reg(*obj),
-                            declared: register_types
-                                .get(Reg(*obj))
-                                .expect("mapped register has a declared kind"),
-                        });
-                    }
+                obj: map_object(*obj)?,
+            },
+            Instr::ObjConvert { dst, obj } => ExecInstr::ObjConvert {
+                dst: map_object(*dst)?,
+                obj: map_object(*obj)?,
+                to: match register_types.get(Reg(*dst)) {
+                    Some(ValueType::Obj(to)) => to,
+                    _ => unreachable!("an object register is declared `Obj`"),
                 },
             },
             Instr::ConstI32 { dst, imm } => ExecInstr::ConstI32 {
@@ -4596,6 +4605,10 @@ fn validate_instr_types(
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
         }
         Instr::ObjKey { obj, .. } => check_object(func_id, pc, *obj, t(*obj))?,
+        Instr::ObjConvert { dst, obj } => {
+            check_object(func_id, pc, *dst, t(*dst))?;
+            check_object(func_id, pc, *obj, t(*obj))?;
+        }
         Instr::ConstI32 { .. } | Instr::ConstU32 { .. } | Instr::ConstF32 { .. } => {}
         Instr::I32Add { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;

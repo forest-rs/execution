@@ -10,7 +10,7 @@
 
 use alloc::vec::Vec;
 
-use crate::program::{CallSigId, HostSigId, LinkId, RegionId, TagId};
+use crate::program::{CallSigId, HostSigId, HostTypeId, LinkId, RegionId, TagId};
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, SpanId, TypeId};
 use crate::value::{Decimal, DecimalRounding, FuncId};
@@ -673,6 +673,12 @@ pub(crate) enum ExecInstr {
     ObjKey {
         dst: U64Reg,
         obj: ObjReg,
+    },
+    ObjConvert {
+        dst: ObjReg,
+        obj: ObjReg,
+        /// The destination register's host type.
+        to: HostTypeId,
     },
     ConstI32 {
         dst: I32Reg,
