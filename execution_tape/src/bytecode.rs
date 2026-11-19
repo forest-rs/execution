@@ -720,6 +720,17 @@ pub(crate) enum Instr {
         rets: Vec<u32>,
     },
 
+    /// Call a guarded link's target when `keys` match the calling unit's guard for `link`, and
+    /// its fallback otherwise.
+    CallLinkGuard {
+        eff_out: u32,
+        link: u32,
+        eff_in: u32,
+        keys: Vec<u32>,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+    },
+
     /// Construct a closure value from `func` and `env`.
     ClosureNew { dst: u32, func: u32, env: u32 },
 
@@ -1060,6 +1071,17 @@ mod tests {
                     eff_out: 0,
                     link: 0,
                     eff_in: 0,
+                    args: vec![1],
+                    rets: vec![2],
+                },
+            ),
+            (
+                Opcode::CallLinkGuard,
+                Instr::CallLinkGuard {
+                    eff_out: 0,
+                    link: 0,
+                    eff_in: 0,
+                    keys: vec![3],
                     args: vec![1],
                     rets: vec![2],
                 },

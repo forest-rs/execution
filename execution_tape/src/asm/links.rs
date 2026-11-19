@@ -16,8 +16,10 @@ pub enum LinkBuildError {
         /// The link that already uses it.
         existing: LinkId,
     },
-    /// The initial target has no declaration in this builder.
+    /// The initial target or the fallback has no declaration in this builder.
     UnknownFunction(FuncId),
+    /// A guarded link compares no keys, or more than [`MAX_GUARD_KEYS`].
+    GuardKeys(usize),
 }
 
 impl fmt::Display for LinkBuildError {
@@ -29,6 +31,10 @@ impl fmt::Display for LinkBuildError {
                 existing.0
             ),
             Self::UnknownFunction(func) => write!(f, "link target f{} has no declaration", func.0),
+            Self::GuardKeys(keys) => write!(
+                f,
+                "a guarded link compares 1 to {MAX_GUARD_KEYS} keys, not {keys}"
+            ),
         }
     }
 }
@@ -67,6 +73,47 @@ impl ProgramBuilder {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn declare_link(&mut self, name: &str, target: FuncId) -> Result<LinkId, LinkBuildError> {
+        self.push_link(name, target, None)
+    }
+
+    /// Declares a guarded link: an inline cache for a dynamic send.
+    ///
+    /// Callers pass `key_count` `u64` keys with each call ([`Self::emit_guarded_call`] or
+    /// [`Asm::call_link_guard`]), such as the classes of the arguments a generic function
+    /// dispatches on. Each installed unit keeps a guard for the link, which starts unfilled: a
+    /// call reaches the link's target only when its keys match the guard, and `fallback`
+    /// otherwise. The embedding fills the guard with the keys a miss reported and the method
+    /// they select, with [`Vm::relink_guarded`] or a waiting request's `relink_guarded`.
+    ///
+    /// The link's signature is `target`'s, as for [`Self::declare_link`]. `fallback` takes a
+    /// `u64` link index, then `key_count` `u64` keys, then the link's arguments, and returns the
+    /// link's results; the verifier checks it. Only `call.link.guard` calls a guarded link.
+    pub fn declare_guarded_link(
+        &mut self,
+        name: &str,
+        target: FuncId,
+        key_count: usize,
+        fallback: FuncId,
+    ) -> Result<LinkId, LinkBuildError> {
+        if !(1..=MAX_GUARD_KEYS).contains(&key_count) {
+            return Err(LinkBuildError::GuardKeys(key_count));
+        }
+        if self.functions.get(fallback.0 as usize).is_none() {
+            return Err(LinkBuildError::UnknownFunction(fallback));
+        }
+        let guard = LinkGuardEntry {
+            key_count: u32::try_from(key_count).expect("at most MAX_GUARD_KEYS keys"),
+            fallback,
+        };
+        self.push_link(name, target, Some(guard))
+    }
+
+    fn push_link(
+        &mut self,
+        name: &str,
+        target: FuncId,
+        guard: Option<LinkGuardEntry>,
+    ) -> Result<LinkId, LinkBuildError> {
         let function = self
             .functions
             .get(target.0 as usize)
@@ -94,6 +141,7 @@ impl ProgramBuilder {
             name,
             call_sig,
             target,
+            guard,
         });
         Ok(id)
     }

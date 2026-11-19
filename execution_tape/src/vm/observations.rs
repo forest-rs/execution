@@ -71,6 +71,7 @@ pub(super) fn emit(
             Instr::Call { .. }
                 | Instr::CallIndirect { .. }
                 | Instr::CallLink { .. }
+                | Instr::CallLinkGuard { .. }
                 | Instr::Ret { .. }
         )
     {

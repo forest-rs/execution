@@ -1741,6 +1741,59 @@
       ]
     },
     {
+      "name": "CallLinkGuard",
+      "mnemonic": "call.link.guard",
+      "byte": "0x57",
+      "terminator": false,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Call a guarded link's target when the keys match its guard, and its fallback otherwise.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "link"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "keys",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "rets",
+          "access": "write"
+        }
+      ]
+    },
+    {
       "name": "ClosureNew",
       "mnemonic": "closure.new",
       "byte": "0x55",

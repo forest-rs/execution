@@ -16,6 +16,20 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Guarded links: inline caches for dynamic sends. `ProgramBuilder::declare_guarded_link(name,
+  target, key_count, fallback)` declares a link whose callers pass 1 to 4 `u64` keys, such as
+  receiver classes from `obj.key`; `call.link.guard` (`0x57`) calls the link's target when the
+  keys match the calling unit's guard, and the fallback otherwise, passing it the link's index
+  and the keys. The embedding fills the guard while the fallback's request waits with
+  `PendingHostCall::relink_guarded(unit, link, LinkGuard::Keys(..), target)`, checked and
+  recorded as `relink` is; `LinkGuard::Unfilled` empties a guard and `LinkGuard::Megamorphic`
+  sends every call to the target. `Units::guarded_link` reports a site's guard, target,
+  fallback and misses. In the `object_dispatch` bench a hit, key read included, costs about
+  5 ns more than `call.link`, against 18 ns more for the same guard spelled out with `u64.eq`
+  and `br` and 53 ns more for a host dispatch and `call.indirect`. Links are encoded as
+  before, with guards in a new optional section. Migration: a `LinkEntry` literal names the
+  new `guard` field, `ValueEvent::Relinked` and `RecordedRelink` carry the guard, and `relink`
+  refuses a guarded link.
 - Convert a host object's representation without a host call. `obj.convert dst, obj`
   (`0xFC 0x0E`) writes `Host::convert_object(obj, to)`, where `to` is `dst`'s host type, so a
   dynamic language unboxes an untyped receiver for the method that takes it, or boxes an

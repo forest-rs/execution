@@ -71,7 +71,10 @@ pub use turn::{
     Arguments, Callee, PendingHostCall, PendingSuspension, RequestError, RequestId, RunStatus,
     Turn, TurnOptions, TurnOutcome,
 };
-pub use units::{InstallError, LinkMismatch, RelinkError, StoreEvent, TagError, Units};
+pub use units::{
+    GuardKeys, GuardedLink, InstallError, LinkGuard, LinkMismatch, RelinkError, StoreEvent,
+    TagError, Units,
+};
 pub(crate) use units::{Unit, UnitTable};
 pub use work::ExecutionWork;
 #[cfg(test)]
@@ -4289,6 +4292,13 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                     args_proved,
+                }
+                | ExecInstr::CallLinkGuard {
+                    link,
+                    args,
+                    rets: dst_rets,
+                    args_proved,
+                    ..
                 } => {
                     budget
                         .admit_frame()
@@ -4296,8 +4306,41 @@ impl<H: Host> Vm<H> {
 
                     // The calling unit's link names the target now. Relinking admitted only
                     // installed functions with the link's exact signature, so the target needs
-                    // no signature check here; it runs its own unit's program.
-                    let target = current.link(*link);
+                    // no signature check here; it runs its own unit's program. A guarded call
+                    // whose keys miss the guard calls the link's fallback, a function of the
+                    // calling unit that takes the link index and keys before the arguments.
+                    let missed = match instr {
+                        ExecInstr::CallLinkGuard { keys, .. } => {
+                            let keys = vf.vregs(*keys);
+                            let hit = match current.guard(*link) {
+                                Some(LinkGuard::Keys(guard)) => {
+                                    guard.as_slice().iter().zip(keys).all(|(&expected, key)| {
+                                        match *key {
+                                            VReg::U64(key) => ctx.read_u64(base, key) == expected,
+                                            _ => false,
+                                        }
+                                    })
+                                }
+                                Some(LinkGuard::Megamorphic) => true,
+                                Some(LinkGuard::Unfilled) | None => false,
+                            };
+                            (!hit).then_some(keys)
+                        }
+                        _ => None,
+                    };
+                    let target = match missed {
+                        None => current.link(*link),
+                        Some(_) => {
+                            current.count_miss(*link);
+                            let fallback = program
+                                .program()
+                                .link(*link)
+                                .and_then(|entry| entry.guard)
+                                .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?
+                                .fallback;
+                            FuncRef::new(unit_id, fallback)
+                        }
+                    };
                     let callee_program = if target.unit == unit_id {
                         program
                     } else {
@@ -4314,14 +4357,23 @@ impl<H: Host> Vm<H> {
 
                     let callee_base = ctx.alloc_frame(callee_vf);
                     let args = vf.vregs(*args);
-                    if args.len() != callee_vf.reg_layout.arg_regs.len() {
+                    // A fallback's leading arguments: the link index, then the keys.
+                    let prefix = missed.map_or(0, |keys| 1 + keys.len());
+                    let params = &callee_vf.reg_layout.arg_regs;
+                    if prefix + args.len() != params.len() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     }
-                    for (src, dst) in args
-                        .iter()
-                        .copied()
-                        .zip(callee_vf.reg_layout.arg_regs.iter().copied())
-                    {
+                    if let Some(keys) = missed {
+                        let VReg::U64(index) = params[0] else {
+                            return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        };
+                        ctx.write_u64(callee_base, index, u64::from(link.0));
+                        for (src, dst) in keys.iter().copied().zip(params[1..].iter().copied()) {
+                            ctx.copy_vreg(base, src, callee_base, dst)
+                                .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        }
+                    }
+                    for (src, dst) in args.iter().copied().zip(params[prefix..].iter().copied()) {
                         ctx.copy_vreg(base, src, callee_base, dst)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }

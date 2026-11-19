@@ -437,6 +437,9 @@ pub enum ValueEvent<'a> {
         link: crate::program::LinkId,
         /// The function the link names from now on.
         target: FuncRef,
+        /// The guard of a guarded link from now on ([`crate::vm::Vm::relink_guarded`]);
+        /// `None` for an unguarded link.
+        guard: Option<crate::vm::LinkGuard>,
         /// The VM's units, tags and links after the change.
         units: Units<'a>,
     },
@@ -749,12 +752,14 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 unit,
                 link,
                 target,
+                guard,
                 units,
             } => f
                 .debug_struct("Relinked")
                 .field("unit", unit)
                 .field("link", link)
                 .field("target", target)
+                .field("guard", guard)
                 .field("units", units)
                 .finish(),
             Self::Entry {

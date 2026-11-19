@@ -152,6 +152,7 @@ pub(crate) fn is_wait_point(opcode: Opcode) -> bool {
         Opcode::Call
             | Opcode::CallIndirect
             | Opcode::CallLink
+            | Opcode::CallLinkGuard
             | Opcode::HostCall
             | Opcode::Resume
             | Opcode::ResumeThrow
