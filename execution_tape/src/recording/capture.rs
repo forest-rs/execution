@@ -5,8 +5,9 @@ use crate::host::ValueRef;
 use crate::program::{Pc, Program, SpanId};
 use crate::recording::{
     Answer, Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry,
-    InstructionCapture, InstructionOutcome, InstructionStatus, Propagation, RecordLimits,
-    RecordedRelink, Recording, Resumption, Store, TagRecord, Thrown, UnitRecord, Yielded,
+    InstructionCapture, InstructionOutcome, InstructionStatus, ObjectAnswer, Propagation,
+    RecordLimits, RecordedObjectQuery, RecordedRelink, Recording, Resumption, Store, TagRecord,
+    Thrown, UnitRecord, Yielded,
     control::{Action, Command, Returned},
     frames::{ActivationExit, ActivationOutcome, Frame, FrameId},
     instructions::History,
@@ -41,6 +42,7 @@ pub struct Recorder {
     builder: Builder,
     entry: Option<Entry>,
     calls: Vec<Call>,
+    queries: Vec<RecordedObjectQuery>,
     commands: Vec<Command>,
     suspensions: Vec<Yielded>,
     sequence: usize,
@@ -91,6 +93,7 @@ impl Recorder {
             builder: Builder::new(limits),
             entry: None,
             calls: Vec::new(),
+            queries: Vec::new(),
             commands: Vec::new(),
             suspensions: Vec::new(),
             sequence: 0,
@@ -169,6 +172,7 @@ impl Recorder {
             initial,
             entry: self.entry,
             calls: self.calls,
+            queries: self.queries,
             commands: self.commands,
             suspensions: self.suspensions,
             frames: self.frames,
@@ -324,6 +328,31 @@ impl Recorder {
         {
             return Err(CaptureFault::InvalidSequence);
         }
+        Ok(())
+    }
+
+    /// Records an answer to a host object query made without a host call.
+    fn query(
+        &mut self,
+        location: TraceLocation,
+        object: crate::value::Obj,
+        answer: ObjectAnswer,
+    ) -> Result<(), CaptureFault> {
+        if self.entry.is_none() || self.end.is_some() || self.candidate.is_some() {
+            return Err(CaptureFault::InvalidSequence);
+        }
+        if self.queries.len() >= self.builder.limits.object_queries {
+            return Err(CaptureFault::Budget {
+                resource: CaptureResource::ObjectQueries,
+                limit: self.builder.limits.object_queries,
+            });
+        }
+        self.check_location(location)?;
+        self.queries.push(RecordedObjectQuery {
+            location,
+            object,
+            answer,
+        });
         Ok(())
     }
 
@@ -491,6 +520,11 @@ impl Recorder {
                 });
                 self.sequence += 1;
             }
+            ValueEvent::ObjectKey {
+                location,
+                object,
+                key,
+            } => self.query(location, object, ObjectAnswer::Key(key))?,
             ValueEvent::SuspensionYielded {
                 location,
                 tag,
@@ -939,7 +973,8 @@ impl TraceSink for Recorder {
             | ValueEvent::Rethrown { location, .. }
             | ValueEvent::Caught { location, .. }
             | ValueEvent::SuspensionYielded { location, .. }
-            | ValueEvent::SuspensionAnswered { location, .. } => location.unit,
+            | ValueEvent::SuspensionAnswered { location, .. }
+            | ValueEvent::ObjectKey { location, .. } => location.unit,
         };
         let location = match event {
             ValueEvent::Entry { .. }
@@ -956,7 +991,8 @@ impl TraceSink for Recorder {
             | ValueEvent::Rethrown { location, .. }
             | ValueEvent::Caught { location, .. }
             | ValueEvent::SuspensionYielded { location, .. }
-            | ValueEvent::SuspensionAnswered { location, .. } => Some(location),
+            | ValueEvent::SuspensionAnswered { location, .. }
+            | ValueEvent::ObjectKey { location, .. } => Some(location),
         };
         if self.check_at(program, unit)
             && let Err(error) = self.capture(event)

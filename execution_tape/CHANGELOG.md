@@ -16,6 +16,18 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Read a host object's key without a host call. `obj.key dst, obj` (`0xFC 0x0D`) writes the
+  `u64` that `Host::object_key(obj)` returns, such as the object's class, so a dynamic
+  language tests a receiver's class with `obj.key`, `u64.eq` and `br` instead of asking the
+  host. The VM calls the trait method directly: no symbol, marshalling, host-call allowance
+  or yield, one unit of fuel. `None` traps with `Trap::NoObjectKey`; by default no object has
+  a key, and `BoundHost::with_object_key` answers for a bound host. Answers are
+  observed as `ValueEvent::ObjectKey`, and recordings keep them as host object queries
+  (`Recording::object_queries`, `RecordLimits::object_queries`) so replay delivers them without
+  a host. In the
+  `object_dispatch` bench a key read costs about 3 ns against 46 ns for the cheapest host
+  call. Migration: a `RecordLimits` or `RecordStats` literal names the new `object_queries`
+  field.
 - Synchronous host imports. `Host::is_synchronous(symbol, sig_hash)`, false by default, marks
   imports that a turn yielding host calls still calls inline through `Host::call` instead of
   stopping with `RunStatus::AwaitingHost`, so an embedding whose driver handles a few control

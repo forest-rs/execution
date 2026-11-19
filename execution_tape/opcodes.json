@@ -4,7 +4,7 @@
     {
       "name": "Extended",
       "byte": "0xFC",
-      "doc": "General extension space: `u64` bit operations from `0x00`, stack switching from `0x05`,\n`f64` exact operations from `0x0B`, and the `f64` math intrinsics in `0x10..=0x1F`.\nNew instruction families allocate the next free byte outside those blocks."
+      "doc": "General extension space: `u64` bit operations from `0x00`, stack switching from `0x05`,\n`f64` exact operations from `0x0B`, host object queries from `0x0D`, and the `f64` math\nintrinsics in `0x10..=0x1F`.\nNew instruction families allocate the next free byte outside those blocks."
     },
     {
       "name": "Numeric32",
@@ -4311,6 +4311,31 @@
           "role": "hi",
           "encoding": "reg_u32_uleb",
           "field": "hi",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "ObjKey",
+      "mnemonic": "obj.key",
+      "prefix": "0xFC",
+      "byte": "0x0D",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = host.object_key(obj)`: the embedding's key for a host object, such as its class (`u64`; traps when the host has none).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "obj",
           "access": "read"
         }
       ]

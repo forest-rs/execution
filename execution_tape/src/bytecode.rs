@@ -333,6 +333,8 @@ pub(crate) enum Instr {
     U64Rotl { dst: u32, a: u32, b: u32 },
     /// `dst = a.rotate_right(b & 63)` (`u64`).
     U64Rotr { dst: u32, a: u32, b: u32 },
+    /// `dst = host.object_key(obj)` (`Obj` -> `u64`).
+    ObjKey { dst: u32, obj: u32 },
     /// `dst = i32`.
     ConstI32 { dst: u32, imm: i32 },
     /// `dst = u32`.

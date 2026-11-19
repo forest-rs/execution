@@ -1405,6 +1405,14 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 hi,
             }
         },
+        Opcode::ObjKey => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let obj = crate::codec_primitives::read_reg(r)?;
+            Instr::ObjKey {
+                dst,
+                obj,
+            }
+        },
         Opcode::F64Pow => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let a = crate::codec_primitives::read_reg(r)?;

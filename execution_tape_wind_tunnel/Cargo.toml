@@ -104,3 +104,7 @@ harness = false
 [[bench]]
 name = "short_runs"
 harness = false
+
+[[bench]]
+name = "object_dispatch"
+harness = false

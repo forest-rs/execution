@@ -733,6 +733,18 @@ pub enum VerifyError {
         /// Required kind.
         required: ValueType,
     },
+    /// An instruction that reads a host object, such as `obj.key`, names a register that is
+    /// not declared `Obj` of any host type.
+    ObjectRegisterRequired {
+        /// Function index.
+        func: FuncId,
+        /// Instruction PC.
+        pc: Pc,
+        /// Virtual register.
+        reg: Reg,
+        /// Declared kind.
+        declared: ValueType,
+    },
     /// A projection has no proven element kind. A destination declaration is not a shape proof.
     UnknownAggregateShape {
         /// Function index.
@@ -1036,6 +1048,9 @@ impl VerifyError {
                 required,
                 ..
             } => write!(f, "{reg} declared {declared:?}, required {required:?}"),
+            Self::ObjectRegisterRequired { reg, declared, .. } => {
+                write!(f, "{reg} declared {declared:?}, required a host object")
+            }
             Self::UnknownAggregateShape { reg, .. } => {
                 write!(f, "{reg} has no proven projection kind")
             }
@@ -2727,6 +2742,22 @@ fn verify_function_bytecode(
                 a: map_u64(*a)?,
                 b: map_u64(*b)?,
             },
+            Instr::ObjKey { dst, obj } => ExecInstr::ObjKey {
+                dst: map_u64(*dst)?,
+                obj: match map(*obj)? {
+                    VReg::Obj(obj) => obj,
+                    _ => {
+                        return Err(VerifyError::ObjectRegisterRequired {
+                            func: func_id,
+                            pc: Pc(pc),
+                            reg: Reg(*obj),
+                            declared: register_types
+                                .get(Reg(*obj))
+                                .expect("mapped register has a declared kind"),
+                        });
+                    }
+                },
+            },
             Instr::ConstI32 { dst, imm } => ExecInstr::ConstI32 {
                 dst: map_i32(*dst)?,
                 imm: *imm,
@@ -4397,6 +4428,29 @@ fn check_expected(
     Ok(())
 }
 
+/// Checks that `reg` is declared `Obj` of some host type.
+fn check_object(
+    func: FuncId,
+    pc: u32,
+    reg: u32,
+    actual: Option<ValueType>,
+) -> Result<(), VerifyError> {
+    match actual {
+        Some(ValueType::Obj(_)) => Ok(()),
+        Some(declared) => Err(VerifyError::ObjectRegisterRequired {
+            func,
+            pc: Pc(pc),
+            reg: Reg(reg),
+            declared,
+        }),
+        None => Err(VerifyError::RegOutOfBounds {
+            func,
+            pc: Pc(pc),
+            reg: Reg(reg),
+        }),
+    }
+}
+
 fn validate_instr_types(
     program: &Program,
     func_id: FuncId,
@@ -4541,6 +4595,7 @@ fn validate_instr_types(
         Instr::U64Clz { a, .. } | Instr::U64Ctz { a, .. } | Instr::U64Popcnt { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
         }
+        Instr::ObjKey { obj, .. } => check_object(func_id, pc, *obj, t(*obj))?,
         Instr::ConstI32 { .. } | Instr::ConstU32 { .. } | Instr::ConstF32 { .. } => {}
         Instr::I32Add { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;

@@ -2282,6 +2282,19 @@ impl Asm {
         self
     }
 
+    /// Encodes `obj.key dst, obj`: the host's key for the object in `obj`, such as its class
+    /// ([`Host::object_key`](crate::host::Host::object_key)).
+    ///
+    /// `obj` may hold an object of any host type; `dst` is a `u64` register. The instruction
+    /// traps with [`Trap::NoObjectKey`](crate::vm::Trap::NoObjectKey) when the host has no key
+    /// for the object.
+    pub fn obj_key(&mut self, dst: Reg, obj: Reg) -> &mut Self {
+        self.opcode(Opcode::ObjKey);
+        self.reg(dst);
+        self.reg(obj);
+        self
+    }
+
     /// Encodes `const.i32 dst, imm_sleb`.
     pub fn const_i32(&mut self, dst: Reg, imm: i32) -> &mut Self {
         self.opcode(Opcode::ConstI32);

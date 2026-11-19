@@ -19,7 +19,7 @@ use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, Reg, RegionId, SymbolId, TagId};
 use crate::program::{Pc, SpanId};
-use crate::value::{FuncId, FuncRef, TagRef, UnitId, Value};
+use crate::value::{FuncId, FuncRef, Obj, TagRef, UnitId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo, Units};
 
 /// A set of trace events requested by a [`TraceSink`].
@@ -518,6 +518,18 @@ pub enum ValueEvent<'a> {
         /// Storage containing argument and result aggregates.
         aggregates: &'a AggHeap,
     },
+    /// An `obj.key` asked the host for an object's key ([`crate::host::Host::object_key`]).
+    ///
+    /// Reported for every answer, before the instruction writes the key or traps on `None`.
+    /// Recordings capture these answers so that replay delivers them without the host.
+    ObjectKey {
+        /// The `obj.key` instruction.
+        location: TraceLocation,
+        /// The object.
+        object: Obj,
+        /// The host's answer.
+        key: Option<u64>,
+    },
     /// Newly materialized top-level outputs, before aggregate validation and compaction.
     ///
     /// The slice excludes any pre-existing caller output-buffer prefix. It may contain dangling
@@ -654,6 +666,16 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("caller", caller)
                 .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::ObjectKey {
+                location,
+                object,
+                key,
+            } => f
+                .debug_struct("ObjectKey")
+                .field("location", location)
+                .field("object", object)
+                .field("key", key)
                 .finish(),
             Self::Collected { report, aggregates } => f
                 .debug_struct("Collected")

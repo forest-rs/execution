@@ -670,6 +670,10 @@ pub(crate) enum ExecInstr {
         a: U64Reg,
         b: U64Reg,
     },
+    ObjKey {
+        dst: U64Reg,
+        obj: ObjReg,
+    },
     ConstI32 {
         dst: I32Reg,
         imm: i32,
