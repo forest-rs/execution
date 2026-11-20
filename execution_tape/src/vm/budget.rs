@@ -16,6 +16,11 @@ pub(super) struct Budget {
     frame_limit: usize,
     /// The call-depth limit, which decides which trap refuses a frame.
     call_depth: usize,
+    /// What a call past the call-depth limit throws, if anything.
+    depth_exception: Option<CallDepthException>,
+    /// Whether the depth exception was thrown and its headroom is in use: until a catch lands
+    /// under the call-depth limit, calls may go `headroom` deeper and throw nothing.
+    depth_headroom: bool,
     /// The VM's frame limit and the frames saved computations hold.
     max_frames: usize,
     resident_elsewhere: usize,
@@ -62,6 +67,8 @@ impl Budget {
         self.host_call_limit = limits.max_host_calls;
         self.contract_limit = limits.max_contract_work;
         self.call_depth = limits.max_call_depth;
+        self.depth_exception = limits.call_depth_exception;
+        self.depth_headroom = false;
         self.max_frames = limits.max_frames;
         self.limit_frames(0);
         self.payload_limit = limits.max_payload_work;
@@ -72,8 +79,19 @@ impl Budget {
     pub(super) fn limit_frames(&mut self, resident: usize) {
         self.resident_elsewhere = resident;
         self.frame_limit = self
-            .call_depth
+            .depth_limit()
             .min(self.max_frames.saturating_sub(resident));
+    }
+
+    /// The frames this computation may hold now: the call-depth limit, and the depth
+    /// exception's headroom while it is in use.
+    fn depth_limit(&self) -> usize {
+        match self.depth_exception {
+            Some(exception) if self.depth_headroom => {
+                self.call_depth.saturating_add(exception.headroom)
+            }
+            _ => self.call_depth,
+        }
     }
 
     /// Admits one more frame, or names the limit that refuses it.
@@ -82,7 +100,7 @@ impl Budget {
         if self.frames < self.frame_limit {
             return Ok(());
         }
-        Err(if self.frames >= self.call_depth {
+        Err(if self.frames >= self.depth_limit() {
             Trap::CallDepthExceeded
         } else {
             Trap::FrameLimitExceeded {
@@ -90,6 +108,41 @@ impl Budget {
                 resident: self.frames + self.resident_elsewhere,
             }
         })
+    }
+
+    /// The tag a guest call refused with `trap` throws instead, when `trap` is the call-depth
+    /// limit's and the depth exception is not in use; the computation then has its headroom.
+    #[cold]
+    pub(super) fn throw_for_depth(&mut self, trap: &Trap) -> Option<TagRef> {
+        let exception = self.depth_exception?;
+        if self.depth_headroom || !matches!(trap, Trap::CallDepthExceeded) {
+            return None;
+        }
+        self.depth_headroom = true;
+        self.limit_frames(self.resident_elsewhere);
+        Some(exception.tag)
+    }
+
+    /// Takes the depth exception's headroom back once a catch of `tag` has unwound the
+    /// computation under the call-depth limit, so the next call past it throws again.
+    ///
+    /// A catch of the depth exception itself keeps the headroom unless the catcher has the
+    /// whole headroom below the limit: the handlers it runs may need all of it, and a catcher
+    /// a frame or two under the limit, below the frames that made the refused call, would
+    /// otherwise leave them almost none and throw again inside them.
+    pub(super) fn caught(&mut self, tag: TagRef) {
+        let Some(exception) = self.depth_exception.filter(|_| self.depth_headroom) else {
+            return;
+        };
+        let rearm = if tag == exception.tag {
+            self.frames.saturating_add(exception.headroom) <= self.call_depth
+        } else {
+            self.frames < self.call_depth
+        };
+        if rearm {
+            self.depth_headroom = false;
+            self.limit_frames(self.resident_elsewhere);
+        }
     }
 
     pub(super) fn select(&mut self, control: &ExecutionControl) {

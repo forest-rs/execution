@@ -308,6 +308,49 @@ impl<H: Host> Vm<H> {
         )
     }
 
+    /// Ends a guest call that `trap` refused: throws the call-depth exception at `location` when
+    /// `trap` is the call-depth limit's and [`Limits::call_depth_exception`] is set and armed
+    /// ([`Budget::throw_for_depth`]), and otherwise returns `trap`.
+    #[cold]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the interpreter state borrowed by other instruction helpers"
+    )]
+    pub(super) fn refuse_call<P: TracePolicy>(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        prepared: &VerifiedProgram,
+        trap: Trap,
+        trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
+        location: TraceLocation,
+        span_id: Option<u64>,
+    ) -> Result<(), TrapInfo> {
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc.0, span_id, trap);
+        let Some(tag) = budget.throw_for_depth(&trap) else {
+            return Err(fail(ctx, trap));
+        };
+        let Some(bound) = self.units.tag(tag) else {
+            return Err(fail(ctx, Trap::UnknownTag { tag }));
+        };
+        if !bound.kinds().is_empty() {
+            return Err(fail(ctx, Trap::ArityMismatch));
+        }
+        self.raise_values::<P>(
+            ctx,
+            budget,
+            prepared,
+            tag,
+            None,
+            Vec::new(),
+            trace,
+            control,
+            location,
+            span_id,
+        )
+    }
+
     /// Raises a caught exception again at `location`, without rechecking its payload.
     #[allow(
         clippy::too_many_arguments,
@@ -463,6 +506,7 @@ impl<H: Host> Vm<H> {
         if let Some(callbacks) = &mut control.callbacks {
             callbacks.discard_exited(depth);
         }
+        budget.caught(tag);
         let catcher = ctx
             .frames
             .len()

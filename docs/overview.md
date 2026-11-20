@@ -45,7 +45,8 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
   completed or asynchronous host operations. The embedding owns scheduling and async runtimes.
 - Limits: instruction fuel, host calls, call depth, contract work, aggregate construction work,
   and logical byte/string work;
-  host calls may contribute additional fuel cost.
+  host calls may contribute additional fuel cost. Running out of call depth can throw a
+  configured tag, with headroom for its handlers, instead of trapping.
 - Errors are traps:
   - Verification rejects malformed bytecode before execution. Runtime traps cover arithmetic,
     indexing, boundary validation, and exhausted execution limits.
