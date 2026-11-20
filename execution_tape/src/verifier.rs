@@ -773,6 +773,28 @@ pub enum VerifyError {
         /// Declared kind.
         declared: ValueType,
     },
+    /// A global instruction, such as `global.get`, or a host object field instruction names a
+    /// register that holds neither a scalar nor a host object
+    /// ([`ValueType::is_inline`]).
+    InlineRegisterRequired {
+        /// Function index.
+        func: FuncId,
+        /// Instruction PC.
+        pc: Pc,
+        /// Virtual register.
+        reg: Reg,
+        /// Declared kind.
+        declared: ValueType,
+    },
+    /// A global instruction names an index of [`MAX_GLOBALS`] or more.
+    GlobalOutOfRange {
+        /// Function index.
+        func: FuncId,
+        /// Instruction PC.
+        pc: Pc,
+        /// The global's index.
+        index: u32,
+    },
     /// A projection has no proven element kind. A destination declaration is not a shape proof.
     UnknownAggregateShape {
         /// Function index.
@@ -1098,6 +1120,15 @@ impl VerifyError {
             } => write!(f, "{reg} declared {declared:?}, required {required:?}"),
             Self::ObjectRegisterRequired { reg, declared, .. } => {
                 write!(f, "{reg} declared {declared:?}, required a host object")
+            }
+            Self::InlineRegisterRequired { reg, declared, .. } => {
+                write!(
+                    f,
+                    "{reg} declared {declared:?}, required a scalar or host object"
+                )
+            }
+            Self::GlobalOutOfRange { index, .. } => {
+                write!(f, "global {index} is not below {MAX_GLOBALS}")
             }
             Self::UnknownAggregateShape { reg, .. } => {
                 write!(f, "{reg} has no proven projection kind")
@@ -2855,6 +2886,21 @@ fn verify_function_bytecode(
                 obj: map_object(*obj)?,
                 pos: map_u64(*pos)?,
             },
+            Instr::GlobalHas { dst, index } => ExecInstr::GlobalHas {
+                dst: map_bool(*dst)?,
+                index: *index,
+            },
+            Instr::GlobalGet { dst, index } => ExecInstr::GlobalGet {
+                dst: map(*dst)?,
+                index: *index,
+                ty: register_types
+                    .get(Reg(*dst))
+                    .expect("mapped register has a declared kind"),
+            },
+            Instr::GlobalSet { index, src } => ExecInstr::GlobalSet {
+                index: *index,
+                src: map(*src)?,
+            },
             Instr::ConstI32 { dst, imm } => ExecInstr::ConstI32 {
                 dst: map_i32(*dst)?,
                 imm: *imm,
@@ -4566,6 +4612,47 @@ fn check_expected(
     Ok(())
 }
 
+/// The most globals a program may use: `global.has`, `global.get` and `global.set` name
+/// indexes below this.
+pub const MAX_GLOBALS: u32 = 65_536;
+
+/// Checks that a global instruction's `index` is below [`MAX_GLOBALS`].
+fn check_global(func: FuncId, pc: u32, index: u32) -> Result<(), VerifyError> {
+    if index < MAX_GLOBALS {
+        Ok(())
+    } else {
+        Err(VerifyError::GlobalOutOfRange {
+            func,
+            pc: Pc(pc),
+            index,
+        })
+    }
+}
+
+/// Checks that `reg` holds an inline value: a scalar or a host object, whose value is
+/// complete without the VM's heaps, so a global or a host can keep it.
+fn check_inline(
+    func: FuncId,
+    pc: u32,
+    reg: u32,
+    actual: Option<ValueType>,
+) -> Result<(), VerifyError> {
+    match actual {
+        Some(declared) if declared.is_inline() => Ok(()),
+        Some(declared) => Err(VerifyError::InlineRegisterRequired {
+            func,
+            pc: Pc(pc),
+            reg: Reg(reg),
+            declared,
+        }),
+        None => Err(VerifyError::RegOutOfBounds {
+            func,
+            pc: Pc(pc),
+            reg: Reg(reg),
+        }),
+    }
+}
+
 /// Checks that `reg` is declared `Obj` of some host type.
 fn check_object(
     func: FuncId,
@@ -4750,6 +4837,11 @@ fn validate_instr_types(
         Instr::ObjUtf8Next { obj, pos, .. } | Instr::ObjUtf8Prev { obj, pos, .. } => {
             check_object(func_id, pc, *obj, t(*obj))?;
             check_expected(func_id, pc, *pos, t(*pos), ValueType::U64)?;
+        }
+        Instr::GlobalHas { index, .. } => check_global(func_id, pc, *index)?,
+        Instr::GlobalGet { dst: reg, index } | Instr::GlobalSet { index, src: reg } => {
+            check_global(func_id, pc, *index)?;
+            check_inline(func_id, pc, *reg, t(*reg))?;
         }
         Instr::ConstI32 { .. } | Instr::ConstU32 { .. } | Instr::ConstF32 { .. } => {}
         Instr::I32Add { a, b, .. } => {

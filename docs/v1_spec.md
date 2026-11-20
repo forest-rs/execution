@@ -340,8 +340,8 @@ form and no second spelling of an opcode, so an opcode's bytes identify it exact
   operations from `0x00`, stack switching from `0x05`, `f64` exact operations (`round_half_away`,
   `clamp`) from `0x0B`, host object queries from `0x0D`, the `f64` math intrinsics in the
   block `0x10..=0x1F`, in the same order as the `f32` ones at `0xFD 0xA0` (`0xFC 0x10` is
-  `f64.pow` as `0xFD 0xA0` is `f32.pow`), and host object bytes from `0x20`. New instruction
-  families take the next free byte outside that block.
+  `f64.pow` as `0xFD 0xA0` is `f32.pow`), host object bytes from `0x20`, and computation
+  globals from `0x24`. New instruction families take the next free byte outside that block.
 - `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
   (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` with its math intrinsics from `0xA0`,
   conversions from `0xC0` with the checked conversions from `0xE0`).
@@ -1282,6 +1282,27 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   - No host call happens. Fuel cost: one instruction. Traps with `NoObjectBytes { object }`
     when the host has no bytes for the object. Observed and recorded as `obj.bytes_get` is.
 
+### Computation globals
+Each unit has globals, numbered below `MAX_GLOBALS` (65,536), which a computation fills as it
+runs: a cache for what it computes once, such as a constant's value or an object the host made.
+A global holds an *inline* value (`ValueType::is_inline`): a scalar, a host object or a
+function reference, nothing the VM's heaps hold, so collection neither roots nor moves them.
+Every computation starts with all of them unset and keeps them, across the turns that resume
+it, until it finishes; its continuations share them. Units' globals are separate, so a unit
+installed to replace another starts its own. Nothing about globals is a host call, observation
+or recorded event; replay recomputes them. Fuel cost: one instruction each.
+
+- `global.has r_dst, index`
+  - `r_dst` is `Bool`. Writes whether this computation has stored the unit's global `index`.
+- `global.get r_dst, index`
+  - `r_dst` is an inline type. Writes the value stored in global `index`. Traps with
+    `GlobalUnset { index }` when none is, and with `TypeMismatch { expected, actual }` when the
+    value's type, host type included, is not `r_dst`'s.
+- `global.set index, r_src`
+  - `r_src` is an inline type. Stores its value in global `index`, replacing any other.
+- The verifier rejects a register of another type (`InlineRegisterRequired`) and an index of
+  `MAX_GLOBALS` or more (`GlobalOutOfRange`).
+
 ## Opcode encodings
 The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and
 encodings. `execution_tape/src/opcode.rs` exposes the generated `Opcode` mapping. For register
@@ -1408,6 +1429,9 @@ Host object bytes and UTF-8 decoding (`0xFC 0x20`; see
 - `0xFC 0x21 obj.bytes_get dst, obj, index`
 - `0xFC 0x22 obj.utf8_next scalar, next, missing, obj, pos`
 - `0xFC 0x23 obj.utf8_prev scalar, prev, missing, obj, pos`
+- `0xFC 0x24 global.has dst, index` (see [Computation globals](#computation-globals))
+- `0xFC 0x25 global.get dst, index`
+- `0xFC 0x26 global.set index, src`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits

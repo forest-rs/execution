@@ -917,6 +917,14 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.srcs = vec![a];
             view.input_index = Some(InputIndex::Index(u32::from(scale)));
         }
+        Instr::GlobalHas { dst, index } | Instr::GlobalGet { dst, index } => {
+            view.dst = Some(dst);
+            view.input_index = Some(InputIndex::Index(index));
+        }
+        Instr::GlobalSet { index, src } => {
+            view.srcs = vec![src];
+            view.input_index = Some(InputIndex::Index(index));
+        }
         Instr::DecScale { dst, a } => {
             view.dst = Some(dst);
             view.srcs = vec![a];

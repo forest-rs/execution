@@ -857,6 +857,28 @@ pub enum ValueType {
     Cont,
 }
 
+impl ValueType {
+    /// Whether a value of this type is complete without the VM's heaps: a scalar, a host
+    /// object or a function reference, never `Unit`. Globals and host object fields hold only
+    /// these, so the VM keeps nothing alive for them.
+    #[must_use]
+    pub const fn is_inline(self) -> bool {
+        matches!(
+            self,
+            Self::Bool
+                | Self::I64
+                | Self::U64
+                | Self::F64
+                | Self::Decimal
+                | Self::I32
+                | Self::U32
+                | Self::F32
+                | Self::Obj(_)
+                | Self::Func
+        )
+    }
+}
+
 /// A host-call signature table entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostSigEntry {

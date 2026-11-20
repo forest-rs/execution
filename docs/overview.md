@@ -249,6 +249,13 @@ its buffers between instructions. `obj.utf8_next` and `obj.utf8_prev` decode one
 at a byte position and report a position with no scalar through a flag instead of a trap, so a
 tokenizer's scan costs about 20 ns per scalar against about 80 ns with a host call per scalar.
 
+### Computation globals
+`global.set` keeps a scalar or host object in one of a unit's globals for the rest of a
+computation, and `global.has` and `global.get` read it back, so a guest computes something once
+per computation, such as a constant's value or an object the host made, and then reads it like
+a register. Each computation starts with its globals unset, and they hold nothing the VM must
+collect.
+
 ### Guarded links
 A guarded link is an inline cache for a dynamic send. Its callers pass `u64` keys with each call,
 such as the classes of the arguments a generic dispatches on (read with `obj.key`), and
