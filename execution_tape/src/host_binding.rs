@@ -226,6 +226,14 @@ pub type ObjectConversionCallback<S> = fn(&S, Obj, HostTypeId) -> Option<Obj>;
 /// per-instance state ([`Host::object_bytes`]).
 pub type ObjectBytesCallback<S> = fn(&S, Obj) -> Option<&[u8]>;
 
+/// A host's answer to `obj.field` for one object and field, from its per-instance state
+/// ([`Host::object_field`]).
+pub type ObjectFieldCallback<S> = fn(&S, Obj, u32) -> Option<Value>;
+
+/// A host's store for `obj.set_field` into one object's field, in its per-instance state
+/// ([`Host::set_object_field`]).
+pub type SetObjectFieldCallback<S> = fn(&mut S, Obj, u32, Value) -> bool;
+
 struct Operation<S> {
     signature: HostSig,
     callback: HostCallback<S>,
@@ -675,6 +683,7 @@ impl<S> HostBindings<S> {
             object_key: None,
             convert_object: None,
             object_bytes: None,
+            object_fields: None,
         }
     }
 
@@ -703,6 +712,7 @@ pub struct BoundHost<S> {
     object_key: Option<ObjectKeyCallback<S>>,
     convert_object: Option<ObjectConversionCallback<S>>,
     object_bytes: Option<ObjectBytesCallback<S>>,
+    object_fields: Option<(ObjectFieldCallback<S>, SetObjectFieldCallback<S>)>,
 }
 
 impl<S> fmt::Debug for BoundHost<S> {
@@ -749,6 +759,19 @@ impl<S> BoundHost<S> {
     #[must_use]
     pub fn with_object_bytes(mut self, callback: ObjectBytesCallback<S>) -> Self {
         self.object_bytes = Some(callback);
+        self
+    }
+
+    /// Answers `obj.field` with `read` ([`Host::object_field`]) and stores for `obj.set_field`
+    /// with `write` ([`Host::set_object_field`]), for every unit this host serves. Without
+    /// them, no object has fields.
+    #[must_use]
+    pub fn with_object_fields(
+        mut self,
+        read: ObjectFieldCallback<S>,
+        write: SetObjectFieldCallback<S>,
+    ) -> Self {
+        self.object_fields = Some((read, write));
         self
     }
 }
@@ -804,6 +827,17 @@ impl<S> Host for BoundHost<S> {
             self.object_bytes
                 .and_then(|callback| callback(&self.state, object)),
         )
+    }
+
+    /// The answer of the reader given to [`Self::with_object_fields`], or `None` without one.
+    fn object_field(&self, object: Obj, field: u32) -> Option<Value> {
+        self.object_fields?.0(&self.state, object, field)
+    }
+
+    /// The answer of the writer given to [`Self::with_object_fields`], or `false` without one.
+    fn set_object_field(&mut self, object: Obj, field: u32, value: Value) -> bool {
+        self.object_fields
+            .is_some_and(|(_, write)| write(&mut self.state, object, field, value))
     }
 }
 

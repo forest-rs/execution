@@ -169,6 +169,8 @@ impl Instr {
             Self::GlobalHas { .. } => Opcode::GlobalHas,
             Self::GlobalGet { .. } => Opcode::GlobalGet,
             Self::GlobalSet { .. } => Opcode::GlobalSet,
+            Self::ObjField { .. } => Opcode::ObjField,
+            Self::ObjSetField { .. } => Opcode::ObjSetField,
             Self::ConstI32 { .. } => Opcode::ConstI32,
             Self::I32Add { .. } => Opcode::I32Add,
             Self::I32Sub { .. } => Opcode::I32Sub,

@@ -1109,6 +1109,20 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *src);
             Ok(())
         },
+        Instr::ObjField { dst, field, obj } => {
+            out.extend_from_slice(&[0xFC, 0x27]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *obj);
+            crate::codec_primitives::write_u32_uleb(out, *field);
+            Ok(())
+        },
+        Instr::ObjSetField { field, obj, src } => {
+            out.extend_from_slice(&[0xFC, 0x28]);
+            crate::codec_primitives::write_reg(out, *obj);
+            crate::codec_primitives::write_u32_uleb(out, *field);
+            crate::codec_primitives::write_reg(out, *src);
+            Ok(())
+        },
         Instr::ConstI32 { dst, imm } => {
             out.extend_from_slice(&[0xFD, 0x00]);
             crate::codec_primitives::write_reg(out, *dst);

@@ -4,7 +4,7 @@
     {
       "name": "Extended",
       "byte": "0xFC",
-      "doc": "General extension space: `u64` bit operations from `0x00`, stack switching from `0x05`,\n`f64` exact operations from `0x0B`, host object queries from `0x0D`, the `f64` math\nintrinsics in `0x10..=0x1F`, host object bytes from `0x20`, and computation globals from `0x24`.\nNew instruction families allocate the next free byte outside those blocks."
+      "doc": "General extension space: `u64` bit operations from `0x00`, stack switching from `0x05`,\n`f64` exact operations from `0x0B`, host object queries from `0x0D`, the `f64` math\nintrinsics in `0x10..=0x1F`, host object bytes from `0x20`, computation globals from `0x24`, and host object fields from `0x27`.\nNew instruction families allocate the next free byte outside those blocks."
     },
     {
       "name": "Numeric32",
@@ -4825,6 +4825,68 @@
           "role": "index",
           "encoding": "u32_uleb",
           "field": "index"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "src",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "ObjField",
+      "mnemonic": "obj.field",
+      "prefix": "0xFC",
+      "byte": "0x27",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = host.object_field(obj, field)`: a scalar or host object a host object holds in field `field` (traps when the host has none, or one of another type).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "obj",
+          "access": "read"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index",
+          "encoding": "u32_uleb",
+          "field": "field"
+        }
+      ]
+    },
+    {
+      "name": "ObjSetField",
+      "mnemonic": "obj.set_field",
+      "prefix": "0xFC",
+      "byte": "0x28",
+      "terminator": false,
+      "flags": [],
+      "doc": "`host.set_object_field(obj, field, src)`: stores a scalar or host object in field `field` of a host object (traps when the host refuses it).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "obj",
+          "access": "read"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index",
+          "encoding": "u32_uleb",
+          "field": "field"
         },
         {
           "kind": "reg",

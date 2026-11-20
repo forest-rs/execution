@@ -112,3 +112,7 @@ harness = false
 [[bench]]
 name = "object_bytes"
 harness = false
+
+[[bench]]
+name = "object_state"
+harness = false

@@ -722,6 +722,18 @@ pub(crate) enum ExecInstr {
         index: u32,
         src: VReg,
     },
+    ObjField {
+        dst: VReg,
+        obj: ObjReg,
+        field: u32,
+        /// The destination register's declared type, which the field's value must have.
+        ty: ValueType,
+    },
+    ObjSetField {
+        obj: ObjReg,
+        field: u32,
+        src: VReg,
+    },
     ConstI32 {
         dst: I32Reg,
         imm: i32,

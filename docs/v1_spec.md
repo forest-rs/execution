@@ -340,8 +340,9 @@ form and no second spelling of an opcode, so an opcode's bytes identify it exact
   operations from `0x00`, stack switching from `0x05`, `f64` exact operations (`round_half_away`,
   `clamp`) from `0x0B`, host object queries from `0x0D`, the `f64` math intrinsics in the
   block `0x10..=0x1F`, in the same order as the `f32` ones at `0xFD 0xA0` (`0xFC 0x10` is
-  `f64.pow` as `0xFD 0xA0` is `f32.pow`), host object bytes from `0x20`, and computation
-  globals from `0x24`. New instruction families take the next free byte outside that block.
+  `f64.pow` as `0xFD 0xA0` is `f32.pow`), host object bytes from `0x20`, computation
+  globals from `0x24` and host object fields from `0x27`. New instruction families take the
+  next free byte outside that block.
 - `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
   (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` with its math intrinsics from `0xA0`,
   conversions from `0xC0` with the checked conversions from `0xE0`).
@@ -1282,6 +1283,33 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   - No host call happens. Fuel cost: one instruction. Traps with `NoObjectBytes { object }`
     when the host has no bytes for the object. Observed and recorded as `obj.bytes_get` is.
 
+### Host object fields
+A host can expose its objects' fields, numbered as it likes, such as an instance's slots, to
+guest reads and stores without a host call. A field holds an inline value
+(`ValueType::is_inline`): a scalar, a host object or a function reference.
+
+- `obj.field r_dst, r_obj, field`
+  - `r_obj` holds an `Obj` of any host type and `r_dst` is an inline type. Writes
+    `Host::object_field(obj, field)`. Traps with `NoObjectField { object, field }` when the
+    host returns `None`, and with `TypeMismatch { expected, actual }` when the value's type,
+    host type included, is not `r_dst`'s.
+  - Observed as `ValueEvent::ObjectField`, including `None` answers, and recorded and replayed
+    as a host object query (`ObjectAnswer::Field`, its value in `Recording::object_values`).
+- `obj.set_field r_obj, field, r_src`
+  - `r_obj` holds an `Obj` of any host type and `r_src` is an inline type. Calls
+    `Host::set_object_field(obj, field, value)`, the host's own store: a host that logs stores
+    to undo them, or reports them to a collector, does so for these too. Traps with
+    `NoObjectField { object, field }` when the host returns `false`.
+  - Observed as `ValueEvent::ObjectFieldSet` after the store, and recorded as a host object
+    query (`ObjectAnswer::FieldSet`). Replay checks that the guest stores the same value into
+    the same field, and answers it without the host. Since host code ran, recordings treat it
+    as they treat a host call when deciding which object bytes to record again.
+- No host call happens, for either: no symbol, signature, host-call count or request, even in a
+  turn that yields host calls. Fuel cost: one instruction. No resource access is recorded, so a
+  host whose fields an access sink must see answers them through host calls.
+- The verifier rejects a non-object `r_obj` (`ObjectRegisterRequired`) and a value register of
+  another type (`InlineRegisterRequired`).
+
 ### Computation globals
 Each unit has globals, numbered below `MAX_GLOBALS` (65,536), which a computation fills as it
 runs: a cache for what it computes once, such as a constant's value or an object the host made.
@@ -1432,6 +1460,8 @@ Host object bytes and UTF-8 decoding (`0xFC 0x20`; see
 - `0xFC 0x24 global.has dst, index` (see [Computation globals](#computation-globals))
 - `0xFC 0x25 global.get dst, index`
 - `0xFC 0x26 global.set index, src`
+- `0xFC 0x27 obj.field dst, obj, field` (see [Host object fields](#host-object-fields))
+- `0xFC 0x28 obj.set_field obj, field, src`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits
@@ -1682,7 +1712,9 @@ The embedder may also answer `Host::object_key(obj)` for `obj.key`,
 `obj.bytes_len` and `obj.bytes_get`, outside any host call: pure queries about an object, with
 no context, effects or fuel of their own. `BoundHost::with_object_key`,
 `BoundHost::with_object_conversion` and `BoundHost::with_object_bytes` supply them for a bound
-host.
+host. `Host::object_field` and `Host::set_object_field` likewise read and store an object's
+fields for `obj.field` and `obj.set_field`, outside any host call; a store is the host's own
+effect (`BoundHost::with_object_fields` for a bound host).
 
 The embedder owns:
 - `Obj` handle creation/lifetimes

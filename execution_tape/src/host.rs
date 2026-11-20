@@ -964,6 +964,60 @@ pub trait Host {
         let _ = object;
         read(None)
     }
+
+    /// The value `object` holds in field `field`, which `obj.field` reads, or `None` when it
+    /// has no such field.
+    ///
+    /// A field is whatever the embedding numbers in its objects, such as an instance's slots,
+    /// and holds an inline value ([`ValueType::is_inline`]): a scalar, a host object or a
+    /// function reference, nothing the VM's heaps hold. A guest reads it without a host call:
+    /// like [`Self::object_key`], the VM calls this directly, for one unit of fuel, with no
+    /// symbol, marshalling, host-call allowance or request, even in a turn that yields host
+    /// calls. The answer must depend only on the object, the field and the host's state; the
+    /// VM checks that it has the destination register's type, host type included, and traps
+    /// with [`Trap::TypeMismatch`] otherwise.
+    ///
+    /// No resource access is recorded, so a host whose fields an access sink must see answers
+    /// them through host calls instead. Recordings capture each answer and replay delivers it
+    /// again, so replay does not need the host. A host that wraps another should forward this.
+    ///
+    /// `None` makes `obj.field` trap with [`Trap::NoObjectField`]: the compiler that emitted
+    /// the read knows the object's layout, so a missing field is a stale handle or a wrong
+    /// layout. By default no object has fields;
+    /// [`BoundHost::with_object_fields`] answers for a bound host.
+    ///
+    /// [`ValueType::is_inline`]: crate::program::ValueType::is_inline
+    /// [`Trap::TypeMismatch`]: crate::vm::Trap::TypeMismatch
+    /// [`Trap::NoObjectField`]: crate::vm::Trap::NoObjectField
+    /// [`BoundHost::with_object_fields`]: crate::host_binding::BoundHost::with_object_fields
+    fn object_field(&self, object: Obj, field: u32) -> Option<Value> {
+        let _ = (object, field);
+        None
+    }
+
+    /// Stores `value` in field `field` of `object` for `obj.set_field`, returning whether it
+    /// did: `false` when the object has no such field or the field cannot hold the value.
+    ///
+    /// The value is inline, as [`Self::object_field`]'s are, so the host keeps nothing the VM
+    /// must keep alive. The VM calls this directly, like [`Self::object_field`], for one unit
+    /// of fuel and no host call, even in a turn that yields host calls. It is the host's own
+    /// store, and does whatever the host does when it stores into an object: a host that logs
+    /// stores to undo them, or tells a collector about them, does so here too, exactly as it
+    /// would for a store a host call made. No resource access is recorded, as for reads.
+    ///
+    /// Recordings capture each store with its value and answer, and replay checks that the
+    /// guest stores the same value in the same field and answers it again without the host.
+    /// A host that wraps another should forward this.
+    ///
+    /// `false` makes `obj.set_field` trap with [`Trap::NoObjectField`]. By default no object
+    /// has fields; [`BoundHost::with_object_fields`] answers for a bound host.
+    ///
+    /// [`Trap::NoObjectField`]: crate::vm::Trap::NoObjectField
+    /// [`BoundHost::with_object_fields`]: crate::host_binding::BoundHost::with_object_fields
+    fn set_object_field(&mut self, object: Obj, field: u32, value: Value) -> bool {
+        let _ = (object, field, value);
+        false
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

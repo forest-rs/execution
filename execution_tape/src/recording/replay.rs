@@ -147,6 +147,12 @@ pub enum Divergence {
         /// Object the replay read.
         actual: Obj,
     },
+    /// A host object field read or store, such as an `obj.set_field`, named another field than
+    /// the recorded one, or stored another value.
+    ObjectField {
+        /// Zero-based ordinal of the query, indexing [`Recording::object_queries`].
+        query: usize,
+    },
 }
 
 /// Boundary being checked when replay diverged.
@@ -1037,6 +1043,8 @@ struct NoReplayEffects<'a> {
     queries: &'a [RecordedObjectQuery],
     /// The recorded bytes that [`ObjectAnswer::Bytes`] indexes.
     object_bytes: &'a [Arc<[u8]>],
+    /// The recorded values that [`ObjectAnswer::Field`] and [`ObjectAnswer::FieldSet`] index.
+    object_values: &'a [Value],
     state: Rc<RefCell<State>>,
 }
 impl NoReplayEffects<'_> {
@@ -1065,7 +1073,10 @@ impl Host for NoReplayEffects<'_> {
     fn object_key(&self, _: Obj) -> Option<u64> {
         match self.next_answer()? {
             ObjectAnswer::Key(key) => key,
-            ObjectAnswer::Converted { .. } | ObjectAnswer::Bytes(_) => None,
+            ObjectAnswer::Converted { .. }
+            | ObjectAnswer::Bytes(_)
+            | ObjectAnswer::Field { .. }
+            | ObjectAnswer::FieldSet { .. } => None,
         }
     }
 
@@ -1073,7 +1084,10 @@ impl Host for NoReplayEffects<'_> {
     fn convert_object(&self, _: Obj, _: crate::program::HostTypeId) -> Option<Obj> {
         match self.next_answer()? {
             ObjectAnswer::Converted { converted, .. } => converted,
-            ObjectAnswer::Key(_) | ObjectAnswer::Bytes(_) => None,
+            ObjectAnswer::Key(_)
+            | ObjectAnswer::Bytes(_)
+            | ObjectAnswer::Field { .. }
+            | ObjectAnswer::FieldSet { .. } => None,
         }
     }
 
@@ -1081,6 +1095,23 @@ impl Host for NoReplayEffects<'_> {
     /// ran delivered, or else the next query's, checked like [`Self::object_key`]'s keys.
     fn object_bytes<R>(&self, object: Obj, read: impl FnOnce(Option<&[u8]>) -> R) -> R {
         read(self.recorded_bytes(object))
+    }
+
+    /// The next recorded field value, checked like [`Self::object_key`]'s keys.
+    fn object_field(&self, _: Obj, _: u32) -> Option<Value> {
+        match self.next_answer()? {
+            ObjectAnswer::Field { value, .. } => self.object_values.get(value?).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The next recorded store's answer, without storing anything: the checking sink compares
+    /// the store with the record when it is observed.
+    fn set_object_field(&mut self, _: Obj, _: u32, _: Value) -> bool {
+        matches!(
+            self.next_answer(),
+            Some(ObjectAnswer::FieldSet { accepted: true, .. })
+        )
     }
 }
 
@@ -1097,7 +1128,10 @@ impl NoReplayEffects<'_> {
             Some(index) => index,
             None => match self.next_answer()? {
                 ObjectAnswer::Bytes(index) => index?,
-                ObjectAnswer::Key(_) | ObjectAnswer::Converted { .. } => return None,
+                ObjectAnswer::Key(_)
+                | ObjectAnswer::Converted { .. }
+                | ObjectAnswer::Field { .. }
+                | ObjectAnswer::FieldSet { .. } => return None,
             },
         };
         self.object_bytes.get(index).map(|bytes| &**bytes)
@@ -1390,6 +1424,78 @@ impl TraceSink for Check<'_> {
                     object,
                     ObjectAnswer::Converted { to, converted },
                 )?,
+                ValueEvent::ObjectField {
+                    location,
+                    object,
+                    field,
+                    value,
+                } => {
+                    let recorded = self.record.queries.get(state.queries).map(|q| q.answer);
+                    let answer = match recorded {
+                        Some(ObjectAnswer::Field {
+                            field: recorded_field,
+                            value: index,
+                        }) if recorded_field == field
+                            && index.and_then(|i| self.record.object_values.get(i)) == value =>
+                        {
+                            ObjectAnswer::Field {
+                                field,
+                                value: index,
+                            }
+                        }
+                        Some(_) if state.queries < self.record.queries.len() => {
+                            state.boundary = ReplayBoundary::ObjectQuery {
+                                index: state.queries,
+                            };
+                            state.location = Some(location);
+                            return Err(state.mismatch(Divergence::ObjectField {
+                                query: state.queries,
+                            }));
+                        }
+                        _ => ObjectAnswer::Field { field, value: None },
+                    };
+                    check_query(self.record, &mut state, location, object, answer)?;
+                }
+                ValueEvent::ObjectFieldSet {
+                    location,
+                    object,
+                    field,
+                    value,
+                    accepted,
+                } => {
+                    let recorded = self.record.queries.get(state.queries).map(|q| q.answer);
+                    let answer = match recorded {
+                        Some(ObjectAnswer::FieldSet {
+                            field: recorded_field,
+                            value: index,
+                            accepted: recorded_accepted,
+                        }) if recorded_field == field
+                            && recorded_accepted == accepted
+                            && self.record.object_values.get(index) == Some(value) =>
+                        {
+                            ObjectAnswer::FieldSet {
+                                field,
+                                value: index,
+                                accepted,
+                            }
+                        }
+                        Some(_) => {
+                            state.boundary = ReplayBoundary::ObjectQuery {
+                                index: state.queries,
+                            };
+                            state.location = Some(location);
+                            return Err(state.mismatch(Divergence::ObjectField {
+                                query: state.queries,
+                            }));
+                        }
+                        None => ObjectAnswer::FieldSet {
+                            field,
+                            value: 0,
+                            accepted,
+                        },
+                    };
+                    check_query(self.record, &mut state, location, object, answer)?;
+                }
                 ValueEvent::ObjectBytes {
                     location,
                     object,
@@ -1725,6 +1831,7 @@ impl Recording {
             NoReplayEffects {
                 queries: &self.queries,
                 object_bytes: &self.object_bytes,
+                object_values: &self.object_values,
                 state: Rc::clone(&state),
             },
             entry.limits.clone(),
@@ -2678,6 +2785,109 @@ mod tests {
         let recording = recorder.finish();
         assert!(recording.replay().is_ok());
         recording
+    }
+
+    /// A host whose objects have one field, which takes any `u64`.
+    struct Cells(u64);
+    impl Host for Cells {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            _: &[ValueRef<'_>],
+            _: &mut [Value],
+            _: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            Err(HostError::UnknownSymbol)
+        }
+        fn object_field(&self, _: Obj, field: u32) -> Option<Value> {
+            (field == 0).then_some(Value::U64(self.0))
+        }
+        fn set_object_field(&mut self, _: Obj, field: u32, value: Value) -> bool {
+            match (field, value) {
+                (0, Value::U64(value)) => {
+                    self.0 = value;
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    /// A recording of `f(obj) = { obj.0 := obj.0 + obj.0; obj.0 }`.
+    fn field_recording() -> Recording {
+        let object = ValueType::Obj(crate::program::HostTypeId(1));
+        let mut builder = ProgramBuilder::new();
+        let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, object, ValueType::U64]);
+        body.obj_field(Reg(2), Reg(1), 0)
+            .u64_add(Reg(2), Reg(2), Reg(2))
+            .obj_set_field(Reg(1), 0, Reg(2))
+            .obj_field(Reg(2), Reg(1), 0)
+            .ret(Reg::EFFECT, &[Reg(2)]);
+        builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![object],
+                    ret_types: vec![ValueType::U64],
+                },
+            )
+            .unwrap();
+        let program = Arc::new(builder.build_verified().unwrap());
+        let mut vm = Vm::new(Cells(3), Limits::default());
+        let unit = vm.install(Arc::clone(&program)).unwrap();
+        let mut recorder = Recorder::new(program, RecordLimits::default());
+        let arg = Value::Obj(Obj {
+            host_type: crate::program::HostTypeId(1),
+            handle: crate::value::ObjHandle(4),
+        });
+        let result = vm
+            .run(
+                FuncRef::new(unit, FuncId(0)),
+                &[arg],
+                recorder.mask(),
+                Some(&mut recorder),
+            )
+            .unwrap();
+        assert_eq!(result, [Value::U64(6)]);
+        let recording = recorder.finish();
+        assert!(recording.replay().is_ok());
+        recording
+    }
+
+    #[test]
+    fn changed_field_reads_and_stores_diverge_where_they_happen() {
+        let diverged = |record: &Recording| match record.replay() {
+            Err(ReplayError::Diverged {
+                boundary, reason, ..
+            }) => (boundary, reason),
+            other => panic!("changed fields must diverge: {other:?}"),
+        };
+        // A recorded read of another value makes the replay store another value.
+        let mut record = field_recording();
+        record.object_values[0] = Value::U64(5);
+        assert_eq!(
+            diverged(&record),
+            (
+                ReplayBoundary::ObjectQuery { index: 1 },
+                Divergence::ObjectField { query: 1 }
+            )
+        );
+        // A store recorded into another field.
+        let mut record = field_recording();
+        record.queries[1].answer = ObjectAnswer::FieldSet {
+            field: 1,
+            value: 1,
+            accepted: true,
+        };
+        assert_eq!(
+            diverged(&record),
+            (
+                ReplayBoundary::ObjectQuery { index: 1 },
+                Divergence::ObjectField { query: 1 }
+            )
+        );
     }
 
     #[test]

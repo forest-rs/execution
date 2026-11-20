@@ -2443,6 +2443,36 @@ impl Asm {
         self
     }
 
+    /// Encodes `obj.field dst, obj, field`: the value the host object in `obj` holds in field
+    /// `field` ([`Host::object_field`](crate::host::Host::object_field)).
+    ///
+    /// `obj` may hold an object of any host type; `dst` holds a scalar or a host object
+    /// ([`ValueType::is_inline`]). The instruction traps with
+    /// [`Trap::NoObjectField`](crate::vm::Trap::NoObjectField) when the host has no such field,
+    /// and with [`Trap::TypeMismatch`](crate::vm::Trap::TypeMismatch) when its value is not of
+    /// `dst`'s type.
+    pub fn obj_field(&mut self, dst: Reg, obj: Reg, field: u32) -> &mut Self {
+        self.opcode(Opcode::ObjField);
+        self.reg(dst);
+        self.reg(obj);
+        self.uleb(field);
+        self
+    }
+
+    /// Encodes `obj.set_field obj, field, src`: stores the scalar or host object in `src` in
+    /// field `field` of the host object in `obj`
+    /// ([`Host::set_object_field`](crate::host::Host::set_object_field)).
+    ///
+    /// The instruction traps with [`Trap::NoObjectField`](crate::vm::Trap::NoObjectField) when
+    /// the host refuses the store.
+    pub fn obj_set_field(&mut self, obj: Reg, field: u32, src: Reg) -> &mut Self {
+        self.opcode(Opcode::ObjSetField);
+        self.reg(obj);
+        self.uleb(field);
+        self.reg(src);
+        self
+    }
+
     /// Encodes `const.i32 dst, imm_sleb`.
     pub fn const_i32(&mut self, dst: Reg, imm: i32) -> &mut Self {
         self.opcode(Opcode::ConstI32);
