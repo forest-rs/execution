@@ -1091,6 +1091,24 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *pos);
             Ok(())
         },
+        Instr::GlobalHas { dst, index } => {
+            out.extend_from_slice(&[0xFC, 0x24]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, *index);
+            Ok(())
+        },
+        Instr::GlobalGet { dst, index } => {
+            out.extend_from_slice(&[0xFC, 0x25]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, *index);
+            Ok(())
+        },
+        Instr::GlobalSet { index, src } => {
+            out.extend_from_slice(&[0xFC, 0x26]);
+            crate::codec_primitives::write_u32_uleb(out, *index);
+            crate::codec_primitives::write_reg(out, *src);
+            Ok(())
+        },
         Instr::ConstI32 { dst, imm } => {
             out.extend_from_slice(&[0xFD, 0x00]);
             crate::codec_primitives::write_reg(out, *dst);

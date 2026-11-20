@@ -359,6 +359,12 @@ pub(crate) enum Instr {
         obj: u32,
         pos: u32,
     },
+    /// `dst = global[index] is set` (`bool`).
+    GlobalHas { dst: u32, index: u32 },
+    /// `dst = global[index]` (a scalar or `Obj`).
+    GlobalGet { dst: u32, index: u32 },
+    /// `global[index] = src` (a scalar or `Obj`).
+    GlobalSet { index: u32, src: u32 },
     /// `dst = i32`.
     ConstI32 { dst: u32, imm: i32 },
     /// `dst = u32`.

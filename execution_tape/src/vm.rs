@@ -433,6 +433,12 @@ pub enum Trap {
         object: Obj,
     },
 
+    /// `global.get` read a global this computation has stored nothing in.
+    GlobalUnset {
+        /// The global's index.
+        index: u32,
+    },
+
     /// Index out of bounds (bytes/string ops).
     IndexOutOfBounds,
     /// String slice indices were not on UTF-8 character boundaries.
@@ -586,6 +592,9 @@ impl fmt::Display for Trap {
             Self::IntDivOverflow => write!(f, "integer division overflow"),
             Self::FloatToIntInvalid => write!(f, "float to int invalid"),
             Self::ClampBoundsInvalid => write!(f, "clamp bounds invalid"),
+            Self::GlobalUnset { index } => {
+                write!(f, "global {index} holds no value in this computation")
+            }
             Self::NoObjectKey { object } => write!(
                 f,
                 "the host has no key for object {:#x} of host type {:#x}",
@@ -809,18 +818,24 @@ struct Registers {
 
     /// Call stack.
     frames: Frames,
+
+    /// The values `global.set` stored, by unit and then index; inline values only, which
+    /// hold nothing in the VM's heaps.
+    globals: Vec<Vec<Option<Value>>>,
 }
 
 impl Registers {
     /// Drops the payloads a finished run computed, so an idle VM holds none of them.
     ///
-    /// That includes continuations it abandoned, whose segments may hold exceptions. Frames and
+    /// That includes continuations it abandoned, whose segments may hold exceptions, and the
+    /// globals it stored, which belong to the finished computation. Frames and
     /// register banks keep their contents until the next run clears them; they hold only handles
     /// and scalars. Every buffer keeps its capacity for the next run.
     fn release_payloads(&mut self) {
         self.arena.clear();
         self.exns.clear();
         self.continuations.clear();
+        self.globals.clear();
     }
 
     /// Bytes of buffer capacity held, excluding payloads.
@@ -863,6 +878,55 @@ impl Registers {
         self.continuations.clear();
         self.raised = 0;
         self.arena.clear();
+        self.globals.clear();
+    }
+
+    /// The value `global.set` stored in `unit`'s global `index`, if any.
+    #[inline]
+    fn global(&self, unit: UnitId, index: u32) -> Option<&Value> {
+        self.globals
+            .get(unit.0 as usize)?
+            .get(index as usize)?
+            .as_ref()
+    }
+
+    /// Stores `value` in `unit`'s global `index`. The verifier bounds `index` by
+    /// [`crate::verifier::MAX_GLOBALS`].
+    fn set_global(&mut self, unit: UnitId, index: u32, value: Value) {
+        let unit = unit.0 as usize;
+        if self.globals.len() <= unit {
+            self.globals.resize_with(unit + 1, Vec::new);
+        }
+        let globals = &mut self.globals[unit];
+        let index = index as usize;
+        if globals.len() <= index {
+            globals.resize(index + 1, None);
+        }
+        globals[index] = Some(value);
+    }
+
+    /// The value in `src`, which the verifier proved holds an inline value
+    /// ([`ValueType::is_inline`]).
+    fn read_inline_value(&self, base: RegBase, src: VReg) -> Value {
+        match src {
+            VReg::Bool(r) => Value::Bool(self.read_bool(base, r)),
+            VReg::I64(r) => Value::I64(self.read_i64(base, r)),
+            VReg::U64(r) => Value::U64(self.read_u64(base, r)),
+            VReg::F64(r) => Value::F64(self.read_f64(base, r)),
+            VReg::I32(r) => Value::I32(self.read_i32(base, r)),
+            VReg::U32(r) => Value::U32(self.read_u32(base, r)),
+            VReg::F32(r) => Value::F32(self.read_f32(base, r)),
+            VReg::Decimal(r) => Value::Decimal(self.read_decimal(base, r)),
+            VReg::Obj(r) => Value::Obj(self.read_obj(base, r)),
+            VReg::Func(r) => Value::Func(self.read_func(base, r)),
+            VReg::Unit
+            | VReg::Bytes(_)
+            | VReg::Str(_)
+            | VReg::Agg(_)
+            | VReg::Closure(_)
+            | VReg::Exn(_)
+            | VReg::Cont(_) => unreachable!("the verifier admits only inline registers"),
+        }
     }
 }
 
@@ -2851,6 +2915,29 @@ impl<H: Host> Vm<H> {
                     ctx.write_u32(base, *scalar, decoded_scalar);
                     ctx.write_u64(base, *next, moved);
                     ctx.write_bool(base, *missing, decoded.is_none());
+                }
+                ExecInstr::GlobalHas { dst, index } => {
+                    let set = ctx.global(unit_id, *index).is_some();
+                    ctx.write_bool(base, *dst, set);
+                }
+                ExecInstr::GlobalGet { dst, index, ty } => {
+                    let Some(value) = ctx.global(unit_id, *index).cloned() else {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::GlobalUnset { index: *index },
+                        ));
+                    };
+                    if let Err(trap) = value.check_type(*ty) {
+                        return Err(ctx.trap(func_id, pc, span_id, trap));
+                    }
+                    ctx.write_inline_value(base, *dst, &value)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                }
+                ExecInstr::GlobalSet { index, src } => {
+                    let value = ctx.read_inline_value(base, *src);
+                    ctx.set_global(unit_id, *index, value);
                 }
                 ExecInstr::ConstI32 { dst, imm } => {
                     ctx.write_i32(base, *dst, *imm);

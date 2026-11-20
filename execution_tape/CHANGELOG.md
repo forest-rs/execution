@@ -16,6 +16,14 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Keep values for the rest of a computation. `global.set index, src` (`0xFC 0x26`) stores a
+  scalar, host object or function reference (`ValueType::is_inline`) in one of the unit's
+  globals, below `MAX_GLOBALS`, and `global.has` (`0xFC 0x24`) and `global.get` (`0xFC 0x25`)
+  read it back, so a guest caches what it computed once, such as a constant's value or an
+  object a host call made, instead of asking again. Every computation starts with its globals
+  unset and keeps them, across its turns, until it finishes. `global.get` traps with
+  `Trap::GlobalUnset` or `Trap::TypeMismatch`; the verifier rejects other register types
+  (`VerifyError::InlineRegisterRequired`) and larger indexes (`VerifyError::GlobalOutOfRange`).
 - Compare host objects in the guest. `obj.eq dst, a, b` (`0xFC 0x0F`) writes whether two
   objects are the same host type and handle, without asking the host, so a language whose host
   gives each object one handle tests identity, such as `==` on a symbol, with one instruction

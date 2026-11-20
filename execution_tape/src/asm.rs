@@ -2408,6 +2408,41 @@ impl Asm {
         self
     }
 
+    /// Encodes `global.has dst, index`: whether this computation stored this unit's global
+    /// `index` with [`Self::global_set`].
+    ///
+    /// `dst` is a `bool` register and `index` is below
+    /// [`MAX_GLOBALS`](crate::verifier::MAX_GLOBALS).
+    pub fn global_has(&mut self, dst: Reg, index: u32) -> &mut Self {
+        self.opcode(Opcode::GlobalHas);
+        self.reg(dst);
+        self.uleb(index);
+        self
+    }
+
+    /// Encodes `global.get dst, index`: the value this computation stored in this unit's global
+    /// `index`.
+    ///
+    /// `dst` holds a scalar or a host object ([`ValueType::is_inline`]). The instruction traps
+    /// with [`Trap::GlobalUnset`](crate::vm::Trap::GlobalUnset) when the computation has stored
+    /// none, and with [`Trap::TypeMismatch`](crate::vm::Trap::TypeMismatch) when it stored a
+    /// value of another type.
+    pub fn global_get(&mut self, dst: Reg, index: u32) -> &mut Self {
+        self.opcode(Opcode::GlobalGet);
+        self.reg(dst);
+        self.uleb(index);
+        self
+    }
+
+    /// Encodes `global.set index, src`: keeps the scalar or host object in `src` in this unit's
+    /// global `index` for the rest of the computation.
+    pub fn global_set(&mut self, index: u32, src: Reg) -> &mut Self {
+        self.opcode(Opcode::GlobalSet);
+        self.uleb(index);
+        self.reg(src);
+        self
+    }
+
     /// Encodes `const.i32 dst, imm_sleb`.
     pub fn const_i32(&mut self, dst: Reg, imm: i32) -> &mut Self {
         self.opcode(Opcode::ConstI32);

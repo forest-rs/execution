@@ -708,6 +708,20 @@ pub(crate) enum ExecInstr {
         obj: ObjReg,
         pos: U64Reg,
     },
+    GlobalHas {
+        dst: BoolReg,
+        index: u32,
+    },
+    GlobalGet {
+        dst: VReg,
+        index: u32,
+        /// The destination register's declared type, which the stored value must have.
+        ty: ValueType,
+    },
+    GlobalSet {
+        index: u32,
+        src: VReg,
+    },
     ConstI32 {
         dst: I32Reg,
         imm: i32,
