@@ -618,10 +618,14 @@ impl Recorder {
                 value,
             } => {
                 self.admit_query(location)?;
-                let value = value.map(|value| {
-                    self.object_values.push(value.clone());
-                    self.object_values.len() - 1
-                });
+                // A value that is not inline breaks the host's contract and traps; keeping
+                // none copies no payload, and replay diverges at that trap.
+                let value = value
+                    .filter(|value| value.value_type().is_inline())
+                    .map(|value| {
+                        self.object_values.push(value.clone());
+                        self.object_values.len() - 1
+                    });
                 self.query(location, object, ObjectAnswer::Field { field, value })?;
             }
             ValueEvent::ObjectFieldSet {

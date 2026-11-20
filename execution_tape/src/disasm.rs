@@ -515,6 +515,10 @@ impl<'a> InstrView<'a> {
                 Instr::StructGet { field_index, .. } => *field_index,
                 Instr::ArrayGetImm { index, .. } => *index,
                 Instr::BytesGetImm { index, .. } => *index,
+                Instr::GlobalHas { index, .. }
+                | Instr::GlobalGet { index, .. }
+                | Instr::GlobalSet { index, .. } => *index,
+                Instr::ObjField { field, .. } | Instr::ObjSetField { field, .. } => *field,
                 _ => return None,
             };
             return Some(InputIndex::Index(ix));

@@ -28,7 +28,7 @@ This release has an [MSRV][] of 1.88.
   `ValueEvent::ObjectField` and `ValueEvent::ObjectFieldSet`, recorded as host object queries
   (`ObjectAnswer::Field`, `ObjectAnswer::FieldSet`, with their values in
   `Recording::object_values`), and replayed without the host, which checks each store's
-  field and value (`Divergence::ObjectField`).
+  field and value, floats by their bits (`Divergence::ObjectField`).
 - Keep values for the rest of a computation. `global.set index, src` (`0xFC 0x26`) stores a
   scalar, host object or function reference (`ValueType::is_inline`) in one of the unit's
   globals, below `MAX_GLOBALS`, and `global.has` (`0xFC 0x24`) and `global.get` (`0xFC 0x25`)
@@ -38,6 +38,10 @@ This release has an [MSRV][] of 1.88.
   unset and keeps them, across its turns, until it finishes. `global.get` traps with
   `Trap::GlobalUnset` or `Trap::TypeMismatch`; the verifier rejects other register types
   (`VerifyError::InlineRegisterRequired`) and larger indexes (`VerifyError::GlobalOutOfRange`).
+  A computation keeps as many globals for a unit as its program names
+  (`VerifiedProgram::global_count`), counted in its retained bytes, and
+  `ComputationInspection::visit_objects` reports the objects they hold
+  (`ObjectRootOrigin::Global`) so a host's collector keeps them.
 - Compare host objects in the guest. `obj.eq dst, a, b` (`0xFC 0x0F`) writes whether two
   objects are the same host type and handle, without asking the host, so a language whose host
   gives each object one handle tests identity, such as `==` on a symbol, with one instruction

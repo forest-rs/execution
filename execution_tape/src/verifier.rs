@@ -74,6 +74,9 @@ use crate::vm::Vm;
 pub struct VerifiedProgram {
     program: Program,
     verified_functions: Vec<ExecFunc>,
+    /// One more than the highest global index the program names, so a computation keeps that
+    /// many globals for the unit.
+    global_count: u32,
     /// Per function, the registers paused frames may show. Kept apart from the executable
     /// functions, which the interpreter reads, since execution never does.
     init_tables: Vec<InitTable>,
@@ -124,7 +127,30 @@ pub enum VerifyLint {
     },
 }
 
+/// One more than the highest global index `functions` name, or zero.
+fn global_count(functions: &[ExecFunc]) -> u32 {
+    functions
+        .iter()
+        .flat_map(|function| &function.instrs)
+        .filter_map(|decoded| match decoded.instr {
+            ExecInstr::GlobalHas { index, .. }
+            | ExecInstr::GlobalGet { index, .. }
+            | ExecInstr::GlobalSet { index, .. } => Some(index + 1),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 impl VerifiedProgram {
+    /// How many globals the program uses: one more than the highest index its
+    /// `global.has`, `global.get` and `global.set` name, at most [`MAX_GLOBALS`]. A
+    /// computation that stores one of them keeps this many for the unit.
+    #[must_use]
+    pub fn global_count(&self) -> u32 {
+        self.global_count
+    }
+
     /// Returns the underlying program.
     #[must_use]
     pub fn program(&self) -> &Program {
@@ -774,7 +800,8 @@ pub enum VerifyError {
         declared: ValueType,
     },
     /// A global instruction, such as `global.get`, or a host object field instruction, such as
-    /// `obj.field`, names a register that holds neither a scalar nor a host object
+    /// `obj.field`, names a register that holds no inline value: a scalar, a host object or a
+    /// function reference
     /// ([`ValueType::is_inline`]).
     InlineRegisterRequired {
         /// Function index.
@@ -1124,7 +1151,7 @@ impl VerifyError {
             Self::InlineRegisterRequired { reg, declared, .. } => {
                 write!(
                     f,
-                    "{reg} declared {declared:?}, required a scalar or host object"
+                    "{reg} declared {declared:?}, required a scalar, host object or function reference"
                 )
             }
             Self::GlobalOutOfRange { index, .. } => {
@@ -1404,6 +1431,7 @@ fn verify_owned(
     match verify_functions(&program, cfg, collect_lints) {
         Ok((verified_functions, init_tables, lints)) => Ok((
             VerifiedProgram {
+                global_count: global_count(&verified_functions),
                 program,
                 verified_functions,
                 init_tables,
@@ -4642,7 +4670,7 @@ fn check_global(func: FuncId, pc: u32, index: u32) -> Result<(), VerifyError> {
     }
 }
 
-/// Checks that `reg` holds an inline value: a scalar or a host object, whose value is
+/// Checks that `reg` holds an inline value: a scalar, a host object or a function reference, whose value is
 /// complete without the VM's heaps, so a global or a host can keep it.
 fn check_inline(
     func: FuncId,

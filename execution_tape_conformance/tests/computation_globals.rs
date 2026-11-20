@@ -300,7 +300,7 @@ fn the_verifier_requires_inline_registers_and_bounded_indexes() {
     );
     assert_eq!(
         verify(&build(ValueType::Str, 0)).unwrap_err().to_string(),
-        "function #0, pc 0: r1 declared Str, required a scalar or host object"
+        "function #0, pc 0: r1 declared Str, required a scalar, host object or function reference"
     );
 }
 
@@ -324,6 +324,11 @@ fn global_opcodes_are_prefixed_with_a_disassembly() {
     assert_eq!(has.dst(), Some(Reg(2)));
     let set = instrs.next().unwrap();
     assert!(set.to_string().contains("global.set"), "{set}");
+    assert_eq!(
+        set.input_index(),
+        Some(execution_tape::disasm::InputIndex::Index(0))
+    );
+    assert_eq!(g.program.global_count(), 2);
     assert_eq!(set.reads().collect::<Vec<_>>(), [Reg(1)]);
 }
 

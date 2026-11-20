@@ -318,6 +318,10 @@ fn field_opcodes_are_prefixed_with_a_disassembly() {
         execution_tape::disasm::disassemble_function(f.program.program(), f.link).unwrap();
     let store = disassembly.instrs().next().unwrap();
     assert!(store.to_string().contains("obj.set_field"), "{store}");
+    assert_eq!(
+        store.input_index(),
+        Some(execution_tape::disasm::InputIndex::Index(1))
+    );
     assert_eq!(store.dst(), None);
     assert_eq!(store.reads().collect::<Vec<_>>(), [Reg(1), Reg(2)]);
 }
@@ -415,4 +419,68 @@ fn bound_hosts_answer_fields_from_their_state() {
         .trap,
         Trap::NoObjectField { .. }
     ));
+}
+
+#[test]
+fn replay_compares_float_fields_by_their_bits() {
+    // `swap(p)` reads field 0 and stores it back, which holds whatever float the host has.
+    let mut b = ProgramBuilder::new();
+    let swap = b
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::Obj(POINTS)],
+            ret_types: vec![ValueType::F64],
+        })
+        .unwrap();
+    let mut a = b.function_asm(swap).unwrap();
+    let value = a.alloc_register(ValueType::F64);
+    a.obj_field(value, Reg(1), 0)
+        .obj_set_field(Reg(1), 0, value)
+        .ret(Reg::EFFECT, &[value]);
+    b.define_function(swap, a).unwrap();
+    let program = Arc::new(b.build_verified().unwrap());
+
+    /// One point whose field 0 holds any `f64`.
+    struct Floats(f64);
+    impl Host for Floats {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            _: &[ValueRef<'_>],
+            _: &mut [Value],
+            _: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            Err(HostError::Failed)
+        }
+        fn object_field(&self, _: Obj, field: u32) -> Option<Value> {
+            (field == 0).then_some(Value::F64(self.0))
+        }
+        fn set_object_field(&mut self, _: Obj, field: u32, value: Value) -> bool {
+            match (field, value) {
+                (0, Value::F64(value)) => {
+                    self.0 = value;
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+    for float in [f64::NAN, -0.0, 0.0] {
+        let mut vm = Vm::new(Floats(float), Limits::default());
+        let unit = vm.install(Arc::clone(&program)).unwrap();
+        let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+        vm.run(
+            FuncRef::new(unit, swap),
+            &[point(0)],
+            recorder.mask(),
+            Some(&mut recorder),
+        )
+        .unwrap();
+        let recording = recorder.finish();
+        recording.status().unwrap();
+        assert!(
+            matches!(recording.replay().unwrap(), ReplayOutcome::Returned(_)),
+            "a recording of {float} replays"
+        );
+    }
 }
