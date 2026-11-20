@@ -1103,6 +1103,7 @@ fn wide_open_limits() -> Limits {
         max_contract_work: u64::MAX,
         max_aggregate_work: u64::MAX,
         max_payload_work: u64::MAX,
+        call_depth_exception: None,
     }
 }
 

@@ -33,7 +33,9 @@ use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, ContReg, DecimalReg, ExecFunc, ExecInstr, ExnReg,
     F32Reg, F64Reg, FuncReg, I32Reg, I64Reg, ObjReg, StrReg, U32Reg, U64Reg, VReg, VRegSlice,
 };
-use crate::value::{AggHandle, Closure, Decimal, FuncId, FuncRef, Obj, ObjHandle, UnitId, Value};
+use crate::value::{
+    AggHandle, Closure, Decimal, FuncId, FuncRef, Obj, ObjHandle, TagRef, UnitId, Value,
+};
 use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
@@ -87,6 +89,9 @@ pub struct Limits {
     pub fuel: u64,
     /// Maximum call depth (frames) of one computation, counting the frames its unresumed
     /// continuations hold.
+    ///
+    /// A call that would pass it traps with [`Trap::CallDepthExceeded`], or throws
+    /// [`Self::call_depth_exception`]'s tag when that is set.
     pub max_call_depth: usize,
     /// Maximum frames the VM's computations hold together: the running one's and every saved
     /// computation's (65,536 by default).
@@ -135,6 +140,38 @@ pub struct Limits {
     /// frames, retained results, arbitrary host allocations/effects, preparation, capture, and graph-adapter
     /// imports are outside this budget. Set `u64::MAX` for the maximum supported budget.
     pub max_payload_work: u64,
+    /// What a guest call that would pass [`Self::max_call_depth`] throws instead of trapping,
+    /// so the guest can handle running out of stack; `None` (the default) traps.
+    pub call_depth_exception: Option<CallDepthException>,
+}
+
+/// A tag a guest call throws, instead of trapping with [`Trap::CallDepthExceeded`], when it
+/// would make its computation deeper than [`Limits::max_call_depth`], and the frames the
+/// computation may then use to handle it.
+///
+/// The call pushes no frame: it throws `tag`, with no payload, at the call instruction, as
+/// `throw` would there. A `call`, `call_indirect`, `call_link` or `cont_new` throws; a host
+/// callback or entry into the guest traps as before. From the throw on, the computation may
+/// hold up to `max_call_depth + headroom` frames, room for the handlers the exception runs,
+/// and a call past that traps with [`Trap::CallDepthExceeded`]. The tag is not thrown again
+/// until a catch takes the headroom back: a catch of another exception that lands with the
+/// computation holding fewer than `max_call_depth` frames, or a catch of this tag that lands
+/// at least `headroom` frames under it, so that a catcher just under the limit still leaves
+/// its handlers the headroom. A handler that recurses without end traps rather than throwing
+/// forever.
+///
+/// The headroom belongs to the turn: each turn starts without it, so a saved computation
+/// resumed in a later turn while it holds more than `max_call_depth` frames throws again at
+/// its first call.
+///
+/// `tag` must be a tag of the VM with no payload; a call that would throw any other traps
+/// with [`Trap::UnknownTag`] or [`Trap::ArityMismatch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallDepthException {
+    /// The tag the call throws.
+    pub tag: TagRef,
+    /// Frames the computation may hold beyond [`Limits::max_call_depth`] after the throw.
+    pub headroom: usize,
 }
 
 /// Logical aggregate and byte/string work, separate from instruction fuel and contract checks.
@@ -229,6 +266,7 @@ impl Default for Limits {
             max_contract_work: 1_000_000,
             max_aggregate_work: 1_000_000,
             max_payload_work: 64 * 1024 * 1024,
+            call_depth_exception: None,
         }
     }
 }
@@ -406,7 +444,7 @@ pub enum Trap {
     /// A host raised a tag that this VM never issued.
     UnknownTag {
         /// Requested tag.
-        tag: crate::value::TagRef,
+        tag: TagRef,
     },
     /// An exception reference would cross the turn boundary.
     ///
@@ -435,14 +473,14 @@ pub enum Trap {
     /// `suspend` found no `on` clause for its tag on any `resume` that encloses it.
     UnhandledSuspension {
         /// The suspended VM tag.
-        tag: crate::value::TagRef,
+        tag: TagRef,
     },
     /// A suspension would capture a pending host request and the guest callback it entered.
     ///
     /// Continuations hold guest activations only; a host request cannot be suspended inside one.
     SuspensionAcrossHost {
         /// The suspended VM tag.
-        tag: crate::value::TagRef,
+        tag: TagRef,
     },
     /// A guest exception escaped every activation of the turn.
     ///
@@ -2013,10 +2051,27 @@ impl<H: Host> Vm<H> {
                     func,
                 } => {
                     let target = ctx.read_func(base, *func);
-                    let cont = self
-                        .cont_new(ctx, budget, unit_id, *call_sig, target, None)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                    ctx.write_cont(base, *dst, cont);
+                    let cont = self.cont_new(ctx, budget, unit_id, *call_sig, target, None);
+                    match cont {
+                        Ok(cont) => ctx.write_cont(base, *dst, cont),
+                        Err(trap) => {
+                            self.refuse_call::<P>(
+                                ctx,
+                                budget,
+                                program,
+                                trap,
+                                trace,
+                                control,
+                                TraceLocation {
+                                    unit: unit_id,
+                                    func: func_id,
+                                    pc: Pc(pc),
+                                },
+                                span_id,
+                            )?;
+                            continue;
+                        }
+                    }
                 }
                 ExecInstr::ContNewClosure {
                     dst,
@@ -2024,17 +2079,34 @@ impl<H: Host> Vm<H> {
                     func,
                 } => {
                     let closure = ctx.read_closure(base, *func);
-                    let cont = self
-                        .cont_new(
-                            ctx,
-                            budget,
-                            unit_id,
-                            *call_sig,
-                            closure.func,
-                            Some(closure.env),
-                        )
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                    ctx.write_cont(base, *dst, cont);
+                    let cont = self.cont_new(
+                        ctx,
+                        budget,
+                        unit_id,
+                        *call_sig,
+                        closure.func,
+                        Some(closure.env),
+                    );
+                    match cont {
+                        Ok(cont) => ctx.write_cont(base, *dst, cont),
+                        Err(trap) => {
+                            self.refuse_call::<P>(
+                                ctx,
+                                budget,
+                                program,
+                                trap,
+                                trace,
+                                control,
+                                TraceLocation {
+                                    unit: unit_id,
+                                    func: func_id,
+                                    pc: Pc(pc),
+                                },
+                                span_id,
+                            )?;
+                            continue;
+                        }
+                    }
                 }
                 ExecInstr::ContBind {
                     dst,
@@ -3739,9 +3811,23 @@ impl<H: Host> Vm<H> {
                     rets: dst_rets,
                     args_proved,
                 } => {
-                    budget
-                        .admit_frame()
-                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                    if let Err(trap) = budget.admit_frame() {
+                        self.refuse_call::<P>(
+                            ctx,
+                            budget,
+                            program,
+                            trap,
+                            trace,
+                            control,
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc: Pc(pc),
+                            },
+                            span_id,
+                        )?;
+                        continue;
+                    }
 
                     let callee_fn = program_ref
                         .functions
@@ -4189,9 +4275,23 @@ impl<H: Host> Vm<H> {
                     rets: dst_rets,
                     args_proved,
                 } => {
-                    budget
-                        .admit_frame()
-                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                    if let Err(trap) = budget.admit_frame() {
+                        self.refuse_call::<P>(
+                            ctx,
+                            budget,
+                            program,
+                            trap,
+                            trace,
+                            control,
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc: Pc(pc),
+                            },
+                            span_id,
+                        )?;
+                        continue;
+                    }
 
                     // The target may belong to any installed unit; it runs that unit's code.
                     let target = ctx.read_func(base, *callee);
@@ -4275,9 +4375,23 @@ impl<H: Host> Vm<H> {
                     rets: dst_rets,
                     args_proved,
                 } => {
-                    budget
-                        .admit_frame()
-                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                    if let Err(trap) = budget.admit_frame() {
+                        self.refuse_call::<P>(
+                            ctx,
+                            budget,
+                            program,
+                            trap,
+                            trace,
+                            control,
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc: Pc(pc),
+                            },
+                            span_id,
+                        )?;
+                        continue;
+                    }
 
                     let callee = ctx.read_closure(base, *callee);
                     let target = callee.func;
@@ -4418,9 +4532,23 @@ impl<H: Host> Vm<H> {
                     args_proved,
                     ..
                 } => {
-                    budget
-                        .admit_frame()
-                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                    if let Err(trap) = budget.admit_frame() {
+                        self.refuse_call::<P>(
+                            ctx,
+                            budget,
+                            program,
+                            trap,
+                            trace,
+                            control,
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc: Pc(pc),
+                            },
+                            span_id,
+                        )?;
+                        continue;
+                    }
 
                     // The calling unit's link names the target now. Relinking admitted only
                     // installed functions with the link's exact signature, so the target needs

@@ -16,6 +16,18 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Let a guest handle running out of call depth. `Limits::call_depth_exception` names a
+  payload-free VM tag (`CallDepthException { tag, headroom }`) that a `call`,
+  `call_indirect`, `call_link` or `cont_new` past `max_call_depth` throws at the call instead
+  of trapping with `Trap::CallDepthExceeded`, so a language can signal a stack-overflow
+  condition its programs catch, as JVMs and Dylan implementations do. The computation then
+  may hold `headroom` more frames, room for the handlers; past that a call traps. The tag is
+  not thrown again until a catch lands back under the limit (a catch of the tag itself only
+  when the whole headroom is below the limit, so its handlers keep it), so a handler that
+  keeps recursing traps instead of throwing without end. It defaults to `None`,
+  which traps as before; nothing changes on the call path until a call is refused. Recordings
+  keep the limits, so replay throws at the same call.
+
 - Decode UTF-8 from a host object's bytes without a host call. `obj.utf8_next scalar, next,
   missing, obj, pos` (`0xFC 0x22`) decodes the scalar starting at byte `pos` of the bytes
   `Host::object_bytes` lends, and `obj.utf8_prev` (`0xFC 0x23`) the one ending there. A

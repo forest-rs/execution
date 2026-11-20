@@ -276,7 +276,12 @@ Traversals are iterative; sharing does not cause repeated expansion of proven su
 
 - `fuel`: each executable instruction costs one; `dec_div` charges its long-division steps and
   successful host calls may charge additional fuel.
-- `max_call_depth`: caps guest frames.
+- `max_call_depth`: caps guest frames. A guest call past it traps, or, with
+  `call_depth_exception` set, throws that payload-free VM tag at the call (`call`,
+  `call_indirect`, `call_link` and `cont_new`; host callbacks and entries still trap). The
+  computation then has `headroom` more frames for the handlers, and the tag is not thrown again
+  until a catch lands back under the limit (for a catch of the tag itself, `headroom` frames
+  under it).
 - `max_host_calls`: caps executed host calls.
 - `max_contract_work`: bounds boundary-contract traversal as described above.
 - `max_payload_work`: bounds logical byte/string copying and comparison work (64 MiB by default).
