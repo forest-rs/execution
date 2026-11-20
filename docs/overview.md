@@ -249,6 +249,13 @@ its buffers between instructions. `obj.utf8_next` and `obj.utf8_prev` decode one
 at a byte position and report a position with no scalar through a flag instead of a trap, so a
 tokenizer's scan costs about 20 ns per scalar against about 80 ns with a host call per scalar.
 
+### Host object fields
+`obj.field` and `obj.set_field` read and store a host object's fields, numbered as the host
+likes, through `Host::object_field` and `Host::set_object_field`, for about 8–10 ns against
+about 47 ns through a host import in the `object_state` bench. A field holds a scalar, a host
+object or a function reference. A store is the host's own, so a host that logs stores to undo
+them does so here too. Recordings keep each read and store, so replay needs no host.
+
 ### Computation globals
 `global.set` keeps a scalar or host object in one of a unit's globals for the rest of a
 computation, and `global.has` and `global.get` read it back, so a guest computes something once

@@ -46,6 +46,9 @@ pub struct Recorder {
     queries: Vec<RecordedObjectQuery>,
     /// Distinct object bytes that queries answered, which [`ObjectAnswer::Bytes`] indexes.
     object_bytes: Vec<Arc<[u8]>>,
+    /// The values field reads answered and field stores wrote; see
+    /// [`Recording::object_values`].
+    object_values: Vec<crate::value::Value>,
     /// Index of each distinct content in `object_bytes`.
     object_bytes_index: BTreeMap<Arc<[u8]>, usize>,
     /// The bytes of each object read since host code last ran, by [`super::object_id`]. Later
@@ -104,6 +107,7 @@ impl Recorder {
             calls: Vec::new(),
             queries: Vec::new(),
             object_bytes: Vec::new(),
+            object_values: Vec::new(),
             object_bytes_index: BTreeMap::new(),
             object_bytes_seen: BTreeMap::new(),
             commands: Vec::new(),
@@ -186,6 +190,7 @@ impl Recorder {
             calls: self.calls,
             queries: self.queries,
             object_bytes: self.object_bytes,
+            object_values: self.object_values,
             commands: self.commands,
             suspensions: self.suspensions,
             frames: self.frames,
@@ -606,6 +611,39 @@ impl Recorder {
                 object,
                 bytes,
             } => self.object_bytes(location, object, bytes)?,
+            ValueEvent::ObjectField {
+                location,
+                object,
+                field,
+                value,
+            } => {
+                self.admit_query(location)?;
+                let value = value.map(|value| {
+                    self.object_values.push(value.clone());
+                    self.object_values.len() - 1
+                });
+                self.query(location, object, ObjectAnswer::Field { field, value })?;
+            }
+            ValueEvent::ObjectFieldSet {
+                location,
+                object,
+                field,
+                value,
+                accepted,
+            } => {
+                self.admit_query(location)?;
+                self.object_values.push(value.clone());
+                let value = self.object_values.len() - 1;
+                self.query(
+                    location,
+                    object,
+                    ObjectAnswer::FieldSet {
+                        field,
+                        value,
+                        accepted,
+                    },
+                )?;
+            }
             ValueEvent::SuspensionYielded {
                 location,
                 tag,
@@ -1063,7 +1101,9 @@ impl TraceSink for Recorder {
             | ValueEvent::SuspensionAnswered { location, .. }
             | ValueEvent::ObjectKey { location, .. }
             | ValueEvent::ObjectConversion { location, .. }
-            | ValueEvent::ObjectBytes { location, .. } => location.unit,
+            | ValueEvent::ObjectBytes { location, .. }
+            | ValueEvent::ObjectField { location, .. }
+            | ValueEvent::ObjectFieldSet { location, .. } => location.unit,
         };
         let location = match event {
             ValueEvent::Entry { .. }
@@ -1083,7 +1123,9 @@ impl TraceSink for Recorder {
             | ValueEvent::SuspensionAnswered { location, .. }
             | ValueEvent::ObjectKey { location, .. }
             | ValueEvent::ObjectConversion { location, .. }
-            | ValueEvent::ObjectBytes { location, .. } => Some(location),
+            | ValueEvent::ObjectBytes { location, .. }
+            | ValueEvent::ObjectField { location, .. }
+            | ValueEvent::ObjectFieldSet { location, .. } => Some(location),
         };
         if self.check_at(program, unit)
             && let Err(error) = self.capture(event)

@@ -400,6 +400,24 @@ pub enum ObjectAnswer {
     /// checked against the recording, so a replay that diverges among them is reported at the
     /// next recorded boundary or at its outcome.
     Bytes(Option<usize>),
+    /// The value an `obj.field` read ([`crate::host::Host::object_field`]), as an index into
+    /// [`Recording::object_values`]; `None` trapped with [`crate::vm::Trap::NoObjectField`].
+    Field {
+        /// The field.
+        field: u32,
+        /// The host's answer.
+        value: Option<usize>,
+    },
+    /// A store `obj.set_field` made ([`crate::host::Host::set_object_field`]): the value, as an
+    /// index into [`Recording::object_values`], and whether the host took it.
+    FieldSet {
+        /// The field.
+        field: u32,
+        /// The value stored.
+        value: usize,
+        /// Whether the host stored it; `false` trapped with [`crate::vm::Trap::NoObjectField`].
+        accepted: bool,
+    },
 }
 
 /// Forgets the object bytes in `seen` that `event` may have invalidated, so the next read of
@@ -439,8 +457,10 @@ fn host_may_run(event: &ValueEvent<'_>) -> bool {
         | ValueEvent::CallbackEnter { .. }
         | ValueEvent::CallbackReturn { .. }
         | ValueEvent::SuspensionYielded { .. }
-        | ValueEvent::SuspensionAnswered { .. } => true,
+        | ValueEvent::SuspensionAnswered { .. }
+        | ValueEvent::ObjectFieldSet { .. } => true,
         ValueEvent::ObjectKey { .. }
+        | ValueEvent::ObjectField { .. }
         | ValueEvent::ObjectConversion { .. }
         | ValueEvent::ObjectBytes { .. }
         | ValueEvent::ReturnCandidate { .. }
@@ -743,6 +763,7 @@ pub struct Recording {
     calls: Vec<Call>,
     queries: Vec<RecordedObjectQuery>,
     object_bytes: Vec<Arc<[u8]>>,
+    object_values: Vec<crate::value::Value>,
     commands: Vec<control::Command>,
     suspensions: Vec<Yielded>,
     frames: Vec<frames::Frame>,
@@ -933,6 +954,14 @@ impl Recording {
     #[must_use]
     pub fn object_bytes(&self) -> &[Arc<[u8]>] {
         &self.object_bytes
+    }
+
+    /// The values host object field reads answered and field stores wrote, in order, which
+    /// [`ObjectAnswer::Field`] and [`ObjectAnswer::FieldSet`] index. They are inline values
+    /// ([`ValueType::is_inline`]), which hold nothing the recording must capture apart.
+    #[must_use]
+    pub fn object_values(&self) -> &[crate::value::Value] {
+        &self.object_values
     }
 
     /// Iterates captured embedding commands in admission order, without expanding value graphs.

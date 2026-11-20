@@ -925,6 +925,15 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.srcs = vec![src];
             view.input_index = Some(InputIndex::Index(index));
         }
+        Instr::ObjField { dst, obj, field } => {
+            view.dst = Some(dst);
+            view.srcs = vec![obj];
+            view.input_index = Some(InputIndex::Index(field));
+        }
+        Instr::ObjSetField { obj, field, src } => {
+            view.srcs = vec![obj, src];
+            view.input_index = Some(InputIndex::Index(field));
+        }
         Instr::DecScale { dst, a } => {
             view.dst = Some(dst);
             view.srcs = vec![a];

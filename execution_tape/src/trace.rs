@@ -563,6 +563,40 @@ pub enum ValueEvent<'a> {
         /// The host's answer, borrowed for this event only.
         bytes: Option<&'a [u8]>,
     },
+    /// An `obj.field` asked the host for a field of an object
+    /// ([`crate::host::Host::object_field`]).
+    ///
+    /// Reported for every answer, before the instruction checks and writes the value or traps
+    /// on `None`. Recordings capture these answers so that replay delivers them without the
+    /// host.
+    ObjectField {
+        /// The `obj.field` instruction.
+        location: TraceLocation,
+        /// The object.
+        object: Obj,
+        /// The field.
+        field: u32,
+        /// The host's answer, borrowed for this event only.
+        value: Option<&'a Value>,
+    },
+    /// An `obj.set_field` stored into a field of an object
+    /// ([`crate::host::Host::set_object_field`]).
+    ///
+    /// Reported after the host's store, before the instruction traps on a refusal. The host
+    /// ran, so recordings treat this as host code that ran. They capture the store, and replay
+    /// checks that the guest stores the same value there and answers it without the host.
+    ObjectFieldSet {
+        /// The `obj.set_field` instruction.
+        location: TraceLocation,
+        /// The object.
+        object: Obj,
+        /// The field.
+        field: u32,
+        /// The value stored, borrowed for this event only.
+        value: &'a Value,
+        /// Whether the host stored it.
+        accepted: bool,
+    },
     /// Newly materialized top-level outputs, before aggregate validation and compaction.
     ///
     /// The slice excludes any pre-existing caller output-buffer prefix. It may contain dangling
@@ -731,6 +765,32 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("location", location)
                 .field("object", object)
                 .field("len", &bytes.map(<[u8]>::len))
+                .finish(),
+            Self::ObjectField {
+                location,
+                object,
+                field,
+                value,
+            } => f
+                .debug_struct("ObjectField")
+                .field("location", location)
+                .field("object", object)
+                .field("field", field)
+                .field("value", value)
+                .finish(),
+            Self::ObjectFieldSet {
+                location,
+                object,
+                field,
+                value,
+                accepted,
+            } => f
+                .debug_struct("ObjectFieldSet")
+                .field("location", location)
+                .field("object", object)
+                .field("field", field)
+                .field("value", value)
+                .field("accepted", accepted)
                 .finish(),
             Self::Collected { report, aggregates } => f
                 .debug_struct("Collected")

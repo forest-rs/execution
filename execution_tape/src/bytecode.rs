@@ -365,6 +365,10 @@ pub(crate) enum Instr {
     GlobalGet { dst: u32, index: u32 },
     /// `global[index] = src` (a scalar or `Obj`).
     GlobalSet { index: u32, src: u32 },
+    /// `dst = host.object_field(obj, field)` (a scalar or `Obj`).
+    ObjField { dst: u32, obj: u32, field: u32 },
+    /// `host.set_object_field(obj, field, src)` (a scalar or `Obj`).
+    ObjSetField { obj: u32, field: u32, src: u32 },
     /// `dst = i32`.
     ConstI32 { dst: u32, imm: i32 },
     /// `dst = u32`.

@@ -16,18 +16,32 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Read and store host object fields in the guest. `obj.field dst, obj, field` (`0xFC 0x27`)
+  writes the value `Host::object_field(obj, field)` returns, and `obj.set_field obj, field,
+  src` (`0xFC 0x28`) calls `Host::set_object_field`, so a language reads and writes an
+  instance's slots without a host call: about 10 ns against 47 ns through a host import in the
+  new `object_state` bench, and 8 ns against 47 ns for a store. Fields hold inline values
+  (`ValueType::is_inline`); a missing field or refused store traps with
+  `Trap::NoObjectField`, and a value of another type with `Trap::TypeMismatch`. The store is
+  the host's own, so a host that logs stores to undo them does so here too.
+  `BoundHost::with_object_fields` answers for a bound host. Reads and stores are observed as
+  `ValueEvent::ObjectField` and `ValueEvent::ObjectFieldSet`, recorded as host object queries
+  (`ObjectAnswer::Field`, `ObjectAnswer::FieldSet`, with their values in
+  `Recording::object_values`), and replayed without the host, which checks each store's
+  field and value (`Divergence::ObjectField`).
 - Keep values for the rest of a computation. `global.set index, src` (`0xFC 0x26`) stores a
   scalar, host object or function reference (`ValueType::is_inline`) in one of the unit's
   globals, below `MAX_GLOBALS`, and `global.has` (`0xFC 0x24`) and `global.get` (`0xFC 0x25`)
   read it back, so a guest caches what it computed once, such as a constant's value or an
-  object a host call made, instead of asking again. Every computation starts with its globals
+  object a host call made, instead of asking again: about 8 ns against 32 ns through a host
+  import in the `object_state` bench. Every computation starts with its globals
   unset and keeps them, across its turns, until it finishes. `global.get` traps with
   `Trap::GlobalUnset` or `Trap::TypeMismatch`; the verifier rejects other register types
   (`VerifyError::InlineRegisterRequired`) and larger indexes (`VerifyError::GlobalOutOfRange`).
 - Compare host objects in the guest. `obj.eq dst, a, b` (`0xFC 0x0F`) writes whether two
   objects are the same host type and handle, without asking the host, so a language whose host
   gives each object one handle tests identity, such as `==` on a symbol, with one instruction
-  instead of a host call.
+  instead of a host call: about 3 ns against 52 ns in the `object_state` bench.
 - Let a guest handle running out of call depth. `Limits::call_depth_exception` names a
   payload-free VM tag (`CallDepthException { tag, headroom }`) that a `call`,
   `call_indirect`, `call_link` or `cont_new` past `max_call_depth` throws at the call instead

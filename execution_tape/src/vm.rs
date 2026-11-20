@@ -433,6 +433,15 @@ pub enum Trap {
         object: Obj,
     },
 
+    /// `obj.field` read a field the host object has not, or `obj.set_field` stored into one
+    /// the host refused: [`Host::object_field`] returned `None`, or [`Host::set_object_field`]
+    /// returned `false`.
+    NoObjectField {
+        /// The object.
+        object: Obj,
+        /// The field.
+        field: u32,
+    },
     /// `global.get` read a global this computation has stored nothing in.
     GlobalUnset {
         /// The global's index.
@@ -592,6 +601,11 @@ impl fmt::Display for Trap {
             Self::IntDivOverflow => write!(f, "integer division overflow"),
             Self::FloatToIntInvalid => write!(f, "float to int invalid"),
             Self::ClampBoundsInvalid => write!(f, "clamp bounds invalid"),
+            Self::NoObjectField { object, field } => write!(
+                f,
+                "the host has no field {field} for object {:#x} of host type {:#x}",
+                object.handle.0, object.host_type.0
+            ),
             Self::GlobalUnset { index } => {
                 write!(f, "global {index} holds no value in this computation")
             }
@@ -2915,6 +2929,70 @@ impl<H: Host> Vm<H> {
                     ctx.write_u32(base, *scalar, decoded_scalar);
                     ctx.write_u64(base, *next, moved);
                     ctx.write_bool(base, *missing, decoded.is_none());
+                }
+                ExecInstr::ObjField {
+                    dst,
+                    obj,
+                    field,
+                    ty,
+                } => {
+                    let object = ctx.read_obj(base, *obj);
+                    let value = self.host.object_field(object, *field);
+                    P::values(trace, program_ref, || ValueEvent::ObjectField {
+                        location: TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        },
+                        object,
+                        field: *field,
+                        value: value.as_ref(),
+                    });
+                    let Some(value) = value else {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::NoObjectField {
+                                object,
+                                field: *field,
+                            },
+                        ));
+                    };
+                    // The register holds only values of its declared type, host type included,
+                    // and inline ones, which the host may not have kept to.
+                    if let Err(trap) = value.check_type(*ty) {
+                        return Err(ctx.trap(func_id, pc, span_id, trap));
+                    }
+                    ctx.write_inline_value(base, *dst, &value)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                }
+                ExecInstr::ObjSetField { obj, field, src } => {
+                    let object = ctx.read_obj(base, *obj);
+                    let value = ctx.read_inline_value(base, *src);
+                    let accepted = self.host.set_object_field(object, *field, value.clone());
+                    P::values(trace, program_ref, || ValueEvent::ObjectFieldSet {
+                        location: TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        },
+                        object,
+                        field: *field,
+                        value: &value,
+                        accepted,
+                    });
+                    if !accepted {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::NoObjectField {
+                                object,
+                                field: *field,
+                            },
+                        ));
+                    }
                 }
                 ExecInstr::GlobalHas { dst, index } => {
                     let set = ctx.global(unit_id, *index).is_some();

@@ -773,8 +773,8 @@ pub enum VerifyError {
         /// Declared kind.
         declared: ValueType,
     },
-    /// A global instruction, such as `global.get`, or a host object field instruction names a
-    /// register that holds neither a scalar nor a host object
+    /// A global instruction, such as `global.get`, or a host object field instruction, such as
+    /// `obj.field`, names a register that holds neither a scalar nor a host object
     /// ([`ValueType::is_inline`]).
     InlineRegisterRequired {
         /// Function index.
@@ -2901,6 +2901,19 @@ fn verify_function_bytecode(
                 index: *index,
                 src: map(*src)?,
             },
+            Instr::ObjField { dst, obj, field } => ExecInstr::ObjField {
+                dst: map(*dst)?,
+                obj: map_object(*obj)?,
+                field: *field,
+                ty: register_types
+                    .get(Reg(*dst))
+                    .expect("mapped register has a declared kind"),
+            },
+            Instr::ObjSetField { obj, field, src } => ExecInstr::ObjSetField {
+                obj: map_object(*obj)?,
+                field: *field,
+                src: map(*src)?,
+            },
             Instr::ConstI32 { dst, imm } => ExecInstr::ConstI32 {
                 dst: map_i32(*dst)?,
                 imm: *imm,
@@ -4841,6 +4854,10 @@ fn validate_instr_types(
         Instr::GlobalHas { index, .. } => check_global(func_id, pc, *index)?,
         Instr::GlobalGet { dst: reg, index } | Instr::GlobalSet { index, src: reg } => {
             check_global(func_id, pc, *index)?;
+            check_inline(func_id, pc, *reg, t(*reg))?;
+        }
+        Instr::ObjField { dst: reg, obj, .. } | Instr::ObjSetField { obj, src: reg, .. } => {
+            check_object(func_id, pc, *obj, t(*obj))?;
             check_inline(func_id, pc, *reg, t(*reg))?;
         }
         Instr::ConstI32 { .. } | Instr::ConstU32 { .. } | Instr::ConstF32 { .. } => {}
