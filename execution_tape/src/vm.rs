@@ -2767,6 +2767,10 @@ impl<H: Host> Vm<H> {
                     };
                     ctx.write_obj(base, *dst, result);
                 }
+                ExecInstr::ObjEq { dst, a, b } => {
+                    let same = ctx.read_obj(base, *a) == ctx.read_obj(base, *b);
+                    ctx.write_bool(base, *dst, same);
+                }
                 ExecInstr::ObjBytesLen { dst, obj } => {
                     let object = ctx.read_obj(base, *obj);
                     let len = read_object_bytes::<H, P, _>(

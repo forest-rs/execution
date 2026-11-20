@@ -171,9 +171,10 @@ promotion rules live in its compiler.
 - `handle: u64` (embedder-defined identity)
 
 Constraints:
-- No guest equality/hash/ordering operations on objects. A guest can read an object's *key*
-  with `obj.key` (see [Host object queries](#host-object-queries)): a `u64` the embedder
-  chooses, such as the object's class, which guests compare as ordinary integers.
+- No guest hash/ordering operations on objects. A guest can compare two objects' host types
+  and handles with `obj.eq`, and read an object's *key* with `obj.key` (see
+  [Host object queries](#host-object-queries)): a `u64` the embedder chooses, such as the
+  object's class, which guests compare as ordinary integers.
 - No portable runtime value archive is defined. Snapshots and recordings may retain opaque
   tokens, but do not reconstruct external object state.
 - Host calls may accept/return `Obj` values, and the verifier checks that host signatures match.
@@ -1234,6 +1235,12 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
     usually with `obj.key`; a conversion that must allocate or fail recoverably is a host call.
   - Observed as `ValueEvent::ObjectConversion`, including refusals, and recorded and replayed as a
     host object query like `obj.key`.
+- `obj.eq r_dst, r_a, r_b`
+  - `r_a` and `r_b` hold `Obj`s, of any host types, and `r_dst` is `Bool`. Writes whether the
+    two are the same host type and handle. The host is not asked: no host call, query or
+    observation. A host that gives each object one handle while it lives makes this the
+    objects' identity; one whose objects may have several handles answers identity through a
+    host call. Fuel cost: one instruction.
 - `obj.bytes_len r_dst, r_obj` and `obj.bytes_get r_dst, r_obj, r_index`
   - `r_obj` holds an `Obj` of any host type; `r_index` and `r_dst` are `U64`. Both read the
     bytes the host lends through `Host::object_bytes(obj, read)`, such as a string's UTF-8:
@@ -1384,6 +1391,7 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x0C f64.clamp dst, a, lo, hi` (traps with `ClampBoundsInvalid` unless `lo <= hi`)
 - `0xFC 0x0D obj.key dst, obj` (see [Host object queries](#host-object-queries))
 - `0xFC 0x0E obj.convert dst, obj` (see [Host object queries](#host-object-queries))
+- `0xFC 0x0F obj.eq dst, a, b` (see [Host object queries](#host-object-queries))
 
 `f64` math intrinsics (`0xFC 0x10..=0x1F`, ordered like the `f32` block at `0xFD 0xA0`; see
 [Math intrinsics](#math-intrinsics)):

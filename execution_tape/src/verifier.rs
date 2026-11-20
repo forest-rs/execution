@@ -2815,6 +2815,11 @@ fn verify_function_bytecode(
                     _ => unreachable!("an object register is declared `Obj`"),
                 },
             },
+            Instr::ObjEq { dst, a, b } => ExecInstr::ObjEq {
+                dst: map_bool(*dst)?,
+                a: map_object(*a)?,
+                b: map_object(*b)?,
+            },
             Instr::ObjBytesLen { dst, obj } => ExecInstr::ObjBytesLen {
                 dst: map_u64(*dst)?,
                 obj: map_object(*obj)?,
@@ -4732,6 +4737,10 @@ fn validate_instr_types(
         Instr::ObjConvert { dst, obj } => {
             check_object(func_id, pc, *dst, t(*dst))?;
             check_object(func_id, pc, *obj, t(*obj))?;
+        }
+        Instr::ObjEq { a, b, .. } => {
+            check_object(func_id, pc, *a, t(*a))?;
+            check_object(func_id, pc, *b, t(*b))?;
         }
         Instr::ObjBytesLen { obj, .. } => check_object(func_id, pc, *obj, t(*obj))?,
         Instr::ObjBytesGet { obj, index, .. } => {

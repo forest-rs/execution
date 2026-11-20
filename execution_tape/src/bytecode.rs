@@ -337,6 +337,8 @@ pub(crate) enum Instr {
     ObjKey { dst: u32, obj: u32 },
     /// `dst = host.convert_object(obj, dst's host type)` (`Obj` -> `Obj`).
     ObjConvert { dst: u32, obj: u32 },
+    /// `dst = a == b`: the same host type and handle (`Obj`, `Obj` -> `bool`).
+    ObjEq { dst: u32, a: u32, b: u32 },
     /// `dst = host.object_bytes(obj).len()` (`Obj` -> `u64`).
     ObjBytesLen { dst: u32, obj: u32 },
     /// `dst = host.object_bytes(obj)[index]` (`Obj`, `u64` -> `u64`).
