@@ -1123,7 +1123,7 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.dst = Some(dst);
             view.srcs = vec![s];
         }
-        Instr::BytesEq { dst, a, b } | Instr::StrEq { dst, a, b } => {
+        Instr::BytesEq { dst, a, b } | Instr::StrEq { dst, a, b } | Instr::ObjEq { dst, a, b } => {
             view.dst = Some(dst);
             view.srcs = vec![a, b];
         }

@@ -237,7 +237,9 @@ the cost of any other instruction. A dynamic language tests a receiver's class w
 sends it guessed wrong. `obj.convert` likewise asks `Host::convert_object` for an object in
 another representation, such as an untyped boxed receiver unboxed for the method that takes
 it, for about 3 ns against about 44 ns as a host call. Keys and conversions must be pure and
-fixed for their object's life; recordings keep each answer, so replay needs no host.
+fixed for their object's life; recordings keep each answer, so replay needs no host. `obj.eq`
+compares two objects' host types and handles without asking the host at all, which is their
+identity when a host gives each object one handle.
 
 A host can likewise expose an object's bytes, such as a string's UTF-8, through
 `Host::object_bytes`, which `obj.bytes_len` and `obj.bytes_get` read, so a guest scans text

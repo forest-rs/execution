@@ -2309,6 +2309,21 @@ impl Asm {
         self
     }
 
+    /// Encodes `obj.eq dst, a, b`: whether the objects in `a` and `b` are the same host type
+    /// and handle.
+    ///
+    /// `a` and `b` may hold objects of any host types; `dst` is a `bool` register. The host is
+    /// not asked: a host that gives each of its objects one handle for as long as it lives
+    /// makes this the objects' identity, and one that may give an object several handles
+    /// answers its own equality through a host call.
+    pub fn obj_eq(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
+        self.opcode(Opcode::ObjEq);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
     /// Encodes `obj.bytes_len dst, obj`: the length of the bytes the host exposes for the
     /// object in `obj` ([`Host::object_bytes`](crate::host::Host::object_bytes)).
     ///

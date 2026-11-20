@@ -16,6 +16,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Compare host objects in the guest. `obj.eq dst, a, b` (`0xFC 0x0F`) writes whether two
+  objects are the same host type and handle, without asking the host, so a language whose host
+  gives each object one handle tests identity, such as `==` on a symbol, with one instruction
+  instead of a host call.
 - Let a guest handle running out of call depth. `Limits::call_depth_exception` names a
   payload-free VM tag (`CallDepthException { tag, headroom }`) that a `call`,
   `call_indirect`, `call_link` or `cont_new` past `max_call_depth` throws at the call instead

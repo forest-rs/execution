@@ -1015,6 +1015,13 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *obj);
             Ok(())
         },
+        Instr::ObjEq { a, b, dst } => {
+            out.extend_from_slice(&[0xFC, 0x0F]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
         Instr::F64Pow { a, b, dst } => {
             out.extend_from_slice(&[0xFC, 0x10]);
             crate::codec_primitives::write_reg(out, *dst);

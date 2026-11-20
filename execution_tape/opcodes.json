@@ -4419,6 +4419,38 @@
       ]
     },
     {
+      "name": "ObjEq",
+      "mnemonic": "obj.eq",
+      "prefix": "0xFC",
+      "byte": "0x0F",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = a == b` for two host objects: whether they are the same host type and handle (`bool`), without asking the host.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "F64Pow",
       "mnemonic": "f64.pow",
       "prefix": "0xFC",

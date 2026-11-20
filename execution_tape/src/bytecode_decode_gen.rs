@@ -1437,6 +1437,16 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 obj,
             }
         },
+        Opcode::ObjEq => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::ObjEq {
+                dst,
+                a,
+                b,
+            }
+        },
         Opcode::F64Pow => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let a = crate::codec_primitives::read_reg(r)?;

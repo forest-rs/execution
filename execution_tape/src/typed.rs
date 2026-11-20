@@ -680,6 +680,11 @@ pub(crate) enum ExecInstr {
         /// The destination register's host type.
         to: HostTypeId,
     },
+    ObjEq {
+        dst: BoolReg,
+        a: ObjReg,
+        b: ObjReg,
+    },
     ObjBytesLen {
         dst: U64Reg,
         obj: ObjReg,
