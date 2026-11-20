@@ -2423,7 +2423,7 @@ impl Asm {
     /// Encodes `global.get dst, index`: the value this computation stored in this unit's global
     /// `index`.
     ///
-    /// `dst` holds a scalar or a host object ([`ValueType::is_inline`]). The instruction traps
+    /// `dst` holds an inline value ([`ValueType::is_inline`]). The instruction traps
     /// with [`Trap::GlobalUnset`](crate::vm::Trap::GlobalUnset) when the computation has stored
     /// none, and with [`Trap::TypeMismatch`](crate::vm::Trap::TypeMismatch) when it stored a
     /// value of another type.
@@ -2434,7 +2434,7 @@ impl Asm {
         self
     }
 
-    /// Encodes `global.set index, src`: keeps the scalar or host object in `src` in this unit's
+    /// Encodes `global.set index, src`: keeps the inline value in `src` in this unit's
     /// global `index` for the rest of the computation.
     pub fn global_set(&mut self, index: u32, src: Reg) -> &mut Self {
         self.opcode(Opcode::GlobalSet);
@@ -2459,7 +2459,7 @@ impl Asm {
         self
     }
 
-    /// Encodes `obj.set_field obj, field, src`: stores the scalar or host object in `src` in
+    /// Encodes `obj.set_field obj, field, src`: stores the inline value in `src` in
     /// field `field` of the host object in `obj`
     /// ([`Host::set_object_field`](crate::host::Host::set_object_field)).
     ///

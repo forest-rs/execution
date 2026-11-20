@@ -567,3 +567,31 @@ fn returned_values<H: Host>(turn: execution_tape::vm::Turn<'_, H>) -> Vec<Value>
         other => panic!("the computation did not return: {other:?}"),
     }
 }
+
+#[test]
+fn objects_kept_in_globals_are_roots() {
+    // `make` an object, keep it in global 0, overwrite the register, collect, read it back and
+    // check it: only the global holds it across the collection.
+    let mut b = ProgramBuilder::new();
+    let imports = Imports::new(&mut b);
+    let main = b.declare_function(sig(&[], &[])).unwrap();
+    let mut a = b.function_asm(main).unwrap();
+    let held = a.alloc_register(OBJ);
+    imports.make(&mut a, held);
+    a.global_set(0, held);
+    imports.make(&mut a, held);
+    imports.collect(&mut a);
+    a.global_get(held, 0);
+    imports.check(&mut a, held);
+    a.ret(Reg::EFFECT, &[]);
+    b.define_function(main, a).unwrap();
+    let program = Arc::new(b.build_verified().unwrap());
+    let heap = drive(&program, main);
+    let kept = heap.roots_of(0, 1);
+    assert_eq!(kept.len(), 1, "{:?}", heap.collections);
+    assert!(matches!(
+        kept[0].origin,
+        ObjectRootOrigin::Global { index: 0, .. }
+    ));
+    assert_eq!(heap.checkers.len(), 1);
+}

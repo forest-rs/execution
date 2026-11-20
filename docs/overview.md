@@ -257,11 +257,12 @@ object or a function reference. A store is the host's own, so a host that logs s
 them does so here too. Recordings keep each read and store, so replay needs no host.
 
 ### Computation globals
-`global.set` keeps a scalar or host object in one of a unit's globals for the rest of a
+`global.set` keeps a scalar, host object or function reference in one of a unit's globals for the rest of a
 computation, and `global.has` and `global.get` read it back, so a guest computes something once
 per computation, such as a constant's value or an object the host made, and then reads it like
-a register. Each computation starts with its globals unset, and they hold nothing the VM must
-collect.
+a register. Each computation starts with its globals unset. They hold nothing the VM's heaps
+hold; an object a global keeps is a root the host's collector learns of from
+`ComputationInspection::visit_objects`.
 
 ### Guarded links
 A guarded link is an inline cache for a dynamic send. Its callers pass `u64` keys with each call,

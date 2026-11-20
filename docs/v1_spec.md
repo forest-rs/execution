@@ -1314,7 +1314,11 @@ guest reads and stores without a host call. A field holds an inline value
 Each unit has globals, numbered below `MAX_GLOBALS` (65,536), which a computation fills as it
 runs: a cache for what it computes once, such as a constant's value or an object the host made.
 A global holds an *inline* value (`ValueType::is_inline`): a scalar, a host object or a
-function reference, nothing the VM's heaps hold, so collection neither roots nor moves them.
+function reference, nothing the VM's heaps hold, so the VM's collection neither roots nor moves
+them; a host object a global holds is reported to the host's collector by
+`ComputationInspection::visit_objects` (`ObjectRootOrigin::Global`). A computation that stores a
+unit's globals keeps as many as the program names (`VerifiedProgram::global_count`), counted in
+its retained bytes.
 Every computation starts with all of them unset and keeps them, across the turns that resume
 it, until it finishes; its continuations share them. Units' globals are separate, so a unit
 installed to replace another starts its own. Nothing about globals is a host call, observation

@@ -4794,7 +4794,7 @@
       "byte": "0x25",
       "terminator": false,
       "flags": [],
-      "doc": "`dst = global[index]`: the scalar or host object this computation stored in this unit's global `index` (traps when it stored none, or one of another kind).",
+      "doc": "`dst = global[index]`: the inline value (scalar, host object or function reference) this computation stored in this unit's global `index` (traps when it stored none, or one of another kind).",
       "operands": [
         {
           "kind": "reg",
@@ -4818,7 +4818,7 @@
       "byte": "0x26",
       "terminator": false,
       "flags": [],
-      "doc": "`global[index] = src`: keeps a scalar or host object in this unit's global `index` for the rest of the computation.",
+      "doc": "`global[index] = src`: keeps an inline value (scalar, host object or function reference) in this unit's global `index` for the rest of the computation.",
       "operands": [
         {
           "kind": "imm_u32",
@@ -4842,7 +4842,7 @@
       "byte": "0x27",
       "terminator": false,
       "flags": [],
-      "doc": "`dst = host.object_field(obj, field)`: a scalar or host object a host object holds in field `field` (traps when the host has none, or one of another type).",
+      "doc": "`dst = host.object_field(obj, field)`: the inline value (scalar, host object or function reference) a host object holds in field `field` (traps when the host has none, or one of another type).",
       "operands": [
         {
           "kind": "reg",
@@ -4873,7 +4873,7 @@
       "byte": "0x28",
       "terminator": false,
       "flags": [],
-      "doc": "`host.set_object_field(obj, field, src)`: stores a scalar or host object in field `field` of a host object (traps when the host refuses it).",
+      "doc": "`host.set_object_field(obj, field, src)`: stores an inline value (scalar, host object or function reference) in field `field` of a host object (traps when the host refuses it).",
       "operands": [
         {
           "kind": "reg",

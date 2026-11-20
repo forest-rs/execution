@@ -723,6 +723,46 @@ fn check_query(
     Ok(())
 }
 
+/// Checks that the next recorded host object query was asked at `location` about `object`,
+/// as [`check_query`] does, and returns its answer, or `None` past the record, which
+/// [`check_query`] then reports. It counts nothing.
+fn check_place(
+    record: &Recording,
+    state: &mut State,
+    location: TraceLocation,
+    object: Obj,
+) -> Result<Option<ObjectAnswer>, ReplayError> {
+    let index = state.queries;
+    state.boundary = ReplayBoundary::ObjectQuery { index };
+    state.location = Some(location);
+    let Some(recorded) = record.queries.get(index) else {
+        return Ok(None);
+    };
+    if recorded.location != location {
+        return Err(state.mismatch(Divergence::Location {
+            expected: recorded.location,
+            actual: Some(location),
+        }));
+    }
+    if recorded.object != object {
+        return Err(state.mismatch(Divergence::Object {
+            expected: recorded.object,
+            actual: object,
+        }));
+    }
+    Ok(Some(recorded.answer))
+}
+
+/// Whether two field values are the same, comparing floats by their bits, as replay compares
+/// every value: a NaN is the same NaN, and `-0.0` is not `0.0`.
+fn same_values(recorded: Option<&Value>, replayed: Option<&Value>) -> bool {
+    match (recorded, replayed) {
+        (Some(Value::F64(a)), Some(Value::F64(b))) => a.to_bits() == b.to_bits(),
+        (Some(Value::F32(a)), Some(Value::F32(b))) => a.to_bits() == b.to_bits(),
+        (recorded, replayed) => recorded == replayed,
+    }
+}
+
 fn check_sequence(state: &State, expected: usize) -> Result<(), ReplayError> {
     if state.sequence != expected {
         return Err(state.mismatch(Divergence::ObservationOrder {
@@ -1430,29 +1470,30 @@ impl TraceSink for Check<'_> {
                     field,
                     value,
                 } => {
-                    let recorded = self.record.queries.get(state.queries).map(|q| q.answer);
+                    // Where it was read first, then what: a replay that reads elsewhere
+                    // diverges there, whatever field it reads.
+                    let recorded = check_place(self.record, &mut state, location, object)?;
                     let answer = match recorded {
                         Some(ObjectAnswer::Field {
                             field: recorded_field,
                             value: index,
                         }) if recorded_field == field
-                            && index.and_then(|i| self.record.object_values.get(i)) == value =>
+                            && same_values(
+                                index.and_then(|index| self.record.object_values.get(index)),
+                                value,
+                            ) =>
                         {
                             ObjectAnswer::Field {
                                 field,
                                 value: index,
                             }
                         }
-                        Some(_) if state.queries < self.record.queries.len() => {
-                            state.boundary = ReplayBoundary::ObjectQuery {
-                                index: state.queries,
-                            };
-                            state.location = Some(location);
+                        Some(_) => {
                             return Err(state.mismatch(Divergence::ObjectField {
                                 query: state.queries,
                             }));
                         }
-                        _ => ObjectAnswer::Field { field, value: None },
+                        None => ObjectAnswer::Field { field, value: None },
                     };
                     check_query(self.record, &mut state, location, object, answer)?;
                 }
@@ -1463,7 +1504,7 @@ impl TraceSink for Check<'_> {
                     value,
                     accepted,
                 } => {
-                    let recorded = self.record.queries.get(state.queries).map(|q| q.answer);
+                    let recorded = check_place(self.record, &mut state, location, object)?;
                     let answer = match recorded {
                         Some(ObjectAnswer::FieldSet {
                             field: recorded_field,
@@ -1471,7 +1512,7 @@ impl TraceSink for Check<'_> {
                             accepted: recorded_accepted,
                         }) if recorded_field == field
                             && recorded_accepted == accepted
-                            && self.record.object_values.get(index) == Some(value) =>
+                            && same_values(self.record.object_values.get(index), Some(value)) =>
                         {
                             ObjectAnswer::FieldSet {
                                 field,
@@ -1480,10 +1521,6 @@ impl TraceSink for Check<'_> {
                             }
                         }
                         Some(_) => {
-                            state.boundary = ReplayBoundary::ObjectQuery {
-                                index: state.queries,
-                            };
-                            state.location = Some(location);
                             return Err(state.mismatch(Divergence::ObjectField {
                                 query: state.queries,
                             }));

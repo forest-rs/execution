@@ -296,6 +296,13 @@ pub enum ObjectRootOrigin {
         /// Source register number.
         register: Reg,
     },
+    /// A computation global (`global.set`), which the computation keeps until it finishes.
+    Global {
+        /// The unit whose global it is.
+        unit: UnitId,
+        /// The global's index.
+        index: u32,
+    },
     /// An immediate field of a retained or temporary VM aggregate.
     Aggregate {
         /// Heap-local node identity.
@@ -699,8 +706,8 @@ impl<'a> ComputationInspection<'a> {
     ///
     /// Includes initialized registers of active frames and of frames held by unresumed
     /// continuations, the payloads of exceptions those registers reference, borrowed arguments,
-    /// pending callback results, committed outputs and every VM aggregate field (including
-    /// retained results and uncommitted temporaries). Duplicates and no-longer-needed values may
+    /// pending callback results, committed outputs, the computation's globals and every VM
+    /// aggregate field (including retained results and uncommitted temporaries). Duplicates and no-longer-needed values may
     /// occur; this is not a minimal liveness set. No uninitialized register slots are read. The
     /// collector must additionally trace its own heap, globals, snapshots and other external
     /// roots. Object identity, relocation and reclamation belong to that collector. This method
@@ -765,6 +772,20 @@ impl<'a> ComputationInspection<'a> {
                     visit(ObjectRoot {
                         object: *object,
                         origin: ObjectRootOrigin::CallbackResult { index },
+                    });
+                }
+            }
+        }
+        for (unit, globals) in ctx.globals.iter().enumerate() {
+            let unit = UnitId(u32::try_from(unit).expect("unit ids fit u32"));
+            for (index, value) in globals.iter().enumerate() {
+                if let Some(Value::Obj(object)) = value {
+                    visit(ObjectRoot {
+                        object: *object,
+                        origin: ObjectRootOrigin::Global {
+                            unit,
+                            index: u32::try_from(index).expect("globals fit u32"),
+                        },
                     });
                 }
             }

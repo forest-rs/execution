@@ -849,7 +849,7 @@ impl Registers {
         self.arena.clear();
         self.exns.clear();
         self.continuations.clear();
-        self.globals.clear();
+        self.clear_globals();
     }
 
     /// Bytes of buffer capacity held, excluding payloads.
@@ -871,6 +871,8 @@ impl Registers {
             + self.frames.retained_bytes()
             + self.arena.retained_bytes()
             + self.continuations.retained_bytes()
+            + capacity_bytes(&self.globals)
+            + self.globals.iter().map(capacity_bytes).sum::<usize>()
     }
 
     fn clear(&mut self) {
@@ -892,7 +894,7 @@ impl Registers {
         self.continuations.clear();
         self.raised = 0;
         self.arena.clear();
-        self.globals.clear();
+        self.clear_globals();
     }
 
     /// The value `global.set` stored in `unit`'s global `index`, if any.
@@ -904,19 +906,26 @@ impl Registers {
             .as_ref()
     }
 
-    /// Stores `value` in `unit`'s global `index`. The verifier bounds `index` by
-    /// [`crate::verifier::MAX_GLOBALS`].
-    fn set_global(&mut self, unit: UnitId, index: u32, value: Value) {
+    /// Stores `value` in `unit`'s global `index`, below `count`, the unit's program's
+    /// [`VerifiedProgram::global_count`]. The unit's globals are sized to `count` at its first
+    /// store, so a program pays for the globals it names, as for its registers.
+    fn set_global(&mut self, unit: UnitId, index: u32, count: u32, value: Value) {
         let unit = unit.0 as usize;
         if self.globals.len() <= unit {
             self.globals.resize_with(unit + 1, Vec::new);
         }
         let globals = &mut self.globals[unit];
-        let index = index as usize;
-        if globals.len() <= index {
-            globals.resize(index + 1, None);
+        if globals.is_empty() {
+            globals.resize(count as usize, None);
         }
-        globals[index] = Some(value);
+        globals[index as usize] = Some(value);
+    }
+
+    /// Unsets every global, keeping the storage for the next computation.
+    fn clear_globals(&mut self) {
+        for globals in &mut self.globals {
+            globals.clear();
+        }
     }
 
     /// The value in `src`, which the verifier proved holds an inline value
@@ -3015,7 +3024,7 @@ impl<H: Host> Vm<H> {
                 }
                 ExecInstr::GlobalSet { index, src } => {
                     let value = ctx.read_inline_value(base, *src);
-                    ctx.set_global(unit_id, *index, value);
+                    ctx.set_global(unit_id, *index, program.global_count(), value);
                 }
                 ExecInstr::ConstI32 { dst, imm } => {
                     ctx.write_i32(base, *dst, *imm);

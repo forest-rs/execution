@@ -1762,13 +1762,13 @@ pub enum Opcode {
     ObjUtf8Prev = 0xFC23,
     /// `dst = global[index] is set`: whether this computation stored this unit's global `index` (`bool`).
     GlobalHas = 0xFC24,
-    /// `dst = global[index]`: the scalar or host object this computation stored in this unit's global `index` (traps when it stored none, or one of another kind).
+    /// `dst = global[index]`: the inline value (scalar, host object or function reference) this computation stored in this unit's global `index` (traps when it stored none, or one of another kind).
     GlobalGet = 0xFC25,
-    /// `global[index] = src`: keeps a scalar or host object in this unit's global `index` for the rest of the computation.
+    /// `global[index] = src`: keeps an inline value (scalar, host object or function reference) in this unit's global `index` for the rest of the computation.
     GlobalSet = 0xFC26,
-    /// `dst = host.object_field(obj, field)`: a scalar or host object a host object holds in field `field` (traps when the host has none, or one of another type).
+    /// `dst = host.object_field(obj, field)`: the inline value (scalar, host object or function reference) a host object holds in field `field` (traps when the host has none, or one of another type).
     ObjField = 0xFC27,
-    /// `host.set_object_field(obj, field, src)`: stores a scalar or host object in field `field` of a host object (traps when the host refuses it).
+    /// `host.set_object_field(obj, field, src)`: stores an inline value (scalar, host object or function reference) in field `field` of a host object (traps when the host refuses it).
     ObjSetField = 0xFC28,
     /// `dst = i32`.
     ConstI32 = 0xFD00,
