@@ -1,12 +1,12 @@
 ---
 id: et-71ae
-status: open
+status: closed
 deps: []
 links: [et-eaf4]
 created: 2026-01-31T14:47:37Z
 type: task
 priority: 2
-assignee: Bruce Mitchener
+assignee: no-materials
 ---
 # Wind tunnel: add loop + allocation benchmarks
 
@@ -27,3 +27,7 @@ Acceptance:
 **2026-02-01T05:45:28Z**
 
 Bench updates likely land under et-eaf4 (PR7: Cleanup + wind-tunnel perf confirmation).
+
+**2026-02-05T10:55:07Z**
+
+Implemented new wind-tunnel benches (bytes/str concat chains + array_alloc_loop) and expanded loop iterations to include 1_000. Ran cargo bench -p execution_tape_wind_tunnel --bench vm successfully.
